@@ -1715,7 +1715,7 @@ CEEInfo::findCallSiteSig(
             sig = SigPointer(pSig, cbSig);
 
             context = MAKE_METHODCONTEXT(resolved.Method);
-            scopeHnd = GetScopeHandle(resolved.Method->GetModule());
+            scopeHnd = GetScopeHandle(resolved.Method);
         }
 
         sigMethTok = mdTokenNil;
@@ -6299,7 +6299,7 @@ const char* CEEInfo::getMethodNameFromMetadata(CORINFO_METHOD_HANDLE ftnHnd, con
     MethodDesc *ftn = GetMethod(ftnHnd);
     mdMethodDef token = ftn->GetMemberDef();
 
-    if (!IsNilToken(token))
+    if (!ftn->IsNoMetadata() && !IsNilToken(token))
     {
         MethodTable* pMT = ftn->GetMethodTable();
         IMDInternalImport* pMDImport = pMT->GetMDImport();
@@ -7596,7 +7596,7 @@ COR_ILMETHOD_DECODER* CEEInfo::getMethodInfoWorker(
             localSig = SigPointer{ cxt.Header->LocalVarSig, cxt.Header->cbLocalVarSig };
         }
     }
-    else if (ilFtn->IsDynamicMethod())
+    else if (ilFtn->IsDynamicMethod() && !ilFtn->IsAsyncThunkMethod())
     {
         DynamicResolver* pResolver = ilFtn->AsDynamicMethodDesc()->GetResolver();
         scopeHnd = MakeDynamicScope(pResolver);
@@ -13229,7 +13229,12 @@ void CEECodeGenInfo::getEHinfo(
     pMD = pMD->GetOrdinaryVariantIfAsyncVersion();
 
     COR_ILMETHOD* pILHeader;
-    if (pMD->IsDynamicMethod())
+    if (isMethodBeingCompiled && pMD->IsAsyncThunkMethod())
+    {
+        _ASSERTE(m_ILHeader != NULL);
+        getEHinfoHelper(EHnumber, clause, m_ILHeader);
+    }
+    else if (pMD->IsDynamicMethod())
     {
         pMD->AsDynamicMethodDesc()->GetResolver()->GetEHInfo(EHnumber, clause);
     }

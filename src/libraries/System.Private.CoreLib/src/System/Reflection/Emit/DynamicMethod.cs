@@ -7,6 +7,7 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace System.Reflection.Emit
 {
@@ -20,6 +21,9 @@ namespace System.Reflection.Emit
         // it is ready for use since there is not API which indictates that IL generation has completed.
         private static Module? s_anonymouslyHostedDynamicMethodsModule;
         private static readonly object s_anonymouslyHostedDynamicMethodsModuleLock = new object();
+        private const MethodImplAttributes DefaultMethodImplAttributes = MethodImplAttributes.IL | MethodImplAttributes.NoInlining;
+
+        private MethodImplAttributes _methodImplFlags;
 
         //
         // class initialization (ctor and init)
@@ -291,6 +295,7 @@ namespace System.Reflection.Emit
             _name = name;
             _attributes = attributes;
             _callingConvention = callingConvention;
+            _methodImplFlags = DefaultMethodImplAttributes;
         }
 
         //
@@ -334,8 +339,47 @@ namespace System.Reflection.Emit
 
         internal override ReadOnlySpan<ParameterInfo> GetParametersAsSpan() => LoadParameters();
 
-        public override MethodImplAttributes GetMethodImplementationFlags() =>
-            MethodImplAttributes.IL | MethodImplAttributes.NoInlining;
+        public void SetImplementationFlags(MethodImplAttributes attributes)
+        {
+            if (_methodHandle != null)
+                throw new InvalidOperationException(SR.InvalidOperation_MethodBaked);
+
+            _methodImplFlags = attributes;
+        }
+
+        public override MethodImplAttributes GetMethodImplementationFlags() => _methodImplFlags;
+
+        internal bool IsRuntimeAsync => (_methodImplFlags & MethodImplAttributes.Async) != 0;
+
+        internal byte[] GetRuntimeAsyncMethodSignature(out bool isValueTask)
+        {
+            isValueTask = false;
+            if (!IsRuntimeAsync)
+                return Array.Empty<byte>();
+
+            Type bodyReturnType = GetRuntimeAsyncBodyReturnType(_returnType, out isValueTask);
+            return SignatureHelper.GetMethodSigHelper(
+                null, CallingConvention, bodyReturnType, null, null, _parameterTypes, null, null).GetSignature(true);
+        }
+
+        private static Type GetRuntimeAsyncBodyReturnType(Type returnType, out bool isValueTask)
+        {
+            isValueTask = returnType == typeof(ValueTask);
+            if (returnType == typeof(Task) || isValueTask)
+                return typeof(void);
+
+            if (returnType.IsGenericType)
+            {
+                Type genericDefinition = returnType.GetGenericTypeDefinition();
+                if (genericDefinition == typeof(Task<>) || genericDefinition == typeof(ValueTask<>))
+                {
+                    isValueTask = genericDefinition == typeof(ValueTask<>);
+                    return returnType.GetGenericArguments()[0];
+                }
+            }
+
+            throw new NotSupportedException(SR.NotSupported_DynamicMethodAsyncReturnType);
+        }
 
         public override bool IsSecurityCritical => true;
 

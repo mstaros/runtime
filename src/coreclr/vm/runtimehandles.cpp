@@ -2451,7 +2451,7 @@ extern "C" void QCALLTYPE ModuleHandle_ResolveField(QCall::ModuleHandle pModule,
     return;
 }
 
-extern "C" void QCALLTYPE ModuleHandle_GetDynamicMethod(QCall::ModuleHandle pModule, const char* name, byte* sig, INT32 sigLen, QCall::ObjectHandleOnStack resolver, QCall::ObjectHandleOnStack result)
+extern "C" void QCALLTYPE ModuleHandle_GetDynamicMethod(QCall::ModuleHandle pModule, const char* name, byte* sig, INT32 sigLen, byte* asyncSig, INT32 asyncSigLen, DWORD implFlags, BOOL isAsyncValueTask, QCall::ObjectHandleOnStack resolver, QCall::ObjectHandleOnStack result)
 {
     CONTRACTL
     {
@@ -2472,18 +2472,44 @@ extern "C" void QCALLTYPE ModuleHandle_GetDynamicMethod(QCall::ModuleHandle pMod
     NewArrayHolder<BYTE> pSig(new BYTE[sigLen]);
     memcpy(pSig, sig, sigLen);
 
+    NewArrayHolder<char> pAsyncName(NULL);
+    NewArrayHolder<BYTE> pAsyncSig(NULL);
+    if (asyncSigLen > 0)
+    {
+        pAsyncName = new char[nameLen];
+        memcpy(pAsyncName, name, nameLen * sizeof(char));
+
+        pAsyncSig = new BYTE[asyncSigLen];
+        memcpy(pAsyncSig, asyncSig, asyncSigLen);
+    }
+
     DynamicMethodTable *pMTForDynamicMethods = pModule->GetDynamicMethodTable();
-    DynamicMethodDesc* pNewMD = pMTForDynamicMethods->GetDynamicMethod(pSig, sigLen, pName);
+    DynamicMethodDesc* pILMD = NULL;
+    DynamicMethodDesc* pNewMD = pMTForDynamicMethods->GetDynamicMethod(pSig, sigLen, pName, pAsyncSig, asyncSigLen, pAsyncName, implFlags, isAsyncValueTask, &pILMD);
     _ASSERTE(pNewMD != NULL);
+    _ASSERTE(pILMD != NULL);
     // pNewMD now owns pSig and pName.
     pSig.SuppressRelease();
     pName.SuppressRelease();
+    if (asyncSigLen > 0)
+    {
+        pAsyncSig.SuppressRelease();
+        pAsyncName.SuppressRelease();
+    }
 
     {
         GCX_COOP();
-        // create a handle to hold the resolver objectref
-        OBJECTHANDLE resolverHandle = AppDomain::GetCurrentDomain()->CreateLongWeakHandle(resolver.Get());
-        pNewMD->GetLCGMethodResolver()->SetManagedResolver(resolverHandle);
+        OBJECTREF resolverObject = resolver.Get();
+
+        // The emitted IL belongs to the async variant. Keep a second weak handle on the
+        // public thunk so dynamic method lifetime checks continue to observe the resolver.
+        OBJECTHANDLE resolverHandle = AppDomain::GetCurrentDomain()->CreateLongWeakHandle(resolverObject);
+        pILMD->GetLCGMethodResolver()->SetManagedResolver(resolverHandle);
+        if (pILMD != pNewMD)
+        {
+            OBJECTHANDLE thunkResolverHandle = AppDomain::GetCurrentDomain()->CreateLongWeakHandle(resolverObject);
+            pNewMD->GetLCGMethodResolver()->SetManagedResolver(thunkResolverHandle);
+        }
         result.Set(pNewMD->AllocateStubMethodInfo());
     }
 
