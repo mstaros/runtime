@@ -70,6 +70,7 @@ namespace System.Reflection.Emit
         public System.Reflection.Emit.ILGenerator GetILGenerator() { throw null; }
         public System.Reflection.Emit.ILGenerator GetILGenerator(int streamSize) { throw null; }
         public override System.Reflection.MethodImplAttributes GetMethodImplementationFlags() { throw null; }
+        public void SetImplementationFlags(System.Reflection.MethodImplAttributes attributes) { }
         public override System.Reflection.ParameterInfo[] GetParameters() { throw null; }
         public override object? Invoke(object? obj, System.Reflection.BindingFlags invokeAttr, System.Reflection.Binder? binder, object?[]? parameters, System.Globalization.CultureInfo? culture) { throw null; }
         public override bool IsDefined(System.Type attributeType, bool inherit) { throw null; }

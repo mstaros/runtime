@@ -82,6 +82,7 @@ void DynamicMethodTable::CreateDynamicMethodTable(DynamicMethodTable **ppLocatio
     pDynMT->m_Crst.Init(CrstDynamicMT);
     pDynMT->m_Module = pModule;
     pDynMT->m_pDomain = pDomain;
+    pDynMT->m_NextMethodRid = 0;
     pDynMT->MakeMethodTable(&amt);
 
     if (*ppLocation) RETURN;
@@ -160,7 +161,7 @@ void DynamicMethodTable::AddMethodsToList()
     // allocate as many chunks as needed to hold the methods
     //
     MethodDescChunk* pChunk = MethodDescChunk::CreateChunk(pHeap, 0 /* one chunk of maximum size */,
-        mcDynamic, TRUE /* fNonVtableSlot */, TRUE /* fNativeCodeSlot */, FALSE /* HasAsyncMethodData */, m_pMethodTable, &amt);
+        mcDynamic, TRUE /* fNonVtableSlot */, TRUE /* fNativeCodeSlot */, TRUE /* HasAsyncMethodData */, m_pMethodTable, &amt);
     if (m_DynamicMethodList) RETURN;
 
     int methodCount = pChunk->GetCount();
@@ -215,7 +216,7 @@ void DynamicMethodTable::AddMethodsToList()
     amt.SuppressRelease();
 }
 
-DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSize, PTR_CUTF8 name)
+DynamicMethodDesc* DynamicMethodTable::GetFreeDynamicMethod()
 {
     CONTRACT (DynamicMethodDesc*)
     {
@@ -224,13 +225,9 @@ DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSiz
         GC_TRIGGERS;
         MODE_PREEMPTIVE;
         INJECT_FAULT(COMPlusThrowOM());
-        PRECONDITION(CheckPointer(psig));
-        PRECONDITION(sigSize > 0);
         POSTCONDITION(CheckPointer(RETVAL));
     }
     CONTRACT_END;
-
-    LOG((LF_BCL, LL_INFO10000, "Level4 - Getting DynamicMethod\n"));
 
     DynamicMethodDesc *pNewMD = NULL;
 
@@ -254,20 +251,40 @@ DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSiz
         // need to create more methoddescs
         AddMethodsToList();
     }
-    _ASSERTE(pNewMD != NULL);
+
+    RETURN pNewMD;
+}
+
+void DynamicMethodTable::InitializeDynamicMethodDesc(DynamicMethodDesc* pNewMD, BYTE* psig, DWORD sigSize, PTR_CUTF8 name, mdMethodDef memberDef, AsyncMethodFlags asyncFlags, Signature asyncSig)
+{
+    CONTRACT_VOID
+    {
+        INSTANCE_CHECK;
+        THROWS;
+        GC_TRIGGERS;
+        MODE_PREEMPTIVE;
+        INJECT_FAULT(COMPlusThrowOM());
+        PRECONDITION(CheckPointer(pNewMD));
+        PRECONDITION(CheckPointer(psig));
+        PRECONDITION(sigSize > 0);
+    }
+    CONTRACT_END;
 
     // Reset the method desc into pristine state
-
     LOG((LF_BCL, LL_INFO1000, "Level3 - DynamicMethod obtained {0x%p} (used %d)\n", pNewMD, m_Used));
 
-    // the store sig part of the method desc
     pNewMD->SetStoredMethodSig((PCCOR_SIGNATURE)psig, sigSize);
-    // the dynamic part of the method desc
     pNewMD->m_pszMethodName = name;
+    pNewMD->SetMemberDef(memberDef);
+    pNewMD->SetSlot(MethodTable::NO_SLOT);
+    pNewMD->SetStatic();
     pNewMD->InitializeFlags(DynamicMethodDesc::FlagPublic
                     | DynamicMethodDesc::FlagStatic
                     | DynamicMethodDesc::FlagIsLCGMethod);
 
+    AsyncMethodData* pAsyncMethodData = pNewMD->GetAddrOfAsyncMethodData();
+    pAsyncMethodData->flags = asyncFlags;
+    pAsyncMethodData->sig = hasAsyncFlags(asyncFlags, AsyncMethodFlags::IsAsyncVariant) ? asyncSig : Signature();
 
     // Note: Reset has THROWS contract since it may allocate jump stub and on WASM parses the signature
     // It will never throw here for jump stubs since it will always reuse the existing jump stub,
@@ -288,6 +305,58 @@ DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSiz
 
     pNewMD->SetNotInline(TRUE);
     pNewMD->GetLCGMethodResolver()->Reset();
+
+    RETURN;
+}
+
+DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSize, PTR_CUTF8 name, BYTE *pAsyncSig, DWORD asyncSigSize, PTR_CUTF8 asyncName, DWORD implFlags, BOOL isAsyncValueTask, DynamicMethodDesc** ppILMethod)
+{
+    CONTRACT (DynamicMethodDesc*)
+    {
+        INSTANCE_CHECK;
+        THROWS;
+        GC_TRIGGERS;
+        MODE_PREEMPTIVE;
+        INJECT_FAULT(COMPlusThrowOM());
+        PRECONDITION(CheckPointer(psig));
+        PRECONDITION(sigSize > 0);
+        POSTCONDITION(CheckPointer(RETVAL));
+    }
+    CONTRACT_END;
+
+    LOG((LF_BCL, LL_INFO10000, "Level4 - Getting DynamicMethod\n"));
+
+    DynamicMethodDesc *pNewMD = GetFreeDynamicMethod();
+    _ASSERTE(pNewMD != NULL);
+    DynamicMethodDesc *pILMD = pNewMD;
+
+    mdMethodDef memberDef = mdMethodDefNil;
+
+    if (IsMiAsync(implFlags) && asyncSigSize > 0)
+    {
+        {
+            LockHolder lh(this);
+            memberDef = TokenFromRid(++m_NextMethodRid, mdtMethodDef);
+        }
+
+        DynamicMethodDesc *pAsyncMD = GetFreeDynamicMethod();
+        _ASSERTE(pAsyncMD != NULL);
+        pILMD = pAsyncMD;
+
+        AsyncMethodFlags asyncVariantFlags = AsyncMethodFlags::AsyncCall | AsyncMethodFlags::IsAsyncVariant;
+        if (isAsyncValueTask)
+            asyncVariantFlags |= AsyncMethodFlags::IsAsyncVariantForValueTask;
+
+        InitializeDynamicMethodDesc(pAsyncMD, pAsyncSig, asyncSigSize, asyncName, memberDef, asyncVariantFlags, Signature(pAsyncSig, asyncSigSize));
+        InitializeDynamicMethodDesc(pNewMD, psig, sigSize, name, memberDef, AsyncMethodFlags::ReturnsTaskOrValueTask | AsyncMethodFlags::Thunk, Signature());
+    }
+    else
+    {
+        InitializeDynamicMethodDesc(pNewMD, psig, sigSize, name, memberDef, AsyncMethodFlags::None, Signature());
+    }
+
+    if (ppILMethod != NULL)
+        *ppILMethod = pILMD;
 
     RETURN pNewMD;
 }
@@ -892,7 +961,17 @@ bool DynamicMethodDesc::TryDestroy()
     LoaderAllocator *pLoaderAllocator = GetLoaderAllocator();
     LOG((LF_BCL, LL_INFO1000, "Level3 - Destroying DynamicMethodDesc {%p}\n", this));
 
+    DynamicMethodDesc* pPairedDynamicMethodToDestroy = NULL;
+    if (IsAsyncThunkMethod())
+    {
+        MethodDesc* pPairedMethod = IsAsyncMethod() ? GetOrdinaryVariantNoCreate() : GetAsyncVariantNoCreate();
+        if (pPairedMethod != NULL && pPairedMethod != this && pPairedMethod->IsDynamicMethod())
+            pPairedDynamicMethodToDestroy = pPairedMethod->AsDynamicMethodDesc();
+    }
+
     PTR_LCGMethodResolver methodResolver = GetLCGMethodResolver();
+    PTR_LCGMethodResolver pairedMethodResolver = pPairedDynamicMethodToDestroy != NULL ? pPairedDynamicMethodToDestroy->GetLCGMethodResolver() : NULL;
+    LoaderAllocator *pPairedMethodLoaderAllocator = pPairedDynamicMethodToDestroy != NULL ? pPairedDynamicMethodToDestroy->GetLoaderAllocator() : NULL;
 
     // Destroy the code heap memory associated with this method first.
     // This is done before any other destruction to ensure that CodeHeap
@@ -903,19 +982,45 @@ bool DynamicMethodDesc::TryDestroy()
         return false;
     }
 
+    if (pairedMethodResolver != NULL && !pairedMethodResolver->TryDestroyCodeHeapMemory())
+    {
+        // We failed to destroy the paired dynamic method code heap memory, so we cannot continue
+        // with descriptor destruction. The code heaps already released above are skipped
+        // by a later cleanup attempt.
+        return false;
+    }
+
     // See ModuleHandle_GetDynamicMethod() for allocation of these DynamicMethodDesc members.
     // Free the member field memory here prior to storage reclamation below.
     delete[] m_pszMethodName;
     delete[] (BYTE*)m_pSig;
 
+    if (pPairedDynamicMethodToDestroy != NULL)
+    {
+        delete[] pPairedDynamicMethodToDestroy->m_pszMethodName;
+        delete[] (BYTE*)pPairedDynamicMethodToDestroy->m_pSig;
+    }
+
     methodResolver->DestroyResolver();
     // The current DynamicMethodDesc storage is destroyed at this point
+
+    if (pairedMethodResolver != NULL)
+    {
+        pairedMethodResolver->DestroyResolver();
+        // The paired dynamic method DynamicMethodDesc storage is destroyed at this point
+    }
 
     // If the LoaderAllocator is collectible, we release it.
     if (pLoaderAllocator->IsCollectible())
     {
         if (pLoaderAllocator->Release())
             LoaderAllocator::GCLoaderAllocators(pLoaderAllocator);
+    }
+
+    if (pPairedMethodLoaderAllocator != NULL && pPairedMethodLoaderAllocator->IsCollectible())
+    {
+        if (pPairedMethodLoaderAllocator->Release())
+            LoaderAllocator::GCLoaderAllocators(pPairedMethodLoaderAllocator);
     }
 
     return true;

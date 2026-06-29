@@ -259,6 +259,7 @@ public:
 private:
     CrstExplicitInit m_Crst;
     DynamicMethodDesc *m_DynamicMethodList;
+    DWORD m_NextMethodRid;
     MethodTable *m_pMethodTable;
     Module *m_Module;
     AppDomain *m_pDomain;
@@ -279,10 +280,12 @@ private:
 #ifndef DACCESS_COMPILE
     void MakeMethodTable(AllocMemTracker *pamTracker);
     void AddMethodsToList();
+    DynamicMethodDesc* GetFreeDynamicMethod();
+    void InitializeDynamicMethodDesc(DynamicMethodDesc* pNewMD, BYTE* psig, DWORD sigSize, PTR_CUTF8 name, mdMethodDef memberDef, AsyncMethodFlags asyncFlags, Signature asyncSig);
 
 public:
     void Destroy();
-    DynamicMethodDesc* GetDynamicMethod(BYTE *psig, DWORD sigSize, PTR_CUTF8 name);
+    DynamicMethodDesc* GetDynamicMethod(BYTE *psig, DWORD sigSize, PTR_CUTF8 name, BYTE *pAsyncSig, DWORD asyncSigSize, PTR_CUTF8 asyncName, DWORD implFlags, BOOL isAsyncValueTask, DynamicMethodDesc** ppILMethod);
     void AddToFreeList(DynamicMethodDesc *pMethod);
 
 #endif // !DACCESS_COMPILE
