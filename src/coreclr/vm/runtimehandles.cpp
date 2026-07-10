@@ -1797,23 +1797,32 @@ extern "C" void QCALLTYPE RuntimeMethodHandle_Destroy(MethodDesc * pMethod)
     BEGIN_QCALL;
 
     DynamicMethodDesc* pDynamicMethodDesc = pMethod->AsDynamicMethodDesc();
+    DynamicMethodDesc* pPairedDynamicMethodDesc = pDynamicMethodDesc->GetPairedLCGMethodNoCreate();
 
     {
 #if defined(FEATURE_PORTABLE_ENTRYPOINTS)
         ClearPendingThunkResolutionUnderLock(pDynamicMethodDesc);
+        if (pPairedDynamicMethodDesc != NULL)
+            ClearPendingThunkResolutionUnderLock(pPairedDynamicMethodDesc);
 #endif
 
         GCX_COOP();
 
         // Destroy should be called only if the managed part is gone.
         _ASSERTE(OBJECTREFToObject(pDynamicMethodDesc->GetLCGMethodResolver()->GetManagedResolver()) == NULL);
+        _ASSERTE(pPairedDynamicMethodDesc == NULL ||
+            OBJECTREFToObject(pPairedDynamicMethodDesc->GetLCGMethodResolver()->GetManagedResolver()) == NULL);
 
-        // Fire Unload Dynamic Method Event here
+        // Fire unload notifications for every dynamic MethodDesc that is recycled below.
         ETW::MethodLog::DynamicMethodDestroyed(pMethod);
+        if (pPairedDynamicMethodDesc != NULL)
+            ETW::MethodLog::DynamicMethodDestroyed(pPairedDynamicMethodDesc);
 
 #ifdef PROFILING_SUPPORTED
         BEGIN_PROFILER_CALLBACK(CORProfilerTrackDynamicFunctionUnloads());
         (&g_profControlBlock)->DynamicMethodUnloaded((FunctionID)pMethod);
+        if (pPairedDynamicMethodDesc != NULL)
+            (&g_profControlBlock)->DynamicMethodUnloaded((FunctionID)pPairedDynamicMethodDesc);
         END_PROFILER_CALLBACK();
 #endif // PROFILING_SUPPORTED
     }
@@ -2513,6 +2522,8 @@ extern "C" void QCALLTYPE ModuleHandle_GetDynamicMethod(QCall::ModuleHandle pMod
         result.Set(pNewMD->AllocateStubMethodInfo());
     }
 
+    // One reference owns the managed DynamicMethod lifetime. Runtime-async descriptor pairs
+    // are created and destroyed as a unit and therefore share this reference.
     LoaderAllocator *pLoaderAllocator = pModule->GetLoaderAllocator();
     if (pLoaderAllocator->IsCollectible())
         pLoaderAllocator->AddReference();

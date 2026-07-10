@@ -953,6 +953,21 @@ void HostCodeHeap::FreeMemForCode(void * codeStart)
 //
 // Implementation for DynamicMethodDesc declared in method.hpp
 //
+DynamicMethodDesc* DynamicMethodDesc::GetPairedLCGMethodNoCreate()
+{
+    WRAPPER_NO_CONTRACT;
+
+    if (!IsAsyncThunkMethod())
+        return NULL;
+
+    MethodDesc* pPairedMethod = IsAsyncMethod() ? GetOrdinaryVariantNoCreate() : GetAsyncVariantNoCreate();
+    if (pPairedMethod == NULL || pPairedMethod == this || !pPairedMethod->IsDynamicMethod())
+        return NULL;
+
+    DynamicMethodDesc* pPairedDynamicMethod = pPairedMethod->AsDynamicMethodDesc();
+    return pPairedDynamicMethod->IsLCGMethod() ? pPairedDynamicMethod : NULL;
+}
+
 bool DynamicMethodDesc::TryDestroy()
 {
     STANDARD_VM_CONTRACT;
@@ -961,17 +976,10 @@ bool DynamicMethodDesc::TryDestroy()
     LoaderAllocator *pLoaderAllocator = GetLoaderAllocator();
     LOG((LF_BCL, LL_INFO1000, "Level3 - Destroying DynamicMethodDesc {%p}\n", this));
 
-    DynamicMethodDesc* pPairedDynamicMethodToDestroy = NULL;
-    if (IsAsyncThunkMethod())
-    {
-        MethodDesc* pPairedMethod = IsAsyncMethod() ? GetOrdinaryVariantNoCreate() : GetAsyncVariantNoCreate();
-        if (pPairedMethod != NULL && pPairedMethod != this && pPairedMethod->IsDynamicMethod())
-            pPairedDynamicMethodToDestroy = pPairedMethod->AsDynamicMethodDesc();
-    }
+    DynamicMethodDesc* pPairedDynamicMethodToDestroy = GetPairedLCGMethodNoCreate();
 
     PTR_LCGMethodResolver methodResolver = GetLCGMethodResolver();
     PTR_LCGMethodResolver pairedMethodResolver = pPairedDynamicMethodToDestroy != NULL ? pPairedDynamicMethodToDestroy->GetLCGMethodResolver() : NULL;
-    LoaderAllocator *pPairedMethodLoaderAllocator = pPairedDynamicMethodToDestroy != NULL ? pPairedDynamicMethodToDestroy->GetLoaderAllocator() : NULL;
 
     // Destroy the code heap memory associated with this method first.
     // This is done before any other destruction to ensure that CodeHeap
@@ -1010,17 +1018,12 @@ bool DynamicMethodDesc::TryDestroy()
         // The paired dynamic method DynamicMethodDesc storage is destroyed at this point
     }
 
-    // If the LoaderAllocator is collectible, we release it.
+    // ModuleHandle_GetDynamicMethod acquires one collectible LoaderAllocator reference per
+    // managed DynamicMethod. A runtime-async descriptor pair shares that single ownership.
     if (pLoaderAllocator->IsCollectible())
     {
         if (pLoaderAllocator->Release())
             LoaderAllocator::GCLoaderAllocators(pLoaderAllocator);
-    }
-
-    if (pPairedMethodLoaderAllocator != NULL && pPairedMethodLoaderAllocator->IsCollectible())
-    {
-        if (pPairedMethodLoaderAllocator->Release())
-            LoaderAllocator::GCLoaderAllocators(pPairedMethodLoaderAllocator);
     }
 
     return true;
