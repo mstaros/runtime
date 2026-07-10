@@ -297,6 +297,41 @@ public:
 
 };  // class DynamicMethodTable
 
+#ifndef DACCESS_COMPILE
+// Returns an unpublished DynamicMethodDesc to its table if construction does not complete.
+class DynamicMethodDescBackoutHolder
+{
+public:
+    DynamicMethodDescBackoutHolder(DynamicMethodTable* pDynamicMethodTable, DynamicMethodDesc* pDynamicMethod)
+        : m_pDynamicMethodTable(pDynamicMethodTable)
+        , m_pDynamicMethod(pDynamicMethod)
+    {
+        LIMITED_METHOD_CONTRACT;
+        _ASSERTE(pDynamicMethodTable != NULL);
+    }
+
+    ~DynamicMethodDescBackoutHolder()
+    {
+        WRAPPER_NO_CONTRACT;
+        if (m_pDynamicMethod != NULL)
+            m_pDynamicMethodTable->AddToFreeList(m_pDynamicMethod);
+    }
+
+    void SuppressRelease()
+    {
+        LIMITED_METHOD_CONTRACT;
+        m_pDynamicMethod = NULL;
+    }
+
+private:
+    DynamicMethodDescBackoutHolder(const DynamicMethodDescBackoutHolder&) = delete;
+    DynamicMethodDescBackoutHolder& operator=(const DynamicMethodDescBackoutHolder&) = delete;
+
+    DynamicMethodTable* m_pDynamicMethodTable;
+    DynamicMethodDesc* m_pDynamicMethod;
+};
+#endif // !DACCESS_COMPILE
+
 
 //---------------------------------------------------------------------------------------
 //
