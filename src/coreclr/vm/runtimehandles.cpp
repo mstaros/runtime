@@ -2497,36 +2497,50 @@ extern "C" void QCALLTYPE ModuleHandle_GetDynamicMethod(QCall::ModuleHandle pMod
     DynamicMethodDesc* pNewMD = pMTForDynamicMethods->GetDynamicMethod(pSig, sigLen, pName, pAsyncSig, asyncSigLen, pAsyncName, implFlags, isAsyncValueTask, &pILMD);
     _ASSERTE(pNewMD != NULL);
     _ASSERTE(pILMD != NULL);
-    // pNewMD now owns pSig and pName.
-    pSig.SuppressRelease();
-    pName.SuppressRelease();
-    if (asyncSigLen > 0)
-    {
-        pAsyncSig.SuppressRelease();
-        pAsyncName.SuppressRelease();
-    }
+
+    DynamicMethodDescBackoutHolder newMethodBackout(pMTForDynamicMethods, pNewMD);
+    DynamicMethodDescBackoutHolder ilMethodBackout(pMTForDynamicMethods, pILMD == pNewMD ? NULL : pILMD);
+    LoaderAllocator *pLoaderAllocator = pModule->GetLoaderAllocator();
 
     {
         GCX_COOP();
         OBJECTREF resolverObject = resolver.Get();
 
-        // The emitted IL belongs to the async variant. Keep a second weak handle on the
-        // public thunk so dynamic method lifetime checks continue to observe the resolver.
-        OBJECTHANDLE resolverHandle = AppDomain::GetCurrentDomain()->CreateLongWeakHandle(resolverObject);
-        pILMD->GetLCGMethodResolver()->SetManagedResolver(resolverHandle);
+        // Keep handle and descriptor ownership local until every throwing allocation succeeds.
+        LongWeakHandleHolder resolverHandle(AppDomain::GetCurrentDomain()->CreateLongWeakHandle(resolverObject));
+        LongWeakHandleHolder thunkResolverHandle(pILMD != pNewMD
+            ? AppDomain::GetCurrentDomain()->CreateLongWeakHandle(resolverObject)
+            : NULL);
+        REFLECTMETHODREF methodInfo = pNewMD->AllocateStubMethodInfo();
+        GCPROTECT_BEGIN(methodInfo);
+
+        // One reference owns the managed DynamicMethod lifetime. Runtime-async descriptor pairs
+        // are created and destroyed as a unit and therefore share this reference.
+        if (pLoaderAllocator->IsCollectible())
+            pLoaderAllocator->AddReference();
+
+        pILMD->GetLCGMethodResolver()->SetManagedResolver(resolverHandle.GetValue());
+        resolverHandle.SuppressRelease();
         if (pILMD != pNewMD)
         {
-            OBJECTHANDLE thunkResolverHandle = AppDomain::GetCurrentDomain()->CreateLongWeakHandle(resolverObject);
-            pNewMD->GetLCGMethodResolver()->SetManagedResolver(thunkResolverHandle);
+            pNewMD->GetLCGMethodResolver()->SetManagedResolver(thunkResolverHandle.GetValue());
+            thunkResolverHandle.SuppressRelease();
         }
-        result.Set(pNewMD->AllocateStubMethodInfo());
-    }
 
-    // One reference owns the managed DynamicMethod lifetime. Runtime-async descriptor pairs
-    // are created and destroyed as a unit and therefore share this reference.
-    LoaderAllocator *pLoaderAllocator = pModule->GetLoaderAllocator();
-    if (pLoaderAllocator->IsCollectible())
-        pLoaderAllocator->AddReference();
+        // Transfer native buffer and descriptor ownership only after construction is complete.
+        pSig.SuppressRelease();
+        pName.SuppressRelease();
+        if (pILMD != pNewMD)
+        {
+            pAsyncSig.SuppressRelease();
+            pAsyncName.SuppressRelease();
+        }
+        ilMethodBackout.SuppressRelease();
+        newMethodBackout.SuppressRelease();
+
+        result.Set(methodInfo);
+        GCPROTECT_END();
+    }
 
     END_QCALL;
 }

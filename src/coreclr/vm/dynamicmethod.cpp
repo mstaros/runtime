@@ -328,6 +328,7 @@ DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSiz
 
     DynamicMethodDesc *pNewMD = GetFreeDynamicMethod();
     _ASSERTE(pNewMD != NULL);
+    DynamicMethodDescBackoutHolder newMethodBackout(this, pNewMD);
     DynamicMethodDesc *pILMD = pNewMD;
 
     mdMethodDef memberDef = mdMethodDefNil;
@@ -341,6 +342,7 @@ DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSiz
 
         DynamicMethodDesc *pAsyncMD = GetFreeDynamicMethod();
         _ASSERTE(pAsyncMD != NULL);
+        DynamicMethodDescBackoutHolder asyncMethodBackout(this, pAsyncMD);
         pILMD = pAsyncMD;
 
         AsyncMethodFlags asyncVariantFlags = AsyncMethodFlags::AsyncCall | AsyncMethodFlags::IsAsyncVariant;
@@ -349,6 +351,7 @@ DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSiz
 
         InitializeDynamicMethodDesc(pAsyncMD, pAsyncSig, asyncSigSize, asyncName, memberDef, asyncVariantFlags, Signature(pAsyncSig, asyncSigSize));
         InitializeDynamicMethodDesc(pNewMD, psig, sigSize, name, memberDef, AsyncMethodFlags::ReturnsTaskOrValueTask | AsyncMethodFlags::Thunk, Signature());
+        asyncMethodBackout.SuppressRelease();
     }
     else
     {
@@ -358,6 +361,7 @@ DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSiz
     if (ppILMethod != NULL)
         *ppILMethod = pILMD;
 
+    newMethodBackout.SuppressRelease();
     RETURN pNewMD;
 }
 
