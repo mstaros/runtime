@@ -12,9 +12,14 @@ public static class DynamicMethodConstructionFailureCleanup
     [Fact]
     public static void LateConstructionFailuresReleasePairResources()
     {
+        ModuleBuilder ownerModule = AssemblyBuilder.DefineDynamicAssembly(
+            new AssemblyName("DynamicMethodConstructionFailureCleanupOwner"),
+            AssemblyBuilderAccess.Run).DefineDynamicModule("OwnerModule");
+
         for (int failure = 0; failure < 4; failure++)
         {
             DynamicMethod dynamicMethod = CreateRuntimeAsyncDynamicMethod(
+                ownerModule,
                 $"InjectedFailure{failure + 1}",
                 failure + 1);
 
@@ -23,19 +28,23 @@ public static class DynamicMethodConstructionFailureCleanup
         }
 
         Func<Task<int>> success = CreateRuntimeAsyncDynamicMethod(
+            ownerModule,
             "SuccessfulAfterInjectedFailures",
             5).CreateDelegate<Func<Task<int>>>();
 
         Assert.Equal(5, success().GetAwaiter().GetResult());
     }
 
-    private static DynamicMethod CreateRuntimeAsyncDynamicMethod(string name, int value)
+    private static DynamicMethod CreateRuntimeAsyncDynamicMethod(
+        ModuleBuilder ownerModule,
+        string name,
+        int value)
     {
         DynamicMethod dynamicMethod = new DynamicMethod(
             name,
             typeof(Task<int>),
             Type.EmptyTypes,
-            typeof(DynamicMethodConstructionFailureCleanup));
+            ownerModule);
         dynamicMethod.SetImplementationFlags(MethodImplAttributes.Async);
 
         ILGenerator ilGenerator = dynamicMethod.GetILGenerator();
