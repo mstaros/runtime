@@ -338,6 +338,7 @@ RETAIL_CONFIG_DWORD_INFO(INTERNAL_JitVNMapSelBudget, W("JitVNMapSelBudget"), 100
 RETAIL_CONFIG_DWORD_INFO(UNSUPPORTED_TrackDynamicMethodDebugInfo, W("TrackDynamicMethodDebugInfo"), 0, "Specifies whether debug info should be generated and tracked for dynamic methods")
 RETAIL_CONFIG_DWORD_INFO(INTERNAL_DynamicMethodMaxRid, W("DynamicMethodMaxRid"), 0x00ffffff, "Test-only maximum synthetic MethodDef RID assigned to runtime-async DynamicMethod descriptor pairs")
 RETAIL_CONFIG_DWORD_INFO(INTERNAL_DynamicMethodMaxUsedDescriptors, W("DynamicMethodMaxUsedDescriptors"), 0, "Test-only maximum number of simultaneously checked-out DynamicMethodDesc instances; zero is unlimited")
+RETAIL_CONFIG_DWORD_INFO(INTERNAL_DynamicMethodConstructionFailureStages, W("DynamicMethodConstructionFailureStages"), 0, "Test-only one-shot failure bitmask for DynamicMethod construction: 1=descriptors, 2=resolver handle, 4=thunk handle, 8=stub MethodInfo")
 
 #ifdef FEATURE_MULTICOREJIT
 

@@ -86,6 +86,7 @@ void DynamicMethodTable::CreateDynamicMethodTable(DynamicMethodTable **ppLocatio
     pDynMT->m_MaxMethodRid = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_DynamicMethodMaxRid);
     pDynMT->m_Used = 0;
     pDynMT->m_MaxUsedDescriptors = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_DynamicMethodMaxUsedDescriptors);
+    pDynMT->m_ConstructionFailureStages = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_DynamicMethodConstructionFailureStages);
     if (pDynMT->m_MaxMethodRid > MaxMethodRid)
         pDynMT->m_MaxMethodRid = MaxMethodRid;
     pDynMT->MakeMethodTable(&amt);
@@ -373,6 +374,33 @@ DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSiz
 
     newMethodBackout.SuppressRelease();
     RETURN pNewMD;
+}
+
+void DynamicMethodTable::ThrowIfConstructionFailureRequested(DWORD stage)
+{
+    CONTRACT_VOID
+    {
+        INSTANCE_CHECK;
+        THROWS;
+        GC_TRIGGERS;
+        MODE_ANY;
+    }
+    CONTRACT_END;
+
+    bool shouldThrow = false;
+    {
+        LockHolder lh(this);
+        if ((m_ConstructionFailureStages & stage) != 0)
+        {
+            m_ConstructionFailureStages &= ~stage;
+            shouldThrow = true;
+        }
+    }
+
+    if (shouldThrow)
+        COMPlusThrowOM();
+
+    RETURN;
 }
 
 void DynamicMethodTable::AddToFreeList(DynamicMethodDesc *pMethod)
