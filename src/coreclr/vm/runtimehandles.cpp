@@ -2473,6 +2473,8 @@ extern "C" void QCALLTYPE ModuleHandle_GetDynamicMethod(QCall::ModuleHandle pMod
 
     DynamicMethodDescBackoutHolder newMethodBackout(pMTForDynamicMethods, pNewMD);
     DynamicMethodDescBackoutHolder ilMethodBackout(pMTForDynamicMethods, pILMD == pNewMD ? NULL : pILMD);
+    pMTForDynamicMethods->ThrowIfConstructionFailureRequested(
+        DynamicMethodTable::FailureAfterDescriptorInitialization);
     LoaderAllocator *pLoaderAllocator = pModule->GetLoaderAllocator();
 
     {
@@ -2481,11 +2483,19 @@ extern "C" void QCALLTYPE ModuleHandle_GetDynamicMethod(QCall::ModuleHandle pMod
 
         // Keep handle and descriptor ownership local until every throwing allocation succeeds.
         LongWeakHandleHolder resolverHandle(AppDomain::GetCurrentDomain()->CreateLongWeakHandle(resolverObject));
+        pMTForDynamicMethods->ThrowIfConstructionFailureRequested(
+            DynamicMethodTable::FailureAfterResolverHandle);
+
         LongWeakHandleHolder thunkResolverHandle(pILMD != pNewMD
             ? AppDomain::GetCurrentDomain()->CreateLongWeakHandle(resolverObject)
             : NULL);
+        pMTForDynamicMethods->ThrowIfConstructionFailureRequested(
+            DynamicMethodTable::FailureAfterThunkResolverHandle);
+
         REFLECTMETHODREF methodInfo = pNewMD->AllocateStubMethodInfo();
         GCPROTECT_BEGIN(methodInfo);
+        pMTForDynamicMethods->ThrowIfConstructionFailureRequested(
+            DynamicMethodTable::FailureAfterStubMethodInfo);
 
         // One reference owns the managed DynamicMethod lifetime. Runtime-async descriptor pairs
         // are created and destroyed as a unit and therefore share this reference.

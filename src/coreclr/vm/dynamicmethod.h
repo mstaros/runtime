@@ -265,6 +265,7 @@ private:
     DWORD m_MaxMethodRid;
     DWORD m_Used;
     DWORD m_MaxUsedDescriptors;
+    DWORD m_ConstructionFailureStages;
     MethodTable *m_pMethodTable;
     Module *m_Module;
     AppDomain *m_pDomain;
@@ -289,8 +290,17 @@ private:
     void InitializeDynamicMethodDesc(DynamicMethodDesc* pNewMD, BYTE* psig, DWORD sigSize, PTR_CUTF8 name, mdMethodDef memberDef, AsyncMethodFlags asyncFlags, Signature asyncSig);
 
 public:
+    enum ConstructionFailureStage : DWORD
+    {
+        FailureAfterDescriptorInitialization = 0x1,
+        FailureAfterResolverHandle = 0x2,
+        FailureAfterThunkResolverHandle = 0x4,
+        FailureAfterStubMethodInfo = 0x8,
+    };
+
     void Destroy();
     DynamicMethodDesc* GetDynamicMethod(BYTE *psig, DWORD sigSize, PTR_CUTF8 name, BYTE *pAsyncSig, DWORD asyncSigSize, PTR_CUTF8 asyncName, DWORD implFlags, BOOL isAsyncValueTask, DynamicMethodDesc** ppILMethod);
+    void ThrowIfConstructionFailureRequested(DWORD stage);
     void AddToFreeList(DynamicMethodDesc *pMethod);
 
 #endif // !DACCESS_COMPILE
