@@ -292,7 +292,6 @@ namespace System.Reflection.Emit
             // initialize remaining fields
             _ilGenerator = null;
             _initLocals = true;
-            _methodHandle = null;
             _name = name;
             _attributes = attributes;
             _callingConvention = callingConvention;
