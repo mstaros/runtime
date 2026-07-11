@@ -86,7 +86,8 @@ void DynamicMethodTable::CreateDynamicMethodTable(DynamicMethodTable **ppLocatio
     pDynMT->m_MaxMethodRid = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_DynamicMethodMaxRid);
     pDynMT->m_Used = 0;
     pDynMT->m_MaxUsedDescriptors = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_DynamicMethodMaxUsedDescriptors);
-    pDynMT->m_ConstructionFailureStages = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_DynamicMethodConstructionFailureStages);
+    pDynMT->m_ConstructionFailureStages = 0;
+    pDynMT->m_ConstructionFailureStagesInitialized = false;
     if (pDynMT->m_MaxMethodRid > MaxMethodRid)
         pDynMT->m_MaxMethodRid = MaxMethodRid;
     pDynMT->MakeMethodTable(&amt);
@@ -390,6 +391,13 @@ void DynamicMethodTable::ThrowIfConstructionFailureRequested(DWORD stage)
     bool shouldThrow = false;
     {
         LockHolder lh(this);
+        if (!m_ConstructionFailureStagesInitialized)
+        {
+            m_ConstructionFailureStages = CLRConfig::GetConfigValue(
+                CLRConfig::INTERNAL_DynamicMethodConstructionFailureStages);
+            m_ConstructionFailureStagesInitialized = true;
+        }
+
         if ((m_ConstructionFailureStages & stage) != 0)
         {
             m_ConstructionFailureStages &= ~stage;
