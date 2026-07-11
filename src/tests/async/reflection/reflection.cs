@@ -19,7 +19,7 @@ public class Async2Reflection
     private static readonly MethodInfo s_taskIntAwaitMethod = GetAsyncHelpersAwaitGenericMethod(typeof(Task<>)).MakeGenericMethod(typeof(int));
     private static readonly MethodInfo s_valueTaskIntAwaitMethod = GetAsyncHelpersAwaitGenericMethod(typeof(ValueTask<>)).MakeGenericMethod(typeof(int));
     public static bool IsRuntimeAsyncDynamicMethodSupported =>
-        TestLibrary.Utilities.IsReflectionEmitSupported && PlatformDetection.IsRuntimeAsyncSupported;
+        TestLibrary.Utilities.IsReflectionEmitSupported && TestLibrary.Utilities.IsNotMonoRuntime;
 
     [Fact]
     public static void MethodInfo_Invoke_TaskReturning()
