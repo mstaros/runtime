@@ -5,54 +5,29 @@ using System;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Threading.Tasks;
+using Xunit;
 
 public static class DynamicMethodRidExhaustion
 {
-    public static int Main()
+    [Fact]
+    public static void RuntimeAsyncDynamicMethodRidExhaustionIsGuarded()
     {
-        try
-        {
-            Func<Task<int>> first = CreateRuntimeAsyncDynamicMethod("FirstRuntimeAsync");
-            if (first().GetAwaiter().GetResult() != 1)
-            {
-                Console.WriteLine("The first runtime-async DynamicMethod returned an unexpected value.");
-                return -1;
-            }
+        Func<Task<int>> first = CreateRuntimeAsyncDynamicMethod("FirstRuntimeAsync");
+        Assert.Equal(1, first().GetAwaiter().GetResult());
 
-            DynamicMethod second = CreateRuntimeAsyncDynamicMethodCore("SecondRuntimeAsync");
-            try
-            {
-                _ = second.CreateDelegate<Func<Task<int>>>();
-                Console.WriteLine("Expected the second runtime-async DynamicMethod to exhaust the configured RID budget.");
-                return -2;
-            }
-            catch (OverflowException)
-            {
-            }
+        DynamicMethod second = CreateRuntimeAsyncDynamicMethodCore("SecondRuntimeAsync");
+        Assert.Throws<OverflowException>(() => second.CreateDelegate<Func<Task<int>>>());
 
-            DynamicMethod ordinary = new DynamicMethod(
-                "OrdinaryAfterRuntimeAsyncRidExhaustion",
-                typeof(int),
-                Type.EmptyTypes,
-                typeof(DynamicMethodRidExhaustion));
-            ILGenerator ordinaryIl = ordinary.GetILGenerator();
-            ordinaryIl.Emit(OpCodes.Ldc_I4_7);
-            ordinaryIl.Emit(OpCodes.Ret);
+        DynamicMethod ordinary = new DynamicMethod(
+            "OrdinaryAfterRuntimeAsyncRidExhaustion",
+            typeof(int),
+            Type.EmptyTypes,
+            typeof(DynamicMethodRidExhaustion));
+        ILGenerator ordinaryIl = ordinary.GetILGenerator();
+        ordinaryIl.Emit(OpCodes.Ldc_I4_7);
+        ordinaryIl.Emit(OpCodes.Ret);
 
-            if (ordinary.CreateDelegate<Func<int>>()() != 7)
-            {
-                Console.WriteLine("Ordinary DynamicMethod creation was affected by runtime-async RID exhaustion.");
-                return -3;
-            }
-
-            Console.WriteLine("Test Passed");
-            return 100;
-        }
-        catch (Exception exception)
-        {
-            Console.WriteLine(exception);
-            return -4;
-        }
+        Assert.Equal(7, ordinary.CreateDelegate<Func<int>>()());
     }
 
     private static Func<Task<int>> CreateRuntimeAsyncDynamicMethod(string name) =>
