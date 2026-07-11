@@ -36,6 +36,14 @@ namespace System.Reflection.Emit
 
         private bool IsBaked => _mhandle.Value != IntPtr.Zero;
 
+        private void SetImplementationFlagsCore(MethodImplAttributes attributes)
+        {
+            if ((attributes & MethodImplAttributes.Async) != 0)
+                throw new PlatformNotSupportedException(SR.PlatformNotSupported_DynamicMethodAsync);
+        }
+
+        private MethodImplAttributes GetMethodImplementationFlagsCore() => DefaultMethodImplAttributes;
+
         public sealed override Delegate CreateDelegate(Type delegateType)
         {
             ArgumentNullException.ThrowIfNull(delegateType);
