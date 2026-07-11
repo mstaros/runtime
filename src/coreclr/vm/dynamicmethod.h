@@ -266,6 +266,7 @@ private:
     DWORD m_Used;
     DWORD m_MaxUsedDescriptors;
     DWORD m_ConstructionFailureStages;
+    bool m_ConstructionFailureStagesInitialized;
     MethodTable *m_pMethodTable;
     Module *m_Module;
     AppDomain *m_pDomain;
