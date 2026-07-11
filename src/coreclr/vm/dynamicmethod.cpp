@@ -83,6 +83,9 @@ void DynamicMethodTable::CreateDynamicMethodTable(DynamicMethodTable **ppLocatio
     pDynMT->m_Module = pModule;
     pDynMT->m_pDomain = pDomain;
     pDynMT->m_NextMethodRid = 0;
+    pDynMT->m_MaxMethodRid = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_DynamicMethodMaxRid);
+    if (pDynMT->m_MaxMethodRid > MaxMethodRid)
+        pDynMT->m_MaxMethodRid = MaxMethodRid;
     pDynMT->MakeMethodTable(&amt);
 
     if (*ppLocation) RETURN;
@@ -326,20 +329,24 @@ DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSiz
 
     LOG((LF_BCL, LL_INFO10000, "Level4 - Getting DynamicMethod\n"));
 
+    bool isRuntimeAsync = IsMiAsync(implFlags) && asyncSigSize > 0;
+    mdMethodDef memberDef = mdMethodDefNil;
+    if (isRuntimeAsync)
+    {
+        LockHolder lh(this);
+        if (m_NextMethodRid >= m_MaxMethodRid)
+            COMPlusThrow(kOverflowException);
+
+        memberDef = TokenFromRid(++m_NextMethodRid, mdtMethodDef);
+    }
+
     DynamicMethodDesc *pNewMD = GetFreeDynamicMethod();
     _ASSERTE(pNewMD != NULL);
     DynamicMethodDescBackoutHolder newMethodBackout(this, pNewMD);
     DynamicMethodDesc *pILMD = pNewMD;
 
-    mdMethodDef memberDef = mdMethodDefNil;
-
-    if (IsMiAsync(implFlags) && asyncSigSize > 0)
+    if (isRuntimeAsync)
     {
-        {
-            LockHolder lh(this);
-            memberDef = TokenFromRid(++m_NextMethodRid, mdtMethodDef);
-        }
-
         DynamicMethodDesc *pAsyncMD = GetFreeDynamicMethod();
         _ASSERTE(pAsyncMD != NULL);
         DynamicMethodDescBackoutHolder asyncMethodBackout(this, pAsyncMD);

@@ -259,7 +259,10 @@ public:
 private:
     CrstExplicitInit m_Crst;
     DynamicMethodDesc *m_DynamicMethodList;
+    static constexpr DWORD MaxMethodRid = 0x00ffffff;
+
     DWORD m_NextMethodRid;
+    DWORD m_MaxMethodRid;
     MethodTable *m_pMethodTable;
     Module *m_Module;
     AppDomain *m_pDomain;
