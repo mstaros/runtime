@@ -34,7 +34,7 @@ namespace System.Reflection.Emit
         private bool _creating;
         private DynamicILInfo? _dynamicILInfo;
 
-        private object? _methodHandle; // unused
+        private bool IsBaked => _mhandle.Value != IntPtr.Zero;
 
         public sealed override Delegate CreateDelegate(Type delegateType)
         {

@@ -17,6 +17,7 @@ namespace System.Reflection.Emit
     {
         private RuntimeType[] _parameterTypes;
         internal IRuntimeMethodInfo? _methodHandle;
+        private bool IsBaked => _methodHandle != null;
         private RuntimeType _returnType;
         private DynamicILGenerator? _ilGenerator;
         private DynamicILInfo? _dynamicILInfo;

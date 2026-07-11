@@ -22,6 +22,7 @@ namespace System.Reflection.Emit
         private static Module? s_anonymouslyHostedDynamicMethodsModule;
         private static readonly object s_anonymouslyHostedDynamicMethodsModuleLock = new object();
         private const MethodImplAttributes DefaultMethodImplAttributes = MethodImplAttributes.IL | MethodImplAttributes.NoInlining;
+        private const MethodImplAttributes SupportedMethodImplAttributes = MethodImplAttributes.NoInlining | MethodImplAttributes.Async;
 
         private MethodImplAttributes _methodImplFlags;
 
@@ -341,10 +342,18 @@ namespace System.Reflection.Emit
 
         public void SetImplementationFlags(MethodImplAttributes attributes)
         {
-            if (_methodHandle != null)
+            if (IsBaked)
                 throw new InvalidOperationException(SR.InvalidOperation_MethodBaked);
 
-            _methodImplFlags = attributes;
+            if ((attributes & ~SupportedMethodImplAttributes) != 0)
+                throw new ArgumentOutOfRangeException(nameof(attributes));
+
+#if MONO
+            if ((attributes & MethodImplAttributes.Async) != 0)
+                throw new PlatformNotSupportedException(SR.PlatformNotSupported_DynamicMethodAsync);
+#endif
+
+            _methodImplFlags = DefaultMethodImplAttributes | (attributes & MethodImplAttributes.Async);
         }
 
         public override MethodImplAttributes GetMethodImplementationFlags() => _methodImplFlags;

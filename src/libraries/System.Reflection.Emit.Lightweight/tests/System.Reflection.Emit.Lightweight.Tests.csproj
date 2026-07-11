@@ -16,6 +16,7 @@
     <Compile Include="DynamicMethodGetBaseDefinition.cs" />
     <Compile Include="DynamicMethodGetILGenerator.cs" />
     <Compile Include="DynamicMethodInitLocals.cs" />
+    <Compile Include="DynamicMethodSetImplementationFlags.cs" />
     <Compile Include="DynamicMethodToString.cs" />
     <Compile Include="Utilities.cs" />
   </ItemGroup>
