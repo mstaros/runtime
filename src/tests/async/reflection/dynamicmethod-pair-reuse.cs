@@ -38,7 +38,7 @@ public static class DynamicMethodPairReuse
             }
         }
 
-        Assert.True(false, "The runtime-async DynamicMethod descriptor pair was not recycled after forced finalization.");
+        Assert.Fail("The runtime-async DynamicMethod descriptor pair was not recycled after forced finalization.");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
