@@ -18,6 +18,8 @@ public class Async2Reflection
     private static readonly MethodInfo s_valueTaskAwaitMethod = GetAsyncHelpersAwaitMethod(typeof(ValueTask));
     private static readonly MethodInfo s_taskIntAwaitMethod = GetAsyncHelpersAwaitGenericMethod(typeof(Task<>)).MakeGenericMethod(typeof(int));
     private static readonly MethodInfo s_valueTaskIntAwaitMethod = GetAsyncHelpersAwaitGenericMethod(typeof(ValueTask<>)).MakeGenericMethod(typeof(int));
+    public static bool IsRuntimeAsyncDynamicMethodSupported =>
+        TestLibrary.Utilities.IsReflectionEmitSupported && PlatformDetection.IsRuntimeAsyncSupported;
 
     [Fact]
     public static void MethodInfo_Invoke_TaskReturning()
@@ -197,45 +199,50 @@ public class Async2Reflection
 
 
     [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsReflectionEmitSupported))]
-    public static void DynamicMethod_SetImplementationFlags_RoundTripsBeforeCreateDelegate()
+    public static void DynamicMethod_SetImplementationFlags_NormalizesBeforeCreateDelegate()
     {
         DynamicMethod dynamicMethod = new DynamicMethod(
-            "DynamicMethodImplementationFlagsRoundTrip",
+            "DynamicMethodImplementationFlagsNormalization",
             typeof(int),
             Type.EmptyTypes);
 
-        Assert.Equal(
-            MethodImplAttributes.IL | MethodImplAttributes.NoInlining,
-            dynamicMethod.GetMethodImplementationFlags());
+        const MethodImplAttributes expected =
+            MethodImplAttributes.IL | MethodImplAttributes.NoInlining;
+        Assert.Equal(expected, dynamicMethod.GetMethodImplementationFlags());
 
-        const MethodImplAttributes attributes =
-            MethodImplAttributes.IL | MethodImplAttributes.NoInlining | MethodImplAttributes.NoOptimization;
-        dynamicMethod.SetImplementationFlags(attributes);
+        dynamicMethod.SetImplementationFlags(MethodImplAttributes.IL);
+        Assert.Equal(expected, dynamicMethod.GetMethodImplementationFlags());
 
-        Assert.Equal(attributes, dynamicMethod.GetMethodImplementationFlags());
+        dynamicMethod.SetImplementationFlags(MethodImplAttributes.NoInlining);
+        Assert.Equal(expected, dynamicMethod.GetMethodImplementationFlags());
+
+        ArgumentOutOfRangeException exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            dynamicMethod.SetImplementationFlags(MethodImplAttributes.NoOptimization));
+        Assert.Equal("attributes", exception.ParamName);
+        Assert.Equal(expected, dynamicMethod.GetMethodImplementationFlags());
     }
 
-    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsReflectionEmitSupported))]
-    public static void DynamicMethod_SetImplementationFlags_CustomAttributesReflectFlags()
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
+    public static void DynamicMethod_SetImplementationFlags_CustomAttributesReflectEffectiveFlags()
     {
         DynamicMethod dynamicMethod = new DynamicMethod(
             "DynamicMethodImplementationFlagsCustomAttributes",
             typeof(Task),
             Type.EmptyTypes);
 
-        const MethodImplAttributes attributes =
+        dynamicMethod.SetImplementationFlags(MethodImplAttributes.Async);
+        const MethodImplAttributes expected =
             MethodImplAttributes.IL | MethodImplAttributes.NoInlining | MethodImplAttributes.Async;
-        dynamicMethod.SetImplementationFlags(attributes);
 
         var typedAttribute = Assert.Single(dynamicMethod.GetCustomAttributes(typeof(MethodImplAttribute), inherit: false));
-        Assert.Equal((MethodImplOptions)attributes, Assert.IsType<MethodImplAttribute>(typedAttribute).Value);
+        Assert.Equal((MethodImplOptions)expected, Assert.IsType<MethodImplAttribute>(typedAttribute).Value);
 
         var attribute = Assert.Single(dynamicMethod.GetCustomAttributes(inherit: false));
-        Assert.Equal((MethodImplOptions)attributes, Assert.IsType<MethodImplAttribute>(attribute).Value);
+        Assert.Equal((MethodImplOptions)expected, Assert.IsType<MethodImplAttribute>(attribute).Value);
         Assert.True(dynamicMethod.IsDefined(typeof(MethodImplAttribute), inherit: false));
     }
 
-    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsReflectionEmitSupported))]
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
     public static async Task DynamicMethod_SetImplementationFlags_AsyncOnlyFlag()
     {
         DynamicMethod dynamicMethod = new DynamicMethod(
@@ -246,13 +253,15 @@ public class Async2Reflection
         dynamicMethod.SetImplementationFlags(MethodImplAttributes.Async);
         EmitAwaitInt32Add(dynamicMethod.GetILGenerator(), typeof(Task<>), 1);
 
-        Assert.Equal(MethodImplAttributes.Async, dynamicMethod.GetMethodImplementationFlags());
+        Assert.Equal(
+            MethodImplAttributes.IL | MethodImplAttributes.NoInlining | MethodImplAttributes.Async,
+            dynamicMethod.GetMethodImplementationFlags());
 
         var del = dynamicMethod.CreateDelegate<Func<Task<int>, Task<int>>>();
         Assert.Equal(42, await del(Task.FromResult(41)));
     }
 
-    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsReflectionEmitSupported))]
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
     public static async Task DynamicMethod_SetImplementationFlags_Async()
     {
         DynamicMethod dynamicMethod = CreateTaskIntAddOneAsyncDynamicMethod("DynamicAsyncMethod");
@@ -267,7 +276,7 @@ public class Async2Reflection
         Assert.Equal(42, await result);
     }
 
-    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsReflectionEmitSupported))]
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
     public static async Task DynamicMethod_SetImplementationFlags_Async_CreateDelegateByType()
     {
         DynamicMethod dynamicMethod = CreateTaskIntAddOneAsyncDynamicMethod("DynamicAsyncCreateDelegateByTypeMethod");
@@ -278,7 +287,7 @@ public class Async2Reflection
         Assert.Equal(42, await typedDelegate(Task.FromResult(41)));
     }
 
-    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsReflectionEmitSupported))]
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
     public static async Task DynamicMethod_SetImplementationFlags_Async_Invoke()
     {
         DynamicMethod dynamicMethod = CreateTaskIntAddOneAsyncDynamicMethod("DynamicAsyncInvokeMethod");
@@ -292,7 +301,7 @@ public class Async2Reflection
         Assert.Equal(42, await result);
     }
 
-    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsReflectionEmitSupported))]
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
     public static async Task DynamicMethod_SetImplementationFlags_Async_ModuleAndOwnerConstructors()
     {
         DynamicMethod moduleMethod = CreateTaskIntAddOneAsyncDynamicMethod(
@@ -309,7 +318,7 @@ public class Async2Reflection
         Assert.Equal(42, await ownerDelegate(Task.FromResult(41)));
     }
 
-    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsReflectionEmitSupported))]
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
     public static async Task DynamicMethod_SetImplementationFlags_Async_ValueTask()
     {
         DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
@@ -328,7 +337,7 @@ public class Async2Reflection
         Assert.Equal(42, await result);
     }
 
-    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsReflectionEmitSupported))]
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
     public static async Task DynamicMethod_SetImplementationFlags_Async_NonGenericTask()
     {
         DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
@@ -351,7 +360,7 @@ public class Async2Reflection
         await result;
     }
 
-    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsReflectionEmitSupported))]
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
     public static async Task DynamicMethod_SetImplementationFlags_Async_NonGenericValueTask()
     {
         DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
@@ -374,7 +383,7 @@ public class Async2Reflection
         await result;
     }
 
-    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsReflectionEmitSupported))]
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
     public static async Task DynamicMethod_SetImplementationFlags_Async_DynamicILInfo()
     {
         DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
@@ -412,7 +421,7 @@ public class Async2Reflection
         Assert.Equal(42, await result);
     }
 
-    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsReflectionEmitSupported))]
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
     public static void DynamicMethod_SetImplementationFlags_Async_CompletesSynchronouslyWhenAwaitCompletes()
     {
         DynamicMethod dynamicMethod = CreateTaskIntAddOneAsyncDynamicMethod("DynamicAsyncCompletedAwaitMethod");
@@ -424,7 +433,7 @@ public class Async2Reflection
         Assert.Equal(42, result.Result);
     }
 
-    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsReflectionEmitSupported))]
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
     public static async Task DynamicMethod_SetImplementationFlags_Async_MultipleAwaits()
     {
         DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
@@ -456,7 +465,7 @@ public class Async2Reflection
         Assert.Equal(42, await result);
     }
 
-    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsReflectionEmitSupported))]
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
     public static async Task DynamicMethod_SetImplementationFlags_Async_AwaitsDynamicAsyncMethod()
     {
         DynamicMethod calleeMethod = CreateTaskIntAddOneAsyncDynamicMethod("DynamicAsyncCalleeMethod");
@@ -486,7 +495,7 @@ public class Async2Reflection
         GC.KeepAlive(calleeDelegate);
     }
 
-    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsReflectionEmitSupported))]
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
     public static async Task DynamicMethod_SetImplementationFlags_Async_PropagatesAwaitException()
     {
         DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
@@ -505,7 +514,7 @@ public class Async2Reflection
         Assert.Same(exception, actual);
     }
 
-    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsReflectionEmitSupported))]
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
     public static async Task DynamicMethod_SetImplementationFlags_Async_PropagatesAwaitCancellation()
     {
         DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
@@ -523,7 +532,7 @@ public class Async2Reflection
         Assert.True(result.IsCanceled);
     }
 
-    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsReflectionEmitSupported))]
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
     public static void DynamicMethod_SetImplementationFlags_Async_RequiresTaskLikeReturnType()
     {
         DynamicMethod dynamicMethod = new DynamicMethod(
