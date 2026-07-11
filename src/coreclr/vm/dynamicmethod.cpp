@@ -84,6 +84,8 @@ void DynamicMethodTable::CreateDynamicMethodTable(DynamicMethodTable **ppLocatio
     pDynMT->m_pDomain = pDomain;
     pDynMT->m_NextMethodRid = 0;
     pDynMT->m_MaxMethodRid = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_DynamicMethodMaxRid);
+    pDynMT->m_Used = 0;
+    pDynMT->m_MaxUsedDescriptors = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_DynamicMethodMaxUsedDescriptors);
     if (pDynMT->m_MaxMethodRid > MaxMethodRid)
         pDynMT->m_MaxMethodRid = MaxMethodRid;
     pDynMT->MakeMethodTable(&amt);
@@ -238,13 +240,14 @@ DynamicMethodDesc* DynamicMethodTable::GetFreeDynamicMethod()
     {
         {
             LockHolder lh(this);
+            if (m_MaxUsedDescriptors != 0 && m_Used >= m_MaxUsedDescriptors)
+                COMPlusThrowOM();
+
             pNewMD = m_DynamicMethodList;
             if (pNewMD)
             {
                 m_DynamicMethodList = pNewMD->GetLCGMethodResolver()->GetNextFreeDynamicMethodDesc();
-#ifdef _DEBUG
                 m_Used++;
-#endif
                 break;
             }
         }
@@ -274,7 +277,7 @@ void DynamicMethodTable::InitializeDynamicMethodDesc(DynamicMethodDesc* pNewMD, 
     CONTRACT_END;
 
     // Reset the method desc into pristine state
-    LOG((LF_BCL, LL_INFO1000, "Level3 - DynamicMethod obtained {0x%p} (used %d)\n", pNewMD, m_Used));
+    LOG((LF_BCL, LL_INFO1000, "Level3 - DynamicMethod obtained {0x%p}\n", pNewMD));
 
     pNewMD->SetStoredMethodSig((PCCOR_SIGNATURE)psig, sigSize);
     pNewMD->m_pszMethodName = name;
@@ -383,14 +386,13 @@ void DynamicMethodTable::AddToFreeList(DynamicMethodDesc *pMethod)
     }
     CONTRACTL_END;
 
-    LOG((LF_BCL, LL_INFO10000, "Level4 - Returning DynamicMethod to free list {%p} (used %d)\n", pMethod, m_Used));
+    LOG((LF_BCL, LL_INFO10000, "Level4 - Returning DynamicMethod to free list {%p}\n", pMethod));
     {
         LockHolder lh(this);
         pMethod->GetLCGMethodResolver()->SetNextFreeDynamicMethod(m_DynamicMethodList);
         m_DynamicMethodList = pMethod;
-#ifdef _DEBUG
+        _ASSERTE(m_Used > 0);
         m_Used--;
-#endif
     }
 }
 

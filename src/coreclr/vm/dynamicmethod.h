@@ -263,6 +263,8 @@ private:
 
     DWORD m_NextMethodRid;
     DWORD m_MaxMethodRid;
+    DWORD m_Used;
+    DWORD m_MaxUsedDescriptors;
     MethodTable *m_pMethodTable;
     Module *m_Module;
     AppDomain *m_pDomain;
@@ -293,10 +295,6 @@ public:
 
 #endif // !DACCESS_COMPILE
 
-#ifdef _DEBUG
-public:
-    DWORD m_Used;
-#endif
 
 };  // class DynamicMethodTable
 
