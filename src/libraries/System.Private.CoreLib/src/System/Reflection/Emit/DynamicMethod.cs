@@ -7,7 +7,6 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
 using System.Text;
-using System.Threading.Tasks;
 
 namespace System.Reflection.Emit
 {
@@ -24,7 +23,6 @@ namespace System.Reflection.Emit
         private const MethodImplAttributes DefaultMethodImplAttributes = MethodImplAttributes.IL | MethodImplAttributes.NoInlining;
         private const MethodImplAttributes SupportedMethodImplAttributes = MethodImplAttributes.NoInlining | MethodImplAttributes.Async;
 
-        private MethodImplAttributes _methodImplFlags;
 
         //
         // class initialization (ctor and init)
@@ -295,7 +293,6 @@ namespace System.Reflection.Emit
             _name = name;
             _attributes = attributes;
             _callingConvention = callingConvention;
-            _methodImplFlags = DefaultMethodImplAttributes;
         }
 
         //
@@ -347,47 +344,11 @@ namespace System.Reflection.Emit
             if ((attributes & ~SupportedMethodImplAttributes) != 0)
                 throw new ArgumentOutOfRangeException(nameof(attributes));
 
-#if MONO
-            if ((attributes & MethodImplAttributes.Async) != 0)
-                throw new PlatformNotSupportedException(SR.PlatformNotSupported_DynamicMethodAsync);
-#endif
-
-            _methodImplFlags = DefaultMethodImplAttributes | (attributes & MethodImplAttributes.Async);
+            SetImplementationFlagsCore(attributes);
         }
 
-        public override MethodImplAttributes GetMethodImplementationFlags() => _methodImplFlags;
+        public override MethodImplAttributes GetMethodImplementationFlags() => GetMethodImplementationFlagsCore();
 
-        internal bool IsRuntimeAsync => (_methodImplFlags & MethodImplAttributes.Async) != 0;
-
-        internal byte[] GetRuntimeAsyncMethodSignature(out bool isValueTask)
-        {
-            isValueTask = false;
-            if (!IsRuntimeAsync)
-                return Array.Empty<byte>();
-
-            Type bodyReturnType = GetRuntimeAsyncBodyReturnType(_returnType, out isValueTask);
-            return SignatureHelper.GetMethodSigHelper(
-                null, CallingConvention, bodyReturnType, null, null, _parameterTypes, null, null).GetSignature(true);
-        }
-
-        private static Type GetRuntimeAsyncBodyReturnType(Type returnType, out bool isValueTask)
-        {
-            isValueTask = returnType == typeof(ValueTask);
-            if (returnType == typeof(Task) || isValueTask)
-                return typeof(void);
-
-            if (returnType.IsGenericType)
-            {
-                Type genericDefinition = returnType.GetGenericTypeDefinition();
-                if (genericDefinition == typeof(Task<>) || genericDefinition == typeof(ValueTask<>))
-                {
-                    isValueTask = genericDefinition == typeof(ValueTask<>);
-                    return returnType.GetGenericArguments()[0];
-                }
-            }
-
-            throw new NotSupportedException(SR.NotSupported_DynamicMethodAsyncReturnType);
-        }
 
         public override bool IsSecurityCritical => true;
 
