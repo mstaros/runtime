@@ -267,6 +267,9 @@ private:
     DWORD m_MaxUsedDescriptors;
     DWORD m_ConstructionFailureStages;
     bool m_ConstructionFailureStagesInitialized;
+#ifdef FEATURE_PORTABLE_ENTRYPOINTS
+    bool m_PortableEntrypointCleanupTest;
+#endif
     MethodTable *m_pMethodTable;
     Module *m_Module;
     AppDomain *m_pDomain;

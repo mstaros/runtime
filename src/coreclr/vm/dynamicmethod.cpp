@@ -89,6 +89,17 @@ void DynamicMethodTable::CreateDynamicMethodTable(DynamicMethodTable **ppLocatio
     pDynMT->m_MaxUsedDescriptors = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_DynamicMethodMaxUsedDescriptors);
     pDynMT->m_ConstructionFailureStages = 0;
     pDynMT->m_ConstructionFailureStagesInitialized = false;
+#ifdef FEATURE_PORTABLE_ENTRYPOINTS
+    // Test-only: simulate pending portable-entrypoint state on both pair descriptors and
+    // make stale state observable when those descriptors are checked out again.
+    CLRConfigNoCache portableEntrypointCleanupTest =
+        CLRConfigNoCache::Get("DynamicMethodPortableEntrypointCleanupTest");
+    DWORD portableEntrypointCleanupTestEnabled = 0;
+    pDynMT->m_PortableEntrypointCleanupTest =
+        portableEntrypointCleanupTest.IsSet() &&
+        portableEntrypointCleanupTest.TryAsInteger(10, portableEntrypointCleanupTestEnabled) &&
+        portableEntrypointCleanupTestEnabled != 0;
+#endif // FEATURE_PORTABLE_ENTRYPOINTS
     if (pDynMT->m_MaxMethodRid > MaxMethodRid)
         pDynMT->m_MaxMethodRid = MaxMethodRid;
     pDynMT->MakeMethodTable(&amt);
@@ -249,6 +260,15 @@ DynamicMethodDesc* DynamicMethodTable::GetFreeDynamicMethod()
             pNewMD = m_DynamicMethodList;
             if (pNewMD)
             {
+#ifdef FEATURE_PORTABLE_ENTRYPOINTS
+                // A finalized descriptor must have been removed from pending resolution before reuse.
+                if (m_PortableEntrypointCleanupTest &&
+                    pNewMD->IsPendingThunkResolution())
+                {
+                    COMPlusThrow(kInvalidOperationException);
+                }
+#endif // FEATURE_PORTABLE_ENTRYPOINTS
+
                 m_DynamicMethodList = pNewMD->GetLCGMethodResolver()->GetNextFreeDynamicMethodDesc();
                 m_Used++;
                 break;
@@ -370,6 +390,17 @@ DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSiz
     {
         InitializeDynamicMethodDesc(pNewMD, psig, sigSize, name, memberDef, AsyncMethodFlags::None, Signature());
     }
+
+#ifdef FEATURE_PORTABLE_ENTRYPOINTS
+    // The test sets only the descriptor flags. Normal finalization must clear both flags
+    // before either descriptor is returned to and checked out from the free list.
+    if (isRuntimeAsync &&
+        m_PortableEntrypointCleanupTest)
+    {
+        pNewMD->SetPendingThunkResolution(true);
+        pILMD->SetPendingThunkResolution(true);
+    }
+#endif // FEATURE_PORTABLE_ENTRYPOINTS
 
     if (ppILMethod != NULL)
         *ppILMethod = pILMD;

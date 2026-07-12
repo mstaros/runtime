@@ -1,97 +1,132 @@
 # Runtime Async Dynamic Methods
 
-Status: draft design note for issue #118074.
+Status: implemented design for issue #118074.
 
 ## Summary
 
-Runtime async methods let valid async-shaped IL be JITed as an async state machine when the method carries the runtime async method implementation flag. Static IL producers can emit methods with that flag, but `DynamicMethod` currently does not expose a way to customize its method implementation flags. That prevents assemblyless dynamic methods from participating in the same runtime async path.
+`DynamicMethod` can opt into runtime async by setting `MethodImplAttributes.Async` before the method is baked. The generated method remains assemblyless from the caller's perspective, while CoreCLR represents it as a paired ordinary Task/ValueTask-returning facade and an async-call body descriptor. The JIT applies the existing runtime-async transformation to the emitted IL; `DynamicMethod` does not synthesize a C#-style state machine.
 
-This note describes the intended support for `MethodImplAttributes.Async` on `DynamicMethod`.
-
-## Motivation
-
-`DynamicMethod` is the natural Reflection.Emit primitive for in-process code generation when the generated method does not need an owning assembly, metadata table entry, or collectible assembly lifetime. Runtime async currently cannot be enabled for such methods because dynamic methods report fixed implementation flags, effectively `IL | NoInlining`.
-
-That limitation forces advanced IL generators to choose between less desirable designs:
-
-- emit dynamic assemblies only so method implementation flags can be represented;
-- generate a custom async state machine in IL;
-- avoid runtime async for generated code.
-
-Supporting runtime async directly on `DynamicMethod` keeps the generated method assemblyless while allowing the JIT and runtime async machinery to own the async transformation.
-
-## Goals
-
-- Allow a `DynamicMethod` to carry `MethodImplAttributes.Async`.
-- Preserve the existing default behavior for dynamic methods that do not request runtime async.
-- Allow async-aware callers to call the async-call entrypoint directly when the target is async capable.
-- Keep non-async callers able to use the normal task-returning entrypoint.
-- Require IL generators to emit the same valid async-shaped IL required for non-dynamic runtime async methods.
-
-## Non-goals
-
-- Do not make arbitrary dynamic method IL become async automatically.
-- Do not add C# compiler support in this change.
-- Do not require generated dynamic methods to live in emitted assemblies.
-- Do not define a general-purpose high-level async IL builder API.
-
-## Proposed API shape
-
-The core requirement is a way to set method implementation flags before the dynamic method is completed and JITed.
-
-Possible API shapes include:
+## Public API and flag contract
 
 ```csharp
 public sealed class DynamicMethod : MethodInfo
 {
-    public void SetMethodImplementationFlags(MethodImplAttributes attributes);
+    public void SetImplementationFlags(MethodImplAttributes attributes);
 }
 ```
 
-or a constructor overload/factory option that accepts `MethodImplAttributes`.
+The effective default is `MethodImplAttributes.IL | MethodImplAttributes.NoInlining`.
 
-The API should reject changes after the method has been baked, associated with a delegate, or otherwise used for invocation. That mirrors the existing model where a dynamic method's signature and IL are configured before use.
+`SetImplementationFlags` accepts the existing no-op representations of `IL` and `NoInlining`, plus the optional `Async` bit. The effective value is normalized to `IL | NoInlining`, with `Async` added when requested. Every other nonzero implementation bit is rejected with `ArgumentOutOfRangeException` rather than being stored without effect.
 
-The default should remain compatible with existing behavior. A dynamic method that does not opt into runtime async should continue to report the existing implementation flags.
+The method implementation flags become immutable when the dynamic method is baked. Calling the setter after delegate creation, invocation, or another operation that creates the runtime method descriptor throws `InvalidOperationException` before validating the requested bits.
 
-## Runtime behavior
+`GetMethodImplementationFlags`, `MethodImplAttribute` reflection, and `IsDefined` report the effective normalized flags.
 
-When a dynamic method carries `MethodImplAttributes.Async`, the runtime treats it as an async-capable method in the same sense as a non-dynamic runtime async method:
+## Valid runtime-async signatures
 
-- the JIT sees the method as runtime async capable;
-- the method has the async call convention used by runtime async;
-- async callers can call the async-call entrypoint directly;
-- non-async callers can use the task-returning entrypoint or thunk;
-- awaits inside the async method can be optimized into direct async calls when the awaited method is also async capable.
+A runtime-async dynamic method must return one of:
 
-The dynamic method remains assemblyless. The support is about preserving method implementation flags and passing them through the existing runtime async recognition path, not about giving the dynamic method a normal metadata owner.
+- `Task`
+- `ValueTask`
+- `Task<T>`
+- `ValueTask<T>`
+
+The async body signature is derived from the public signature:
+
+- `Task` and `ValueTask` become `void`;
+- `Task<T>` and `ValueTask<T>` become `T`;
+- parameters and calling convention are preserved.
+
+Validation occurs when the runtime descriptor is requested. An `Async` dynamic method with another return type fails with `NotSupportedException`.
+
+## Runtime representation
+
+A runtime-async dynamic method is represented by two `DynamicMethodDesc` instances in the module's dynamic method table:
+
+1. **Ordinary facade** — keeps the public Task/ValueTask-returning signature and is marked `ReturnsTaskOrValueTask | Thunk`.
+2. **Async body** — uses the unwrapped return signature and is marked `AsyncCall | IsAsyncVariant`, with `IsAsyncVariantForValueTask` when applicable.
+
+The pair shares one synthetic `mdMethodDef` token and one module. The token does not name a metadata row; it is a bounded identity used by the existing ordinary/async variant lookup. Synthetic RIDs are allocated under the dynamic-method-table lock and are capped at the 24-bit MethodDef RID limit. Exhaustion fails with `OverflowException` before descriptor checkout, wraparound, or collision. Ordinary non-async dynamic methods continue to use `mdMethodDefNil`.
+
+The emitted IL and managed resolver belong to the async body. The ordinary facade receives a separate resolver handle because either descriptor may be queried or JITed independently, but the pair represents one managed `DynamicMethod` lifetime.
+
+## JIT and ABI behavior
+
+Variant lookup uses the shared module/token identity plus `AsyncVariantLookup`. The ordinary facade's synthetic thunk calls the async body using the runtime-async calling convention. When the async body is compiled, the EE supplies the emitted dynamic IL through its resolver and sets the runtime-async method options expected by the JIT.
+
+The runtime-async ABI adds the continuation input/output used by suspension and resumption. Non-async callers enter through the ordinary Task/ValueTask facade. Async-aware callers can resolve and call the async body directly. Await recognition, context handling, continuation layout, exception propagation, and return-value transport remain the responsibilities described by the general runtime-async specification and code-generator contract.
+
+## Construction and publication
+
+Descriptor checkout, signatures, names, resolver handles, reflection stub allocation, and collectible-loader ownership are exception-safe.
+
+Construction keeps ownership in native holders until every throwing allocation completes. The descriptors are returned to the free list on failure, native buffers remain owned by their array holders, and long-weak handles remain owned by handle holders. Only after successful construction are the buffers, handles, and descriptors published to the managed method object.
+
+A runtime-async pair acquires one collectible `LoaderAllocator` reference because it represents one managed `DynamicMethod`, not two independently collectible methods.
+
+## Destruction and recycling
+
+Finalization treats the pair as one ownership unit while retiring both descriptors:
+
+1. discover the paired descriptor without creating a new associate;
+2. under `FEATURE_PORTABLE_ENTRYPOINTS`, clear pending thunk-resolution state for both descriptors before recycling;
+3. emit ETW/EventPipe destruction and profiler unload notifications for both descriptors;
+4. retire code-heap allocations for both resolvers;
+5. release both names and signatures;
+6. destroy both resolvers and return both descriptors to the free list;
+7. release the single collectible-loader reference.
+
+If code-heap retirement cannot complete immediately, destruction is deferred and retried by the finalizer thread. Lifecycle notifications are emitted once, before the retryable native cleanup phase.
+
+## Platform behavior
+
+CoreCLR implements runtime-async `DynamicMethod` support when runtime async and Reflection.Emit are available.
+
+Mono supports `DynamicMethod` but not this runtime-async path, so setting `Async` throws `PlatformNotSupportedException` and leaves the effective flags unchanged. NativeAOT does not support creating `DynamicMethod` and retains its existing platform-not-supported behavior.
+
+The method is assemblyless in the Reflection.Emit sense: callers do not create or retain a dynamic assembly. Internally the descriptor still belongs to a runtime module. That module and its CoreLib provide the runtime-async capability boundary required by the general specification; no synthetic user-visible metadata type or assembly is introduced.
 
 ## IL contract
 
-The IL generator is responsible for emitting valid runtime async IL. The runtime should not attempt to infer or repair async shape from arbitrary IL.
+The IL producer must emit valid runtime-async IL. The runtime does not infer async intent from arbitrary IL and does not repair invalid stack, await, exception-region, byref, or suspension shapes. Invalid input fails through the same import, validation, JIT, or execution paths as invalid metadata-backed runtime-async methods.
 
-Invalid IL should fail through the same validation, verification, JIT, or runtime paths that apply to invalid non-dynamic runtime async methods.
+Both `ILGenerator` and `DynamicILInfo` are supported. The public method signature remains Task/ValueTask-returning even though the emitted body follows the unwrapped runtime-async return convention.
 
 ## Reflection behavior
 
-`DynamicMethod.GetMethodImplementationFlags()` should reflect the configured implementation flags. Existing callers that do not configure flags should continue seeing the existing defaults.
+Reflection exposes the ordinary facade. The async body descriptor is an implementation variant and is normalized back to the ordinary method by reflection lookup. `CreateDelegate`, `Invoke`, module-bound constructors, owner-bound constructors, custom-attribute queries, and direct dynamic-method calls preserve the existing `DynamicMethod` surface while using the paired runtime representation internally.
 
-Reflection over dynamic methods is already limited compared with normal methods. This feature should not require new metadata tables or a synthetic declaring type.
+## Memory cost
 
-## Test plan
+Dynamic method chunks currently allocate `AsyncMethodData` for every descriptor, including descriptors that are later used only by ordinary synchronous dynamic methods. `AsyncMethodData` contains an `AsyncMethodFlags` value and a `Signature`.
 
-Suggested coverage:
+The incremental descriptor storage is:
 
-- default `DynamicMethod` implementation flags remain unchanged;
-- a dynamic method can be configured with `MethodImplAttributes.Async`;
-- `GetMethodImplementationFlags()` reports the configured async flag;
-- a runtime async dynamic method can be invoked from a non-async caller through the task-returning path;
-- a runtime async dynamic method can await another runtime async dynamic method;
-- invalid async-shaped IL fails consistently with invalid non-dynamic runtime async IL where practical.
+- 24 bytes per descriptor on 64-bit targets;
+- 12 bytes per descriptor on 32-bit targets.
 
-## Open questions
+A runtime-async pair therefore contains 48 bytes or 24 bytes of async metadata respectively, in addition to the second descriptor, resolver, signature/name buffers, entrypoint state, and any generated code.
 
-- Should the public API allow arbitrary implementation flags or only a constrained subset relevant to dynamic methods?
-- Should the setter be named after method implementation flags, or should runtime async get a narrower opt-in API?
-- What exact exception should be thrown if flags are changed after the method is used?
-- Which tests should live in managed library tests versus CoreCLR runtime async tests?
+Chunk capacity is computed as:
+
+```text
+floor(MethodDescChunk::MaxSizeOfMethodDescs /
+      (DynamicMethodDesc base size + NonVtableSlot + NativeCodeSlot + AsyncMethodData))
+```
+
+This reduces descriptors per chunk compared with an ordinary-only layout. The current design accepts that fixed cost to keep descriptor layout uniform, variant lookup compatible with the existing MethodDesc machinery, and descriptor reuse simple. A split ordinary/async pool or sidecar allocation would add table and lifetime complexity and is not justified without workload measurements showing a material regression.
+
+## Verification ownership
+
+Managed library tests cover the public API, flag normalization, reflection behavior, bake immutability, and Mono gating. CoreCLR runtime tests cover Task and ValueTask execution, `DynamicILInfo`, multiple awaits, exceptions and cancellation, dynamic-to-dynamic awaits, RID exhaustion, construction rollback, forced finalization and pair reuse, portable-entrypoint cleanup, profiler callbacks, and EventPipe load/unload identity.
+
+Portable-entrypoint cleanup is a CoreCLR WASM-specific execution test because `FEATURE_PORTABLE_ENTRYPOINTS` is enabled for that target. Its test-only configuration marks both descriptors pending, forces pair finalization, and rejects either descriptor if it reaches the free-list checkout path with stale pending state.
+
+## Non-goals
+
+- Converting arbitrary synchronous IL into async IL.
+- Adding C# compiler support.
+- Providing a high-level async IL builder.
+- Exposing the async body descriptor through reflection.
+- Supporting implementation flags that do not have defined `DynamicMethod` execution semantics.
