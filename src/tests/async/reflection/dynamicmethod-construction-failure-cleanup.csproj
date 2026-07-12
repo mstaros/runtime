@@ -8,7 +8,5 @@
     <Compile Include="$(MSBuildProjectName).cs" />
     <CLRTestEnvironmentVariable Include="DOTNET_DynamicMethodMaxUsedDescriptors" Value="2" />
     <CLRTestEnvironmentVariable Include="DOTNET_DynamicMethodConstructionFailureStages" Value="15" />
-    <CLRTestEnvironmentVariable Include="COMPlus_DynamicMethodConstructionFailureStages" Value="15" />
-    <CLRTestEnvironmentVariable Include="COMPlus_DisableConfigCache" Value="1" />
   </ItemGroup>
 </Project>
