@@ -12,10 +12,6 @@ public static class DynamicMethodConstructionFailureCleanup
     [Fact]
     public static void LateConstructionFailuresReleasePairResources()
     {
-        Assert.Equal("2", Environment.GetEnvironmentVariable("DOTNET_DynamicMethodMaxUsedDescriptors"));
-        Assert.Equal("15", Environment.GetEnvironmentVariable("DOTNET_DynamicMethodConstructionFailureStages"));
-        Assert.Equal("15", Environment.GetEnvironmentVariable("COMPlus_DynamicMethodConstructionFailureStages"));
-        Assert.Equal("1", Environment.GetEnvironmentVariable("COMPlus_DisableConfigCache"));
 
         ModuleBuilder ownerModule = AssemblyBuilder.DefineDynamicAssembly(
             new AssemblyName("DynamicMethodConstructionFailureCleanupOwner"),

@@ -3,6 +3,7 @@
 
 #include "common.h"
 #include "dynamicmethod.h"
+#include "clrconfignocache.h"
 #include "object.h"
 #include "method.hpp"
 #include "comdelegate.h"
@@ -393,8 +394,11 @@ void DynamicMethodTable::ThrowIfConstructionFailureRequested(DWORD stage)
         LockHolder lh(this);
         if (!m_ConstructionFailureStagesInitialized)
         {
-            m_ConstructionFailureStages = CLRConfig::GetConfigValue(
-                CLRConfig::INTERNAL_DynamicMethodConstructionFailureStages);
+            CLRConfigNoCache config = CLRConfigNoCache::Get("DynamicMethodConstructionFailureStages");
+            DWORD configuredStages = 0;
+            if (config.IsSet() && config.TryAsInteger(10, configuredStages))
+                m_ConstructionFailureStages = configuredStages;
+
             m_ConstructionFailureStagesInitialized = true;
         }
 
