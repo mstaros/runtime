@@ -197,9 +197,10 @@ HRESULT DynamicMethodUnloadProfiler::EventPipeEventDelivered(
         return S_OK;
     }
 
-    EventPipeMetadataInstance metadata = GetOrAddMetadata(metadataBlob, cbMetadataBlob);
-    bool isLoad = metadata.name == WCHAR("MethodLoad") || metadata.name == WCHAR("MethodLoadVerbose");
-    bool isUnload = metadata.name == WCHAR("MethodUnload") || metadata.name == WCHAR("MethodUnloadVerbose");
+    // EventPipe metadata names are versioned (for example, MethodLoad_V2).
+    // Event IDs are stable across event versions and avoid name-shape coupling.
+    bool isLoad = eventId == 141 || eventId == 143;
+    bool isUnload = eventId == 142 || eventId == 144;
     if (!isLoad && !isUnload)
     {
         return S_OK;
@@ -272,17 +273,3 @@ String DynamicMethodUnloadProfiler::GetOrAddProviderName(EVENTPIPE_PROVIDER prov
     return iterator->second;
 }
 
-EventPipeMetadataInstance DynamicMethodUnloadProfiler::GetOrAddMetadata(
-    LPCBYTE metadataBlob,
-    ULONG cbMetadataBlob)
-{
-    std::lock_guard<std::mutex> guard(_lock);
-    auto iterator = _metadataCache.find(metadataBlob);
-    if (iterator == _metadataCache.end())
-    {
-        EventPipeMetadataReader reader;
-        iterator = _metadataCache.insert({ metadataBlob, reader.Parse(metadataBlob, cbMetadataBlob) }).first;
-    }
-
-    return iterator->second;
-}

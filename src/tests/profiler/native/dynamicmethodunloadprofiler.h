@@ -4,7 +4,6 @@
 #pragma once
 
 #include "profiler.h"
-#include "eventpipeprofiler/eventpipemetadatareader.h"
 
 #include <map>
 #include <mutex>
@@ -52,7 +51,6 @@ public:
 private:
     bool IsTargetFunction(FunctionID functionId);
     String GetOrAddProviderName(EVENTPIPE_PROVIDER provider);
-    EventPipeMetadataInstance GetOrAddMetadata(LPCBYTE metadataBlob, ULONG cbMetadataBlob);
 
     ICorProfilerInfo12* _pCorProfilerInfo12;
     EVENTPIPE_SESSION _session;
@@ -63,7 +61,6 @@ private:
     std::set<FunctionID> _eventPipeLoaded;
     std::set<FunctionID> _eventPipeUnloaded;
     std::map<EVENTPIPE_PROVIDER, String> _providerNameCache;
-    std::map<LPCBYTE, EventPipeMetadataInstance> _metadataCache;
     int _failedJitCount;
     int _eventPipeFailures;
 };
