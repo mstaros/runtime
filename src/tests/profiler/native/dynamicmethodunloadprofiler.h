@@ -4,6 +4,7 @@
 #pragma once
 
 #include "profiler.h"
+#include "eventpipeprofiler/eventpipemetadatareader.h"
 
 #include <map>
 #include <mutex>
