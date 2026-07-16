@@ -93,6 +93,21 @@ The IL producer must emit valid runtime-async IL. The runtime does not infer asy
 
 Both `ILGenerator` and `DynamicILInfo` are supported. The public method signature remains Task/ValueTask-returning even though the emitted body follows the unwrapped runtime-async return convention.
 
+## Static IL verification
+
+The metadata-backed IL verifier treats `MethodImplAttributes.Async` as semantic input. At a `ret` instruction, an async method is checked against the unwrapped public return type:
+
+- `Task` and `ValueTask` require an empty evaluation stack.
+- `Task<T>` and `ValueTask<T>` require one value assignable to `T`.
+
+A method marked `Async` with another public return type is invalid. A method without the `Async` bit retains the ordinary ECMA-335 return-stack rule and must return a value assignable to its declared return type.
+
+A live `DynamicMethod` cannot be passed directly to ILVerify. It has no metadata row or persisted PE image, and the synthetic MethodDef token used internally by the runtime is not a token in user-visible metadata. Static verification of dynamically emitted runtime-async IL therefore requires a metadata-backed verification image containing an equivalent method signature, implementation flags, local signature, exception regions, and IL body.
+
+The verification image is a surrogate for the IL producer contract. It validates that the producer emitted statically valid runtime-async IL, but it does not validate the paired `DynamicMethodDesc` representation, runtime-async JIT transformation, suspension behavior, descriptor lifetime, or reflection normalization. Those remain owned by the managed library and CoreCLR execution tests described below.
+
+Until the runtime-async contract is standardized, the verifier and runtime should be built from the same source revision. Command-line verification must use the matching framework reference set and identify `System.Private.CoreLib` as the system module. Any materialization path, including `PersistedAssemblyBuilder` or serialization of an executable `MethodBuilder` assembly, must have focused tests proving that the `Async` implementation bit and the emitted method body survive unchanged. Producers that generate helper methods, nested lambdas, local functions, iterator cores, or cleanup methods must verify the complete generated method graph rather than only the public entry method.
+
 ## Reflection behavior
 
 Reflection exposes the ordinary facade. The async body descriptor is an implementation variant and is normalized back to the ordinary method by reflection lookup. `CreateDelegate`, `Invoke`, module-bound constructors, owner-bound constructors, custom-attribute queries, and direct dynamic-method calls preserve the existing `DynamicMethod` surface while using the paired runtime representation internally.
