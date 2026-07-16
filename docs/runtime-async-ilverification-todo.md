@@ -6,7 +6,7 @@ Scope: complete and harden static IL verification for the runtime-async contract
 
 | Row | Done | Status | Todo | Comment | CommitHash |
 | ---: | :--: | --- | --- | --- | --- |
-| 1 | [x] | done | Define the static IL verification contract and ownership boundary in the implemented DynamicMethod design. | Documents the unwrapped async `ret` rule, metadata-backed surrogate requirement, runtime-versus-verifier test ownership, source-revision matching, materialization fidelity, and complete generated-method-graph coverage. | pending integration |
+| 1 | [x] | done | Define the static IL verification contract and ownership boundary in the implemented DynamicMethod design. | Documents the unwrapped async `ret` rule, metadata-backed surrogate requirement, runtime-versus-verifier test ownership, source-revision matching, materialization fidelity, and complete generated-method-graph coverage. | 3b0ddff5ce4 |
 | 2 | [ ] | open | Add focused `ILVerification` positive regressions for `Task`, `Task<T>`, `ValueTask`, and `ValueTask<T>` return shapes. | Each method must carry `MethodImplAttributes.Async` and return the corresponding unwrapped body value. | |
 | 3 | [ ] | open | Add focused negative regressions for missing `Async`, unsupported async return signatures, missing return values, extra stack values, and incompatible inner return types. | Tests should distinguish ordinary ECMA-335 return checking from the runtime-async return convention. | |
 | 4 | [ ] | open | Confirm and document that the `ILVerify` CLI and `Microsoft.ILVerification` library build from the same verifier source in this fork. | The command-line and in-process paths must not diverge in runtime-async semantics. | |
