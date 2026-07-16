@@ -34,7 +34,15 @@ namespace System.Reflection.Emit
         private bool _creating;
         private DynamicILInfo? _dynamicILInfo;
 
-        private object? _methodHandle; // unused
+        private bool IsBaked => _mhandle.Value != IntPtr.Zero;
+
+        private static void SetImplementationFlagsCore(MethodImplAttributes attributes)
+        {
+            if ((attributes & MethodImplAttributes.Async) != 0)
+                throw new PlatformNotSupportedException(SR.PlatformNotSupported_DynamicMethodAsync);
+        }
+
+        private static MethodImplAttributes GetMethodImplementationFlagsCore() => DefaultMethodImplAttributes;
 
         public sealed override Delegate CreateDelegate(Type delegateType)
         {

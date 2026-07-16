@@ -259,6 +259,17 @@ public:
 private:
     CrstExplicitInit m_Crst;
     DynamicMethodDesc *m_DynamicMethodList;
+    static constexpr DWORD MaxMethodRid = 0x00ffffff;
+
+    DWORD m_NextMethodRid;
+    DWORD m_MaxMethodRid;
+    DWORD m_Used;
+    DWORD m_MaxUsedDescriptors;
+    DWORD m_ConstructionFailureStages;
+    bool m_ConstructionFailureStagesInitialized;
+#ifdef FEATURE_PORTABLE_ENTRYPOINTS
+    bool m_PortableEntrypointCleanupTest;
+#endif
     MethodTable *m_pMethodTable;
     Module *m_Module;
     AppDomain *m_pDomain;
@@ -279,20 +290,62 @@ private:
 #ifndef DACCESS_COMPILE
     void MakeMethodTable(AllocMemTracker *pamTracker);
     void AddMethodsToList();
+    DynamicMethodDesc* GetFreeDynamicMethod();
+    void InitializeDynamicMethodDesc(DynamicMethodDesc* pNewMD, BYTE* psig, DWORD sigSize, PTR_CUTF8 name, mdMethodDef memberDef, AsyncMethodFlags asyncFlags, Signature asyncSig);
 
 public:
+    enum ConstructionFailureStage : DWORD
+    {
+        FailureAfterDescriptorInitialization = 0x1,
+        FailureAfterResolverHandle = 0x2,
+        FailureAfterThunkResolverHandle = 0x4,
+        FailureAfterStubMethodInfo = 0x8,
+    };
+
     void Destroy();
-    DynamicMethodDesc* GetDynamicMethod(BYTE *psig, DWORD sigSize, PTR_CUTF8 name);
+    DynamicMethodDesc* GetDynamicMethod(BYTE *psig, DWORD sigSize, PTR_CUTF8 name, BYTE *pAsyncSig, DWORD asyncSigSize, PTR_CUTF8 asyncName, DWORD implFlags, BOOL isAsyncValueTask, DynamicMethodDesc** ppILMethod);
+    void ThrowIfConstructionFailureRequested(DWORD stage);
     void AddToFreeList(DynamicMethodDesc *pMethod);
 
 #endif // !DACCESS_COMPILE
 
-#ifdef _DEBUG
-public:
-    DWORD m_Used;
-#endif
 
 };  // class DynamicMethodTable
+
+#ifndef DACCESS_COMPILE
+// Returns an unpublished DynamicMethodDesc to its table if construction does not complete.
+class DynamicMethodDescBackoutHolder
+{
+public:
+    DynamicMethodDescBackoutHolder(DynamicMethodTable* pDynamicMethodTable, DynamicMethodDesc* pDynamicMethod)
+        : m_pDynamicMethodTable(pDynamicMethodTable)
+        , m_pDynamicMethod(pDynamicMethod)
+    {
+        LIMITED_METHOD_CONTRACT;
+        _ASSERTE(pDynamicMethodTable != NULL);
+    }
+
+    ~DynamicMethodDescBackoutHolder()
+    {
+        WRAPPER_NO_CONTRACT;
+        if (m_pDynamicMethod != NULL)
+            m_pDynamicMethodTable->AddToFreeList(m_pDynamicMethod);
+    }
+
+    void SuppressRelease()
+    {
+        LIMITED_METHOD_CONTRACT;
+        m_pDynamicMethod = NULL;
+    }
+
+private:
+    DynamicMethodDescBackoutHolder(const DynamicMethodDescBackoutHolder&) = delete;
+    DynamicMethodDescBackoutHolder& operator=(const DynamicMethodDescBackoutHolder&) = delete;
+
+    DynamicMethodTable* m_pDynamicMethodTable;
+    DynamicMethodDesc* m_pDynamicMethod;
+};
+#endif // !DACCESS_COMPILE
 
 
 //---------------------------------------------------------------------------------------

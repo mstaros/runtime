@@ -999,6 +999,18 @@ void AsyncTransformation::Transform(BasicBlock*               block,
     }
 #endif
 
+    // Runtime async cannot suspend inside an exception handler (catch/filter/finally)
+    // region: resumption would have to branch into the middle of the handler region,
+    // and a handler invoked during exception dispatch cannot be parked mid-unwind. IL
+    // producers are required to hoist handler-body awaits into normal code (as Roslyn
+    // does). Reject the method instead of building an illegal flow graph, which asserts
+    // "Jump into the middle of handler region" in Debug and produces code that fails
+    // unpredictably at runtime in Release.
+    if (block->hasHndIndex())
+    {
+        BADCODE("Async suspension point inside an exception handler region");
+    }
+
     bool      resumeReachable = analyses.IsResumeReachable();
     VARSET_TP mutatedSinceResumption(VarSetOps::MakeCopy(m_compiler, analyses.GetMutatedSinceResumption()));
 

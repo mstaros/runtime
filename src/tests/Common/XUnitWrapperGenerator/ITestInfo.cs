@@ -49,14 +49,25 @@ public sealed class BasicTestMethod : ITestInfo
 
         TestNameExpression = displayNameExpression ?? $"$\"{externAlias}::{ContainingType}.{Method}({string.Join(", ", argumentsForName)})\"";
 
-        if (method.IsStatic)
+        string invocation = method.IsStatic
+            ? $"{externAlias}::{ContainingType}.{Method}({args})"
+            : $"obj.{Method}({args})";
+
+        if (IsTaskLike(method.ReturnType))
         {
-            _executionStatement = $"{externAlias}::{ContainingType}.{Method}({args});";
+            invocation += ".GetAwaiter().GetResult()";
         }
-        else
-        {
-            _executionStatement = $"using ({externAlias}::{ContainingType} obj = new()) obj.{Method}({args});";
-        }
+
+        _executionStatement = method.IsStatic
+            ? $"{invocation};"
+            : $"using ({externAlias}::{ContainingType} obj = new()) {invocation};";
+    }
+
+    private static bool IsTaskLike(ITypeSymbol returnType)
+    {
+        return returnType is INamedTypeSymbol namedType
+            && namedType.ContainingNamespace.ToDisplayString() == "System.Threading.Tasks"
+            && namedType.MetadataName is "Task" or "Task`1" or "ValueTask" or "ValueTask`1";
     }
 
     public string TestNameExpression { get; }

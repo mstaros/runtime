@@ -4,6 +4,7 @@ set(SOURCES
     assemblyprofiler/assemblyprofiler.cpp
     classload/classload.cpp
     dynamicjitoptimization/dynamicjitoptimization.cpp
+    dynamicmethodunloadprofiler.cpp
     eltprofiler/slowpatheltprofiler.cpp
     enumthreadsprofiler/enumthreadsprofiler.cpp
     eventpipeprofiler/eventpipereadingprofiler.cpp
