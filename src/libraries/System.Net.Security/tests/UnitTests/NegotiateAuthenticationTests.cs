@@ -8,6 +8,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net.Security;
 using System.Net.Test.Common;
+using System.Security.Authentication.ExtendedProtection;
 using System.Security.Principal;
 using System.Text;
 using System.Threading.Tasks;
@@ -19,7 +20,8 @@ namespace System.Net.Security.Tests
     public class NegotiateAuthenticationTests
     {
         // Ubuntu 24 and 26 ship with broekn gss-ntlmssp 1.2
-        private static bool UseManagedNtlm => PlatformDetection.IsUbuntu24 || PlatformDetection.IsUbuntu26 || PlatformDetection.IsOpenSUSE16;
+        // RHEL 8 ships gss-ntlmssp 1.2 built against OpenSSL 1.1 which produces broken NTLM responses
+        private static bool UseManagedNtlm => PlatformDetection.IsUbuntu24 || PlatformDetection.IsUbuntu26 || PlatformDetection.IsOpenSUSE16 || (PlatformDetection.IsRedHatFamily && !PlatformDetection.IsOpenSsl3);
         private static bool IsNtlmAvailable => UseManagedNtlm || Capability.IsNtlmInstalled() || OperatingSystem.IsAndroid() || OperatingSystem.IsTvOS();
         private static bool IsNtlmUnavailable => !IsNtlmAvailable;
 
@@ -528,6 +530,13 @@ namespace System.Net.Security.Tests
             byte[]? response = ntAuth.GetOutgoingBlob(malformed, out statusCode);
             Assert.Equal(NegotiateAuthenticationStatusCode.InvalidToken, statusCode);
             Assert.Null(response);
+        }
+
+        [Fact]
+        [PlatformSpecific(~TestPlatforms.Windows)]
+        public void ExtendedProtectionPolicy_NotSupportedOnUnix()
+        {
+            Assert.Throws<PlatformNotSupportedException>(() => new NegotiateAuthentication(new NegotiateAuthenticationServerOptions { Policy = new ExtendedProtectionPolicy(PolicyEnforcement.Always) }));
         }
     }
 }

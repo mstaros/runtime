@@ -1292,6 +1292,16 @@ namespace System
         [MethodImpl(MethodImplOptions.InternalCall)]
         internal static extern RuntimeMethodHandleInternal GetMethodFromCanonical(RuntimeMethodHandleInternal method, RuntimeType declaringType);
 
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "RuntimeMethodHandle_GetNativeCode")]
+        private static partial IntPtr GetNativeCode(RuntimeMethodHandleInternal method);
+
+        internal static IntPtr GetNativeCodeInternal(IRuntimeMethodInfo method)
+        {
+            IntPtr value = GetNativeCode(method.Value);
+            GC.KeepAlive(method);
+            return value;
+        }
+
         [MethodImpl(MethodImplOptions.InternalCall)]
         internal static extern bool IsGenericMethodDefinition(RuntimeMethodHandleInternal method);
 
@@ -1798,10 +1808,14 @@ namespace System
             string name,
             byte[] sig,
             int sigLen,
+            byte[] asyncSig,
+            int asyncSigLen,
+            MethodImplAttributes methodImplFlags,
+            Interop.BOOL isAsyncValueTask,
             ObjectHandleOnStack resolver,
             ObjectHandleOnStack result);
 
-        internal static IRuntimeMethodInfo GetDynamicMethod(RuntimeModule module, string name, byte[] sig, Resolver resolver)
+        internal static IRuntimeMethodInfo GetDynamicMethod(RuntimeModule module, string name, byte[] sig, byte[] asyncSig, MethodImplAttributes methodImplFlags, bool isAsyncValueTask, Resolver resolver)
         {
             IRuntimeMethodInfo? methodInfo = null;
             GetDynamicMethod(
@@ -1809,6 +1823,10 @@ namespace System
                 name,
                 sig,
                 sig.Length,
+                asyncSig,
+                asyncSig.Length,
+                methodImplFlags,
+                isAsyncValueTask ? Interop.BOOL.TRUE : Interop.BOOL.FALSE,
                 ObjectHandleOnStack.Create(ref resolver),
                 ObjectHandleOnStack.Create(ref methodInfo));
             return methodInfo!;

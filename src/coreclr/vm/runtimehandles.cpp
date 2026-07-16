@@ -1797,23 +1797,32 @@ extern "C" void QCALLTYPE RuntimeMethodHandle_Destroy(MethodDesc * pMethod)
     BEGIN_QCALL;
 
     DynamicMethodDesc* pDynamicMethodDesc = pMethod->AsDynamicMethodDesc();
+    DynamicMethodDesc* pPairedDynamicMethodDesc = pDynamicMethodDesc->GetPairedLCGMethodNoCreate();
 
     {
 #if defined(FEATURE_PORTABLE_ENTRYPOINTS)
         ClearPendingThunkResolutionUnderLock(pDynamicMethodDesc);
+        if (pPairedDynamicMethodDesc != NULL)
+            ClearPendingThunkResolutionUnderLock(pPairedDynamicMethodDesc);
 #endif
 
         GCX_COOP();
 
         // Destroy should be called only if the managed part is gone.
         _ASSERTE(OBJECTREFToObject(pDynamicMethodDesc->GetLCGMethodResolver()->GetManagedResolver()) == NULL);
+        _ASSERTE(pPairedDynamicMethodDesc == NULL ||
+            OBJECTREFToObject(pPairedDynamicMethodDesc->GetLCGMethodResolver()->GetManagedResolver()) == NULL);
 
-        // Fire Unload Dynamic Method Event here
+        // Fire unload notifications for every dynamic MethodDesc that is recycled below.
         ETW::MethodLog::DynamicMethodDestroyed(pMethod);
+        if (pPairedDynamicMethodDesc != NULL)
+            ETW::MethodLog::DynamicMethodDestroyed(pPairedDynamicMethodDesc);
 
 #ifdef PROFILING_SUPPORTED
         BEGIN_PROFILER_CALLBACK(CORProfilerTrackDynamicFunctionUnloads());
         (&g_profControlBlock)->DynamicMethodUnloaded((FunctionID)pMethod);
+        if (pPairedDynamicMethodDesc != NULL)
+            (&g_profControlBlock)->DynamicMethodUnloaded((FunctionID)pPairedDynamicMethodDesc);
         END_PROFILER_CALLBACK();
 #endif // PROFILING_SUPPORTED
     }
@@ -2004,6 +2013,33 @@ FCIMPL2(MethodDesc*, RuntimeMethodHandle::GetMethodFromCanonical, MethodDesc *pM
     return pMDescInCanonMT;
 }
 FCIMPLEND
+
+extern "C" PCODE QCALLTYPE RuntimeMethodHandle_GetNativeCode(MethodDesc* pMethod)
+{
+    QCALL_CONTRACT;
+
+    PCODE result = (PCODE)NULL;
+
+    BEGIN_QCALL;
+
+    _ASSERTE(pMethod != NULL);
+
+    while (pMethod->IsWrapperStub())
+    {
+        MethodDesc* pWrapped = pMethod->GetWrappedMethodDesc();
+        if (pWrapped == NULL || pWrapped == pMethod)
+        {
+            break;
+        }
+        pMethod = pWrapped;
+    }
+
+    result = GetInterpreterCodeFromEntryPointIfPresent(pMethod->GetNativeCodeAnyVersion());
+
+    END_QCALL;
+
+    return result;
+}
 
 extern "C" void QCALLTYPE RuntimeMethodHandle_GetMethodBody(MethodDesc* pMethod, QCall::TypeHandle pDeclaringType, QCall::ObjectHandleOnStack result)
 {
@@ -2424,7 +2460,7 @@ extern "C" void QCALLTYPE ModuleHandle_ResolveField(QCall::ModuleHandle pModule,
     return;
 }
 
-extern "C" void QCALLTYPE ModuleHandle_GetDynamicMethod(QCall::ModuleHandle pModule, const char* name, byte* sig, INT32 sigLen, QCall::ObjectHandleOnStack resolver, QCall::ObjectHandleOnStack result)
+extern "C" void QCALLTYPE ModuleHandle_GetDynamicMethod(QCall::ModuleHandle pModule, const char* name, byte* sig, INT32 sigLen, byte* asyncSig, INT32 asyncSigLen, DWORD implFlags, BOOL isAsyncValueTask, QCall::ObjectHandleOnStack resolver, QCall::ObjectHandleOnStack result)
 {
     CONTRACTL
     {
@@ -2445,24 +2481,76 @@ extern "C" void QCALLTYPE ModuleHandle_GetDynamicMethod(QCall::ModuleHandle pMod
     NewArrayHolder<BYTE> pSig(new BYTE[sigLen]);
     memcpy(pSig, sig, sigLen);
 
+    NewArrayHolder<char> pAsyncName(NULL);
+    NewArrayHolder<BYTE> pAsyncSig(NULL);
+    if (asyncSigLen > 0)
+    {
+        pAsyncName = new char[nameLen];
+        memcpy(pAsyncName, name, nameLen * sizeof(char));
+
+        pAsyncSig = new BYTE[asyncSigLen];
+        memcpy(pAsyncSig, asyncSig, asyncSigLen);
+    }
+
     DynamicMethodTable *pMTForDynamicMethods = pModule->GetDynamicMethodTable();
-    DynamicMethodDesc* pNewMD = pMTForDynamicMethods->GetDynamicMethod(pSig, sigLen, pName);
+    DynamicMethodDesc* pILMD = NULL;
+    DynamicMethodDesc* pNewMD = pMTForDynamicMethods->GetDynamicMethod(pSig, sigLen, pName, pAsyncSig, asyncSigLen, pAsyncName, implFlags, isAsyncValueTask, &pILMD);
     _ASSERTE(pNewMD != NULL);
-    // pNewMD now owns pSig and pName.
-    pSig.SuppressRelease();
-    pName.SuppressRelease();
+    _ASSERTE(pILMD != NULL);
+
+    DynamicMethodDescBackoutHolder newMethodBackout(pMTForDynamicMethods, pNewMD);
+    DynamicMethodDescBackoutHolder ilMethodBackout(pMTForDynamicMethods, pILMD == pNewMD ? NULL : pILMD);
+    pMTForDynamicMethods->ThrowIfConstructionFailureRequested(
+        DynamicMethodTable::FailureAfterDescriptorInitialization);
+    LoaderAllocator *pLoaderAllocator = pModule->GetLoaderAllocator();
 
     {
         GCX_COOP();
-        // create a handle to hold the resolver objectref
-        OBJECTHANDLE resolverHandle = AppDomain::GetCurrentDomain()->CreateLongWeakHandle(resolver.Get());
-        pNewMD->GetLCGMethodResolver()->SetManagedResolver(resolverHandle);
-        result.Set(pNewMD->AllocateStubMethodInfo());
-    }
+        OBJECTREF resolverObject = resolver.Get();
 
-    LoaderAllocator *pLoaderAllocator = pModule->GetLoaderAllocator();
-    if (pLoaderAllocator->IsCollectible())
-        pLoaderAllocator->AddReference();
+        // Keep handle and descriptor ownership local until every throwing allocation succeeds.
+        LongWeakHandleHolder resolverHandle(AppDomain::GetCurrentDomain()->CreateLongWeakHandle(resolverObject));
+        pMTForDynamicMethods->ThrowIfConstructionFailureRequested(
+            DynamicMethodTable::FailureAfterResolverHandle);
+
+        LongWeakHandleHolder thunkResolverHandle(pILMD != pNewMD
+            ? AppDomain::GetCurrentDomain()->CreateLongWeakHandle(resolverObject)
+            : NULL);
+        pMTForDynamicMethods->ThrowIfConstructionFailureRequested(
+            DynamicMethodTable::FailureAfterThunkResolverHandle);
+
+        REFLECTMETHODREF methodInfo = pNewMD->AllocateStubMethodInfo();
+        GCPROTECT_BEGIN(methodInfo);
+        pMTForDynamicMethods->ThrowIfConstructionFailureRequested(
+            DynamicMethodTable::FailureAfterStubMethodInfo);
+
+        // One reference owns the managed DynamicMethod lifetime. Runtime-async descriptor pairs
+        // are created and destroyed as a unit and therefore share this reference.
+        if (pLoaderAllocator->IsCollectible())
+            pLoaderAllocator->AddReference();
+
+        pILMD->GetLCGMethodResolver()->SetManagedResolver(resolverHandle.GetValue());
+        resolverHandle.SuppressRelease();
+        if (pILMD != pNewMD)
+        {
+            pNewMD->GetLCGMethodResolver()->SetManagedResolver(thunkResolverHandle.GetValue());
+            thunkResolverHandle.SuppressRelease();
+        }
+
+        // Transfer native buffer and descriptor ownership only after construction is complete.
+        pSig.SuppressRelease();
+        pName.SuppressRelease();
+        if (pILMD != pNewMD)
+        {
+            pAsyncSig.SuppressRelease();
+            pAsyncName.SuppressRelease();
+        }
+        ilMethodBackout.SuppressRelease();
+        newMethodBackout.SuppressRelease();
+
+        result.Set(methodInfo);
+        GCPROTECT_END();
+    }
 
     END_QCALL;
 }

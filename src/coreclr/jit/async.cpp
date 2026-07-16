@@ -46,28 +46,6 @@
 #include "async.h"
 
 //------------------------------------------------------------------------
-// SetCallEntrypointForR2R:
-//   Set the entrypoint for a call when compiling for Ready-to-Run.
-//
-// Parameters:
-//   call     - The call node to set the entrypoint on.
-//   compiler - The compiler instance.
-//   handle   - The method handle to look up the entrypoint for.
-//
-static void SetCallEntrypointForR2R(GenTreeCall* call, Compiler* compiler, CORINFO_METHOD_HANDLE handle)
-{
-#ifdef FEATURE_READYTORUN
-    if (!compiler->IsReadyToRun())
-    {
-        return;
-    }
-    CORINFO_CONST_LOOKUP entryPoint;
-    compiler->info.compCompHnd->getFunctionEntryPoint(handle, &entryPoint);
-    call->setEntryPoint(entryPoint);
-#endif
-}
-
-//------------------------------------------------------------------------
 // Compiler::SaveAsyncContexts:
 //   Insert code in async methods that saves and restores contexts.
 //
@@ -189,8 +167,7 @@ PhaseStatus Compiler::SaveAsyncContexts()
     // For OSR, we did this in the tier0 method.
     if (!opts.IsOSR())
     {
-        GenTreeCall* captureCall = gtNewCallNode(CT_USER_FUNC, asyncInfo->captureContextsMethHnd, TYP_VOID);
-        SetCallEntrypointForR2R(captureCall, this, asyncInfo->captureContextsMethHnd);
+        GenTreeCall* captureCall = gtNewUserCallNode(asyncInfo->captureContextsMethHnd, TYP_VOID);
         captureCall->gtArgs.PushFront(this,
                                       NewCallArg::Primitive(gtNewLclAddrNode(lvaAsyncSynchronizationContextVar, 0)));
         captureCall->gtArgs.PushFront(this, NewCallArg::Primitive(gtNewLclAddrNode(lvaAsyncExecutionContextVar, 0)));
@@ -225,8 +202,7 @@ PhaseStatus Compiler::SaveAsyncContexts()
         resumed               = gtNewOperNode(GT_NE, TYP_INT, continuation, null);
     }
 
-    GenTreeCall* restoreCall = gtNewCallNode(CT_USER_FUNC, asyncInfo->restoreContextsMethHnd, TYP_VOID);
-    SetCallEntrypointForR2R(restoreCall, this, asyncInfo->restoreContextsMethHnd);
+    GenTreeCall* restoreCall = gtNewUserCallNode(asyncInfo->restoreContextsMethHnd, TYP_VOID);
     restoreCall->gtArgs.PushFront(this,
                                   NewCallArg::Primitive(gtNewLclVarNode(lvaAsyncSynchronizationContextVar, TYP_REF)));
     restoreCall->gtArgs.PushFront(this, NewCallArg::Primitive(gtNewLclVarNode(lvaAsyncExecutionContextVar, TYP_REF)));
@@ -393,8 +369,7 @@ BasicBlock* Compiler::CreateReturnBB(unsigned* mergedReturnLcl)
         resumed               = gtNewOperNode(GT_NE, TYP_INT, continuation, null);
     }
 
-    GenTreeCall* restoreCall = gtNewCallNode(CT_USER_FUNC, asyncInfo->restoreContextsMethHnd, TYP_VOID);
-    SetCallEntrypointForR2R(restoreCall, this, asyncInfo->restoreContextsMethHnd);
+    GenTreeCall* restoreCall = gtNewUserCallNode(asyncInfo->restoreContextsMethHnd, TYP_VOID);
     restoreCall->gtArgs.PushFront(this,
                                   NewCallArg::Primitive(gtNewLclVarNode(lvaAsyncSynchronizationContextVar, TYP_REF)));
     restoreCall->gtArgs.PushFront(this, NewCallArg::Primitive(gtNewLclVarNode(lvaAsyncExecutionContextVar, TYP_REF)));
@@ -998,6 +973,18 @@ void AsyncTransformation::Transform(BasicBlock*               block,
         }
     }
 #endif
+
+    // Runtime async cannot suspend inside an exception handler (catch/filter/finally)
+    // region: resumption would have to branch into the middle of the handler region,
+    // and a handler invoked during exception dispatch cannot be parked mid-unwind. IL
+    // producers are required to hoist handler-body awaits into normal code (as Roslyn
+    // does). Reject the method instead of building an illegal flow graph, which asserts
+    // "Jump into the middle of handler region" in Debug and produces code that fails
+    // unpredictably at runtime in Release.
+    if (block->hasHndIndex())
+    {
+        BADCODE("Async suspension point inside an exception handler region");
+    }
 
     bool      resumeReachable = analyses.IsResumeReachable();
     VARSET_TP mutatedSinceResumption(VarSetOps::MakeCopy(m_compiler, analyses.GetMutatedSinceResumption()));
@@ -2224,6 +2211,11 @@ void AsyncTransformation::CreateSuspension(BasicBlock*                      call
         continuationFlags |= CORINFO_CONTINUATION_CONTINUE_ON_THREAD_POOL;
     }
 
+    if (callInfo.IsValueTaskAsTask)
+    {
+        continuationFlags |= CORINFO_CONTINUATION_VALUETASK_ADAPTED_TO_TASK;
+    }
+
     newContinuation      = m_compiler->gtNewLclvNode(newContinuationVar, TYP_REF);
     unsigned flagsOffset = m_compiler->info.compCompHnd->getFieldOffset(m_asyncInfo->continuationFlagsFldHnd);
     GenTree* flagsNode   = m_compiler->gtNewIconNode((ssize_t)continuationFlags, TYP_INT);
@@ -2502,8 +2494,7 @@ void AsyncTransformation::FinishContextHandlingAndSuspension(BasicBlock*        
         GenTree*     contContextElementPlaceholder = m_compiler->gtNewZeroConNode(TYP_BYREF);
         GenTree*     flagsPlaceholder              = m_compiler->gtNewZeroConNode(TYP_BYREF);
         GenTreeCall* captureCall =
-            m_compiler->gtNewCallNode(CT_USER_FUNC, m_asyncInfo->captureContinuationContextMethHnd, TYP_VOID);
-        SetCallEntrypointForR2R(captureCall, m_compiler, m_asyncInfo->captureContinuationContextMethHnd);
+            m_compiler->gtNewUserCallNode(m_asyncInfo->captureContinuationContextMethHnd, TYP_VOID);
 
         captureCall->gtArgs.PushFront(m_compiler, NewCallArg::Primitive(flagsPlaceholder));
         captureCall->gtArgs.PushFront(m_compiler, NewCallArg::Primitive(contContextElementPlaceholder));
@@ -2547,8 +2538,7 @@ void AsyncTransformation::FinishContextHandlingAndSuspension(BasicBlock*        
     if (subLayout.NeedsExecutionContext())
     {
         GenTreeCall* captureExecContext =
-            m_compiler->gtNewCallNode(CT_USER_FUNC, m_asyncInfo->captureExecutionContextMethHnd, TYP_REF);
-        SetCallEntrypointForR2R(captureExecContext, m_compiler, m_asyncInfo->captureExecutionContextMethHnd);
+            m_compiler->gtNewUserCallNode(m_asyncInfo->captureExecutionContextMethHnd, TYP_REF);
 
         m_compiler->compCurBB = suspendBB;
         m_compiler->fgMorphTree(captureExecContext);
@@ -2704,9 +2694,7 @@ void AsyncTransformation::RestoreContexts(BasicBlock* block, GenTreeCall* call, 
     GenTree*     resumedPlaceholder     = m_compiler->gtNewIconNode(0);
     GenTree*     execContextPlaceholder = m_compiler->gtNewNull();
     GenTree*     syncContextPlaceholder = m_compiler->gtNewNull();
-    GenTreeCall* restoreCall =
-        m_compiler->gtNewCallNode(CT_USER_FUNC, m_asyncInfo->restoreContextsOnSuspensionMethHnd, TYP_VOID);
-    SetCallEntrypointForR2R(restoreCall, m_compiler, m_asyncInfo->restoreContextsOnSuspensionMethHnd);
+    GenTreeCall* restoreCall = m_compiler->gtNewUserCallNode(m_asyncInfo->restoreContextsOnSuspensionMethHnd, TYP_VOID);
 
     restoreCall->gtArgs.PushFront(m_compiler, NewCallArg::Primitive(syncContextPlaceholder));
     restoreCall->gtArgs.PushFront(m_compiler, NewCallArg::Primitive(execContextPlaceholder));
@@ -3568,8 +3556,7 @@ void AsyncTransformation::InsertFinishContextHandlingCall(BasicBlock*           
     GenTree* execContextPlaceholder     = m_compiler->gtNewNull();
     GenTree* syncContextPlaceholder     = m_compiler->gtNewNull();
 
-    GenTreeCall* finishCall = m_compiler->gtNewCallNode(CT_USER_FUNC, helperMethod, TYP_VOID);
-    SetCallEntrypointForR2R(finishCall, m_compiler, helperMethod);
+    GenTreeCall* finishCall = m_compiler->gtNewUserCallNode(helperMethod, TYP_VOID);
 
     finishCall->gtArgs.PushFront(m_compiler, NewCallArg::Primitive(syncContextPlaceholder));
     finishCall->gtArgs.PushFront(m_compiler, NewCallArg::Primitive(execContextPlaceholder));
