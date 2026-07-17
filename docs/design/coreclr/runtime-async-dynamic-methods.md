@@ -108,6 +108,8 @@ The verification image is a surrogate for the IL producer contract. It validates
 
 Until the runtime-async contract is standardized, the verifier and runtime should be built from the same source revision. Command-line verification must use the matching framework reference set and identify `System.Private.CoreLib` as the system module. Any materialization path, including `PersistedAssemblyBuilder` or serialization of an executable `MethodBuilder` assembly, must have focused tests proving that the `Async` implementation bit and the emitted method body survive unchanged. Producers that generate helper methods, nested lambdas, local functions, iterator cores, or cleanup methods must verify the complete generated method graph rather than only the public entry method.
 
+The source-built CLI/library identity, manifest format, revision-pinning rules, and consumer acceptance requirements are defined in [Runtime-Async IL Verification Artifacts](../../runtime-async-ilverification-artifacts.md).
+
 ## Reflection behavior
 
 Reflection exposes the ordinary facade. The async body descriptor is an implementation variant and is normalized back to the ordinary method by reflection lookup. `CreateDelegate`, `Invoke`, module-bound constructors, owner-bound constructors, custom-attribute queries, and direct dynamic-method calls preserve the existing `DynamicMethod` surface while using the paired runtime representation internally.
