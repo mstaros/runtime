@@ -337,9 +337,32 @@ namespace System.Runtime.CompilerServices
 #if !NATIVEAOT
         private static unsafe Continuation AllocContinuationMethod(Continuation prevContinuation, MethodTable* contMT, int keepAliveOffset, MethodDesc* method)
         {
-            LoaderAllocator loaderAllocator = RuntimeMethodHandle.GetLoaderAllocator(new RuntimeMethodHandleInternal((IntPtr)method));
+            RuntimeMethodHandleInternal handle = new RuntimeMethodHandleInternal((IntPtr)method);
+
+            // For LCG (DynamicMethod) methods the LoaderAllocator does not control lifetime: the method,
+            // its MethodDescs and its code are reclaimed once the managed Resolver becomes unreachable
+            // (see DestroyScout in DynamicILGenerator). Root the Resolver itself so a suspended
+            // continuation keeps the method alive.
+            object? keepAlive;
+            if (RuntimeMethodHandle.IsDynamicMethod(handle))
+            {
+                keepAlive = RuntimeMethodHandle.GetResolver(handle);
+                if (keepAlive == null)
+                {
+                    // The resolver's long-weak handle is already cleared: the resolver was collected
+                    // before this first suspension could root it, so the method's code can be
+                    // reclaimed as soon as the method leaves the stack. Suspending would make
+                    // resumption a use-after-free; fail deterministically at the await point instead.
+                    throw new InvalidOperationException("The DynamicMethod's resolver was collected before the method's first suspension; the method cannot be suspended.");
+                }
+            }
+            else
+            {
+                keepAlive = RuntimeMethodHandle.GetLoaderAllocator(handle);
+            }
+
             Continuation newContinuation = (Continuation)RuntimeTypeHandle.InternalAllocNoChecks(contMT);
-            Unsafe.As<byte, object?>(ref Unsafe.Add(ref RuntimeHelpers.GetRawData(newContinuation), keepAliveOffset)) = loaderAllocator;
+            Unsafe.As<byte, object?>(ref Unsafe.Add(ref RuntimeHelpers.GetRawData(newContinuation), keepAliveOffset)) = keepAlive;
             prevContinuation.Next = newContinuation;
             return newContinuation;
         }
