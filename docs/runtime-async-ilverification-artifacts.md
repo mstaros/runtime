@@ -75,6 +75,12 @@ All input dependencies must be supplied explicitly. The framework references mus
 
 Consumers that require in-process verification may load the manifest-selected `library/ILVerification.dll`. They must apply the same manifest and revision checks as CLI consumers. The library is an alternative transport for the same shared verifier source, not an independently versioned contract.
 
+## Verification image materialization
+
+`PersistedAssemblyBuilder` is the authoritative runtime-owned materialization path. Focused `ILVerification.Tests` coverage emits valid and deliberately invalid runtime-async methods through `ILGenerator`, saves the PE in memory, and proves that the persisted image preserves the public signature, `MethodImplAttributes.Async`, local signature, exception region, and method body before invoking the verifier.
+
+A runnable `AssemblyBuilder` created with `AssemblyBuilderAccess.Run` or `RunAndCollect` has no framework persistence API. Serializing it requires a third-party metadata writer such as ILPack. This runtime fork does not add or endorse such a dependency, and therefore does not treat runnable-assembly serialization as an authoritative verification path. An external producer may evaluate that option independently only if it runs the same metadata, IL, and positive/negative verifier round-trip matrix. Until that proof exists for the producer's exact method shapes and serializer version, it must use `PersistedAssemblyBuilder`.
+
 ## Ownership boundary
 
 This artifact contract establishes verifier identity and transport. Metadata-backed materialization fidelity is tracked separately: a producer must still prove that its persisted verification image preserves method signatures, implementation flags, locals, exception regions, and IL bodies before verifier success is treated as evidence about its live dynamic methods.
