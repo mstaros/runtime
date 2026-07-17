@@ -12,7 +12,7 @@ the runtime revision they require. Use -AllowDirty only for local validation.
 #>
 [CmdletBinding()]
 param(
-    [string]$RuntimeRoot = $PSScriptRoot,
+    [string]$RuntimeRoot = "",
 
     [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Release",
@@ -26,6 +26,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($RuntimeRoot)) {
+    $RuntimeRoot = $PSScriptRoot
+}
 
 function Invoke-Checked {
     param(
