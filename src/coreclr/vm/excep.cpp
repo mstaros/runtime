@@ -2586,6 +2586,14 @@ void StackTraceInfo::AppendElement(OBJECTREF pThrowable, UINT_PTR currentIP, UIN
         return;
     }
 
+    // Defensive: callers never pass a NULL MethodDesc today; if one ever slipped through it
+    // would NULL-deref in GetKeepAliveObject below and the recorded frame would be unusable
+    // at materialization time. Skip it.
+    if (pFunc == NULL)
+    {
+        return;
+    }
+
     struct
     {
         StackTraceArrayProtect stackTrace;
@@ -2669,12 +2677,27 @@ void StackTraceInfo::AppendElement(OBJECTREF pThrowable, UINT_PTR currentIP, UIN
         _ASSERTE(keepAliveItemsCount == gc.stackTrace.m_pStackTraceArray.ComputeKeepAliveItemsCount());
 
         gc.keepAliveObject = GetKeepAliveObject(pFunc);
+        // Defensive: a method whose code can be destroyed (an LCG DynamicMethod or a method in
+        // a collectible assembly) must only be recorded together with its keepalive object.
+        // This fetch is the authoritative read - any earlier check would race with the GCs
+        // that GetStackTrace/EnsureStackTraceArray above can trigger. If the object is
+        // unavailable (e.g. the managed resolver of an LCG method was already collected while
+        // native destruction is still pending), recording the frame would store a MethodDesc
+        // that stack trace materialization later dereferences after destruction - skip it.
+        bool fSkipFrame = false;
         if (gc.keepAliveObject != NULL)
         {
             // The new frame to be added is a method that can be collected, so we need to update the keepAlive items count.
             keepAliveItemsCount++;
             stackTraceElem.flags |= STEF_KEEPALIVE;
         }
+        else if (pFunc->IsLCGMethod() || pFunc->GetMethodTable()->Collectible())
+        {
+            fSkipFrame = true;
+        }
+
+        if (!fSkipFrame)
+        {
 
         if (keepAliveItemsCount != 0)
         {
@@ -2711,6 +2734,7 @@ void StackTraceInfo::AppendElement(OBJECTREF pThrowable, UINT_PTR currentIP, UIN
 
         // Clear the _stackTraceString field as it no longer matches the stack trace
         gc.pThrowable->SetStackTraceString(NULL);
+        } // !fSkipFrame
     }
     EX_CATCH
     {
