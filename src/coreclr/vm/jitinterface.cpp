@@ -7630,7 +7630,8 @@ COR_ILMETHOD_DECODER* CEEInfo::getMethodInfoWorker(
                         (ftn->RequiresInstMethodTableArg() ? CORINFO_GENERICS_CTXT_FROM_METHODTABLE : 0) |
                         (ftn->RequiresInstMethodDescArg() ? CORINFO_GENERICS_CTXT_FROM_METHODDESC : 0) |
                         (ftn->RequiresAsyncContextSaveAndRestore() ? CORINFO_ASYNC_SAVE_CONTEXTS : 0) |
-                        (ilFtn != ftn ? CORINFO_ASYNC_VERSION : 0)));
+                        (ilFtn != ftn ? CORINFO_ASYNC_VERSION : 0) |
+                        (ftn->IsLCGMethod() ? CORINFO_LCG_METHOD : 0)));
 
 
     if (methInfo->options & CORINFO_GENERICS_CTXT_MASK)

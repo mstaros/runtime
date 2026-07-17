@@ -1232,6 +1232,13 @@ bool AsyncTransformation::ContinuationNeedsKeepAlive(AsyncAnalysis& analyses)
         return false;
     }
 
+    if ((m_compiler->info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0)
+    {
+        // An LCG (DynamicMethod) method is kept alive only by its managed resolver; a suspended
+        // continuation must root it, or the method and its code can be reclaimed mid-suspension.
+        return true;
+    }
+
     const unsigned GENERICS_CTXT_FROM = CORINFO_GENERICS_CTXT_FROM_METHODDESC | CORINFO_GENERICS_CTXT_FROM_METHODTABLE;
     if (((m_compiler->info.compMethodInfo->options & GENERICS_CTXT_FROM) != 0) &&
         analyses.IsLive(m_compiler->info.compTypeCtxtArg))
@@ -2262,14 +2269,27 @@ GenTreeCall* AsyncTransformation::CreateAllocContinuationCall(bool              
     if (hasKeepAlive)
     {
         assert(layout.KeepAliveOffset != UINT_MAX);
-        GenTree* handleArg = m_compiler->gtNewLclvNode(m_compiler->info.compTypeCtxtArg, TYP_I_IMPL);
         // Offset passed to function is relative to instance data.
         int keepAliveOffset = (OFFSETOF__CORINFO_Continuation__data - SIZEOF__CORINFO_Object) + layout.KeepAliveOffset;
         GenTree*        keepAliveOffsetNode = m_compiler->gtNewIconNode(keepAliveOffset);
-        CorInfoHelpFunc helperNum =
-            (m_compiler->info.compMethodInfo->options & CORINFO_GENERICS_CTXT_FROM_METHODTABLE) != 0
-                ? CORINFO_HELP_ALLOC_CONTINUATION_CLASS
-                : CORINFO_HELP_ALLOC_CONTINUATION_METHOD;
+
+        GenTree*        handleArg;
+        CorInfoHelpFunc helperNum;
+        if ((m_compiler->info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0)
+        {
+            // LCG methods have no generic context arg. The exact method is known at jit time and its
+            // code cannot outlive it, so embed the handle directly; the AllocContinuationMethod helper
+            // roots the method's managed resolver through the keepalive slot.
+            handleArg = m_compiler->gtNewIconEmbMethHndNode(m_compiler->info.compMethodHnd);
+            helperNum = CORINFO_HELP_ALLOC_CONTINUATION_METHOD;
+        }
+        else
+        {
+            handleArg = m_compiler->gtNewLclvNode(m_compiler->info.compTypeCtxtArg, TYP_I_IMPL);
+            helperNum = (m_compiler->info.compMethodInfo->options & CORINFO_GENERICS_CTXT_FROM_METHODTABLE) != 0
+                            ? CORINFO_HELP_ALLOC_CONTINUATION_CLASS
+                            : CORINFO_HELP_ALLOC_CONTINUATION_METHOD;
+        }
         return m_compiler->gtNewHelperCallNode(helperNum, TYP_REF, prevContinuation, contClassHndNode,
                                                keepAliveOffsetNode, handleArg);
     }
