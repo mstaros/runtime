@@ -6009,6 +6009,10 @@ void InterpCompiler::EmitSuspend(CorInfoType callRetType, ContinuationContextHan
     CORINFO_LOOKUP_KIND kindForAllocationContinuation;
     m_compHnd->getLocationOfThisType(m_methodHnd, &kindForAllocationContinuation);
 
+    // TODO: LCG parity with the JIT (see CORINFO_LCG_METHOD handling in jit/async.cpp): once
+    // DynamicMethod execution is wired through the interpreter, a suspending LCG method must also
+    // force needsKeepAlive and root its managed resolver in the keepalive slot; otherwise the
+    // suspended continuation can outlive the method (fatal use-after-free on resume/stack-walk).
     bool needsKeepAlive = kindForAllocationContinuation.needsRuntimeLookup && kindForAllocationContinuation.runtimeLookupKind != CORINFO_LOOKUP_THISOBJ;
 
     // Compute the number of EH clauses that overlap with this BB.
