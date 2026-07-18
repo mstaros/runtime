@@ -262,6 +262,29 @@ public class Async2Reflection
     }
 
     [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
+    public static async Task DynamicMethod_GetCurrentMethod_ReturnsPublicRuntimeAsyncIdentity()
+    {
+        DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
+            "DynamicAsyncCurrentMethod",
+            typeof(Task<MethodBase>),
+            Type.EmptyTypes);
+
+        MethodInfo getCurrentMethod = typeof(MethodBase).GetMethod(
+            nameof(MethodBase.GetCurrentMethod),
+            BindingFlags.Public | BindingFlags.Static)!;
+        ILGenerator ilGenerator = dynamicMethod.GetILGenerator();
+        ilGenerator.Emit(OpCodes.Call, getCurrentMethod);
+        ilGenerator.Emit(OpCodes.Ret);
+
+        var del = dynamicMethod.CreateDelegate<Func<Task<MethodBase>>>();
+        MethodBase currentMethod = await del();
+
+        Assert.Same(dynamicMethod, currentMethod);
+        Assert.Null(currentMethod.DeclaringType);
+        Assert.Equal("DynamicAsyncCurrentMethod", currentMethod.Name);
+    }
+
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
     public static async Task DynamicMethod_SetImplementationFlags_Async()
     {
         DynamicMethod dynamicMethod = CreateTaskIntAddOneAsyncDynamicMethod("DynamicAsyncMethod");
