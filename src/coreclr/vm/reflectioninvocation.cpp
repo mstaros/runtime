@@ -804,7 +804,25 @@ extern "C" MethodDesc* QCALLTYPE MethodBase_GetCurrentMethod(QCall::StackCrawlMa
     // is to return C<T>.m<P> and that's what LoadTypicalMethodDefinition will do for us.
 
     if (skip.pMeth != NULL)
-        pRet = skip.pMeth->LoadTypicalMethodDefinition();
+    {
+        MethodDesc* pCurrentMethod = skip.pMeth;
+
+        // Runtime-async DynamicMethods execute their user IL on a hidden async variant.
+        // Reflection must expose the ordinary paired DynamicMethod identity; the hidden
+        // variant has no independent managed DynamicMethod owner to materialize.
+        if (pCurrentMethod->IsDynamicMethod() && pCurrentMethod->IsAsyncVariantMethod())
+        {
+            MethodDesc* pOrdinaryMethod = pCurrentMethod->GetOrdinaryVariantNoCreate();
+            if (pOrdinaryMethod != NULL &&
+                pOrdinaryMethod->IsDynamicMethod() &&
+                pOrdinaryMethod->AsDynamicMethodDesc()->IsLCGMethod())
+            {
+                pCurrentMethod = pOrdinaryMethod;
+            }
+        }
+
+        pRet = pCurrentMethod->LoadTypicalMethodDefinition();
+    }
 
     END_QCALL;
 
