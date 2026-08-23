@@ -3212,6 +3212,7 @@ public:
     //
     // following implementations defined in DynamicMethod.cpp
     //
+    DynamicMethodDesc* GetPairedLCGMethodNoCreate();
     bool TryDestroy();
     friend struct ::cdac_data<DynamicMethodDesc>;
 };

@@ -305,13 +305,23 @@ extern "C" void QCALLTYPE AsyncHelpers_AddContinuationToExInternal(
     // populate exception with information from the continuation object
     EECodeInfo codeInfo((PCODE)diagnosticIP);
     _ASSERTE(codeInfo.IsValid());
-    MethodDesc* methodDesc = codeInfo.GetMethodDesc();
-    StackTraceInfo::AppendElement(
-        pException,
-        (UINT_PTR)diagnosticIP,
-        0,
-        methodDesc,
-        NULL);
+    // Defensive: if the continuation's diagnostic IP no longer maps to live code (e.g. the
+    // method was reclaimed despite the continuation keepalive machinery), skip the frame
+    // rather than recording a dangling MethodDesc that a later stack trace materialization
+    // would dereference.
+    if (codeInfo.IsValid())
+    {
+        MethodDesc* methodDesc = codeInfo.GetMethodDesc();
+        if (methodDesc != NULL)
+        {
+            StackTraceInfo::AppendElement(
+                pException,
+                (UINT_PTR)diagnosticIP,
+                0,
+                methodDesc,
+                NULL);
+        }
+    }
 
     END_QCALL;
 }
