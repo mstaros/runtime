@@ -142,6 +142,10 @@ public:
     LCGMethodResolver(DynamicMethodDesc* pDynamicMethod, DynamicMethodTable* pDynamicMethodTable)
         : m_pDynamicMethod{ pDynamicMethod }
         , m_pDynamicMethodTable{ pDynamicMethodTable }
+        , m_pRuntimeAsyncBuilderCreateMethod{}
+        , m_pRuntimeAsyncBuilderTaskGetterMethod{}
+        , m_pRuntimeAsyncBuilderSetResultMethod{}
+        , m_pRuntimeAsyncBuilderSetExceptionMethod{}
         , m_initialCodePointer{}
         , m_DynamicCodePointers{ &m_initialCodePointer }
     {
@@ -168,6 +172,19 @@ public:
     MethodDesc* GetDynamicMethod() { LIMITED_METHOD_CONTRACT; return m_pDynamicMethod; }
     OBJECTREF GetManagedResolver();
     void SetManagedResolver(OBJECTHANDLE obj) { LIMITED_METHOD_CONTRACT; m_managedResolver = obj; }
+    void SetRuntimeAsyncBuilderMethods(MethodDesc* pCreate, MethodDesc* pTaskGetter, MethodDesc* pSetResult, MethodDesc* pSetException)
+    {
+        LIMITED_METHOD_CONTRACT;
+        m_pRuntimeAsyncBuilderCreateMethod = pCreate;
+        m_pRuntimeAsyncBuilderTaskGetterMethod = pTaskGetter;
+        m_pRuntimeAsyncBuilderSetResultMethod = pSetResult;
+        m_pRuntimeAsyncBuilderSetExceptionMethod = pSetException;
+    }
+    bool HasRuntimeAsyncBuilder() const { LIMITED_METHOD_CONTRACT; return m_pRuntimeAsyncBuilderCreateMethod != NULL; }
+    MethodDesc* GetRuntimeAsyncBuilderCreateMethod() const { LIMITED_METHOD_CONTRACT; return m_pRuntimeAsyncBuilderCreateMethod; }
+    MethodDesc* GetRuntimeAsyncBuilderTaskGetterMethod() const { LIMITED_METHOD_CONTRACT; return m_pRuntimeAsyncBuilderTaskGetterMethod; }
+    MethodDesc* GetRuntimeAsyncBuilderSetResultMethod() const { LIMITED_METHOD_CONTRACT; return m_pRuntimeAsyncBuilderSetResultMethod; }
+    MethodDesc* GetRuntimeAsyncBuilderSetExceptionMethod() const { LIMITED_METHOD_CONTRACT; return m_pRuntimeAsyncBuilderSetExceptionMethod; }
     void** AllocateRecordCodePointer();
 
 private:
@@ -214,6 +231,10 @@ private:
 
     DynamicMethodDesc* m_pDynamicMethod;
     DynamicMethodTable* m_pDynamicMethodTable;
+    MethodDesc* m_pRuntimeAsyncBuilderCreateMethod;
+    MethodDesc* m_pRuntimeAsyncBuilderTaskGetterMethod;
+    MethodDesc* m_pRuntimeAsyncBuilderSetResultMethod;
+    MethodDesc* m_pRuntimeAsyncBuilderSetExceptionMethod;
     OBJECTHANDLE m_managedResolver;
     BYTE* m_Code;
     DWORD m_CodeSize;
@@ -303,7 +324,7 @@ public:
     };
 
     void Destroy();
-    DynamicMethodDesc* GetDynamicMethod(BYTE *psig, DWORD sigSize, PTR_CUTF8 name, BYTE *pAsyncSig, DWORD asyncSigSize, PTR_CUTF8 asyncName, DWORD implFlags, BOOL isAsyncValueTask, DynamicMethodDesc** ppILMethod);
+    DynamicMethodDesc* GetDynamicMethod(BYTE *psig, DWORD sigSize, PTR_CUTF8 name, BYTE *pAsyncSig, DWORD asyncSigSize, PTR_CUTF8 asyncName, DWORD implFlags, BOOL isAsyncValueTask, BOOL hasAsyncMethodBuilder, DynamicMethodDesc** ppILMethod);
     void ThrowIfConstructionFailureRequested(DWORD stage);
     void AddToFreeList(DynamicMethodDesc *pMethod);
 

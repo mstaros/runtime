@@ -2433,7 +2433,7 @@ extern "C" void QCALLTYPE ModuleHandle_ResolveField(QCall::ModuleHandle pModule,
     return;
 }
 
-extern "C" void QCALLTYPE ModuleHandle_GetDynamicMethod(QCall::ModuleHandle pModule, const char* name, byte* sig, INT32 sigLen, byte* asyncSig, INT32 asyncSigLen, DWORD implFlags, BOOL isAsyncValueTask, QCall::ObjectHandleOnStack resolver, QCall::ObjectHandleOnStack result)
+extern "C" void QCALLTYPE ModuleHandle_GetDynamicMethod(QCall::ModuleHandle pModule, const char* name, byte* sig, INT32 sigLen, byte* asyncSig, INT32 asyncSigLen, DWORD implFlags, BOOL isAsyncValueTask, MethodDesc* pBuilderCreateMethod, MethodDesc* pBuilderTaskGetterMethod, MethodDesc* pBuilderSetResultMethod, MethodDesc* pBuilderSetExceptionMethod, QCall::ObjectHandleOnStack resolver, QCall::ObjectHandleOnStack result)
 {
     CONTRACTL
     {
@@ -2467,9 +2467,27 @@ extern "C" void QCALLTYPE ModuleHandle_GetDynamicMethod(QCall::ModuleHandle pMod
 
     DynamicMethodTable *pMTForDynamicMethods = pModule->GetDynamicMethodTable();
     DynamicMethodDesc* pILMD = NULL;
-    DynamicMethodDesc* pNewMD = pMTForDynamicMethods->GetDynamicMethod(pSig, sigLen, pName, pAsyncSig, asyncSigLen, pAsyncName, implFlags, isAsyncValueTask, &pILMD);
+    BOOL hasAsyncMethodBuilder = pBuilderCreateMethod != NULL;
+    DynamicMethodDesc* pNewMD = pMTForDynamicMethods->GetDynamicMethod(pSig, sigLen, pName, pAsyncSig, asyncSigLen, pAsyncName, implFlags, isAsyncValueTask, hasAsyncMethodBuilder, &pILMD);
     _ASSERTE(pNewMD != NULL);
     _ASSERTE(pILMD != NULL);
+
+    if (hasAsyncMethodBuilder)
+    {
+        _ASSERTE(pBuilderSetResultMethod != NULL);
+        _ASSERTE(pBuilderSetExceptionMethod != NULL);
+        pNewMD->GetLCGMethodResolver()->SetRuntimeAsyncBuilderMethods(
+            pBuilderCreateMethod,
+            pBuilderTaskGetterMethod,
+            pBuilderSetResultMethod,
+            pBuilderSetExceptionMethod);
+    }
+    else
+    {
+        _ASSERTE(pBuilderTaskGetterMethod == NULL);
+        _ASSERTE(pBuilderSetResultMethod == NULL);
+        _ASSERTE(pBuilderSetExceptionMethod == NULL);
+    }
 
     DynamicMethodDescBackoutHolder newMethodBackout(pMTForDynamicMethods, pNewMD);
     DynamicMethodDescBackoutHolder ilMethodBackout(pMTForDynamicMethods, pILMD == pNewMD ? NULL : pILMD);

@@ -24,7 +24,12 @@ namespace System.Reflection.Emit
 
         internal void GetCallableMethod(RuntimeModule module, DynamicMethod dm)
         {
-            byte[] asyncMethodSignature = dm.GetRuntimeAsyncMethodSignature(out bool isRuntimeAsyncValueTask);
+            byte[] asyncMethodSignature = dm.GetRuntimeAsyncMethodSignature(
+                out bool isRuntimeAsyncValueTask,
+                out RuntimeMethodHandleInternal builderCreateMethod,
+                out RuntimeMethodHandleInternal builderTaskGetterMethod,
+                out RuntimeMethodHandleInternal builderSetResultMethod,
+                out RuntimeMethodHandleInternal builderSetExceptionMethod);
             dm._methodHandle = ModuleHandle.GetDynamicMethod(
                                           module,
                                           m_methodBuilder.Name,
@@ -32,6 +37,10 @@ namespace System.Reflection.Emit
                                           asyncMethodSignature,
                                           dm.GetMethodImplementationFlags(),
                                           isRuntimeAsyncValueTask,
+                                          builderCreateMethod,
+                                          builderTaskGetterMethod,
+                                          builderSetResultMethod,
+                                          builderSetExceptionMethod,
                                           new DynamicResolver(this));
         }
 
@@ -888,7 +897,12 @@ namespace System.Reflection.Emit
         #region Internal Methods
         internal void GetCallableMethod(RuntimeModule module, DynamicMethod dm)
         {
-            byte[] asyncMethodSignature = dm.GetRuntimeAsyncMethodSignature(out bool isRuntimeAsyncValueTask);
+            byte[] asyncMethodSignature = dm.GetRuntimeAsyncMethodSignature(
+                out bool isRuntimeAsyncValueTask,
+                out RuntimeMethodHandleInternal builderCreateMethod,
+                out RuntimeMethodHandleInternal builderTaskGetterMethod,
+                out RuntimeMethodHandleInternal builderSetResultMethod,
+                out RuntimeMethodHandleInternal builderSetExceptionMethod);
             dm._methodHandle = ModuleHandle.GetDynamicMethod(
                 module,
                 m_method.Name,
@@ -896,6 +910,10 @@ namespace System.Reflection.Emit
                 asyncMethodSignature,
                 dm.GetMethodImplementationFlags(),
                 isRuntimeAsyncValueTask,
+                builderCreateMethod,
+                builderTaskGetterMethod,
+                builderSetResultMethod,
+                builderSetExceptionMethod,
                 new DynamicResolver(this));
         }
 

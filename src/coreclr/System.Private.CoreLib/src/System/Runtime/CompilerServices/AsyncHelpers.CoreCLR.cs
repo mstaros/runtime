@@ -1302,6 +1302,109 @@ namespace System.Runtime.CompilerServices
             return result;
         }
 
+        private static void FinalizeAsyncMethodBuilderThunk(
+            ref RuntimeAsyncAwaitState state,
+            object builder)
+        {
+            Task task = FinalizeTaskReturningThunk(ref state);
+            var completion = new AsyncMethodBuilderThunkCompletion(builder, task);
+            task.GetAwaiter().UnsafeOnCompleted(completion.Complete);
+        }
+
+        private static void FinalizeAsyncMethodBuilderThunkWithResult<T>(
+            ref RuntimeAsyncAwaitState state,
+            object builder)
+        {
+            Task<T?> task = FinalizeTaskReturningThunk<T>(ref state);
+            var completion = new AsyncMethodBuilderThunkCompletion<T>(builder, task);
+            task.GetAwaiter().UnsafeOnCompleted(completion.Complete);
+        }
+
+        private sealed class AsyncMethodBuilderThunkCompletion
+        {
+            private readonly object _builder;
+            private readonly Task _task;
+            private readonly MethodInfo _setResult;
+            private readonly MethodInfo _setException;
+
+            internal AsyncMethodBuilderThunkCompletion(object builder, Task task)
+            {
+                _builder = builder;
+                _task = task;
+                Type builderType = builder.GetType();
+                _setResult = builderType.GetMethod(
+                    "SetResult",
+                    BindingFlags.Public | BindingFlags.Instance,
+                    binder: null,
+                    types: Type.EmptyTypes,
+                    modifiers: null)!;
+                _setException = builderType.GetMethod(
+                    "SetException",
+                    BindingFlags.Public | BindingFlags.Instance,
+                    binder: null,
+                    types: [typeof(Exception)],
+                    modifiers: null)!;
+            }
+
+            internal void Complete()
+            {
+                try
+                {
+                    _task.GetAwaiter().GetResult();
+                }
+                catch (Exception exception)
+                {
+                    _setException.Invoke(_builder, [exception]);
+                    return;
+                }
+
+                _setResult.Invoke(_builder, null);
+            }
+        }
+
+        private sealed class AsyncMethodBuilderThunkCompletion<T>
+        {
+            private readonly object _builder;
+            private readonly Task<T?> _task;
+            private readonly MethodInfo _setResult;
+            private readonly MethodInfo _setException;
+
+            internal AsyncMethodBuilderThunkCompletion(object builder, Task<T?> task)
+            {
+                _builder = builder;
+                _task = task;
+                Type builderType = builder.GetType();
+                _setResult = builderType.GetMethod(
+                    "SetResult",
+                    BindingFlags.Public | BindingFlags.Instance,
+                    binder: null,
+                    types: [typeof(T)],
+                    modifiers: null)!;
+                _setException = builderType.GetMethod(
+                    "SetException",
+                    BindingFlags.Public | BindingFlags.Instance,
+                    binder: null,
+                    types: [typeof(Exception)],
+                    modifiers: null)!;
+            }
+
+            internal void Complete()
+            {
+                T? result;
+                try
+                {
+                    result = _task.GetAwaiter().GetResult();
+                }
+                catch (Exception exception)
+                {
+                    _setException.Invoke(_builder, [exception]);
+                    return;
+                }
+
+                _setResult.Invoke(_builder, [result]);
+            }
+        }
+
         private static ValueTask<T?> FinalizeValueTaskReturningThunk<T>(ref RuntimeAsyncAwaitState state)
         {
             // We only come to these methods in the expensive case (already

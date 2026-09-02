@@ -20,6 +20,7 @@ namespace System.Reflection.Emit
         internal IRuntimeMethodInfo? _methodHandle;
         private bool IsBaked => _methodHandle != null;
         private MethodImplAttributes _methodImplFlags = DefaultMethodImplAttributes;
+        private MethodInfo[]? _runtimeAsyncBuilderMethods;
 
         private void SetImplementationFlagsCore(MethodImplAttributes attributes) =>
             _methodImplFlags = DefaultMethodImplAttributes | (attributes & MethodImplAttributes.Async);
@@ -28,20 +29,67 @@ namespace System.Reflection.Emit
 
         internal bool IsRuntimeAsync => (_methodImplFlags & MethodImplAttributes.Async) != 0;
 
-        internal byte[] GetRuntimeAsyncMethodSignature(out bool isValueTask)
+        internal byte[] GetRuntimeAsyncMethodSignature(
+            out bool isValueTask,
+            out RuntimeMethodHandleInternal builderCreateMethod,
+            out RuntimeMethodHandleInternal builderTaskGetterMethod,
+            out RuntimeMethodHandleInternal builderSetResultMethod,
+            out RuntimeMethodHandleInternal builderSetExceptionMethod)
         {
             isValueTask = false;
+            builderCreateMethod = RuntimeMethodHandleInternal.EmptyHandle;
+            builderTaskGetterMethod = RuntimeMethodHandleInternal.EmptyHandle;
+            builderSetResultMethod = RuntimeMethodHandleInternal.EmptyHandle;
+            builderSetExceptionMethod = RuntimeMethodHandleInternal.EmptyHandle;
+
             if (!IsRuntimeAsync)
                 return Array.Empty<byte>();
 
-            Type bodyReturnType = GetRuntimeAsyncBodyReturnType(_returnType, out isValueTask);
+            Type bodyReturnType = GetRuntimeAsyncBodyReturnType(
+                _returnType,
+                out isValueTask,
+                out MethodInfo? builderCreate,
+                out MethodInfo? builderTaskGetter,
+                out MethodInfo? builderSetResult,
+                out MethodInfo? builderSetException);
+
+            if (builderCreate != null)
+            {
+                Debug.Assert(builderSetResult != null);
+                Debug.Assert(builderSetException != null);
+
+                _runtimeAsyncBuilderMethods = builderTaskGetter == null
+                    ? [builderCreate, builderSetResult, builderSetException]
+                    : [builderCreate, builderTaskGetter, builderSetResult, builderSetException];
+
+                builderCreateMethod = new RuntimeMethodHandleInternal(builderCreate.MethodHandle.Value);
+                builderTaskGetterMethod = builderTaskGetter == null
+                    ? RuntimeMethodHandleInternal.EmptyHandle
+                    : new RuntimeMethodHandleInternal(builderTaskGetter.MethodHandle.Value);
+                builderSetResultMethod = new RuntimeMethodHandleInternal(builderSetResult.MethodHandle.Value);
+                builderSetExceptionMethod = new RuntimeMethodHandleInternal(builderSetException.MethodHandle.Value);
+            }
+
+            // Keep the reflected builder methods rooted for the lifetime of this DynamicMethod.
+            GC.KeepAlive(_runtimeAsyncBuilderMethods);
             return SignatureHelper.GetMethodSigHelper(
                 null, CallingConvention, bodyReturnType, null, null, _parameterTypes, null, null).GetSignature(true);
         }
 
-        private static Type GetRuntimeAsyncBodyReturnType(Type returnType, out bool isValueTask)
+        private static Type GetRuntimeAsyncBodyReturnType(
+            Type returnType,
+            out bool isValueTask,
+            out MethodInfo? builderCreate,
+            out MethodInfo? builderTaskGetter,
+            out MethodInfo? builderSetResult,
+            out MethodInfo? builderSetException)
         {
             isValueTask = returnType == typeof(ValueTask);
+            builderCreate = null;
+            builderTaskGetter = null;
+            builderSetResult = null;
+            builderSetException = null;
+
             if (returnType == typeof(Task) || isValueTask)
                 return typeof(void);
 
@@ -55,7 +103,135 @@ namespace System.Reflection.Emit
                 }
             }
 
-            throw new NotSupportedException(SR.NotSupported_DynamicMethodAsyncReturnType);
+            if (returnType == typeof(void))
+            {
+                return GetRuntimeAsyncBuilderBodyReturnType(
+                    typeof(AsyncVoidMethodBuilder),
+                    returnType,
+                    requireTaskProperty: false,
+                    out builderCreate,
+                    out builderTaskGetter,
+                    out builderSetResult,
+                    out builderSetException);
+            }
+
+            AsyncMethodBuilderAttribute? builderAttribute =
+                (AsyncMethodBuilderAttribute?)Attribute.GetCustomAttribute(
+                    returnType,
+                    typeof(AsyncMethodBuilderAttribute),
+                    inherit: false);
+            if (builderAttribute == null)
+                throw new NotSupportedException(SR.NotSupported_DynamicMethodAsyncReturnType);
+
+            Type builderType = builderAttribute.BuilderType;
+            if (builderType.IsGenericTypeDefinition)
+            {
+                Type[] returnTypeArguments = returnType.IsGenericType
+                    ? returnType.GetGenericArguments()
+                    : Type.EmptyTypes;
+                if (builderType.GetGenericArguments().Length != returnTypeArguments.Length)
+                    throw new NotSupportedException(SR.NotSupported_DynamicMethodAsyncReturnType);
+
+                try
+                {
+                    builderType = builderType.MakeGenericType(returnTypeArguments);
+                }
+                catch (ArgumentException)
+                {
+                    throw new NotSupportedException(SR.NotSupported_DynamicMethodAsyncReturnType);
+                }
+                catch (TypeLoadException)
+                {
+                    throw new NotSupportedException(SR.NotSupported_DynamicMethodAsyncReturnType);
+                }
+            }
+
+            if (builderType.ContainsGenericParameters || builderType.IsByRefLike)
+                throw new NotSupportedException(SR.NotSupported_DynamicMethodAsyncReturnType);
+
+            return GetRuntimeAsyncBuilderBodyReturnType(
+                builderType,
+                returnType,
+                requireTaskProperty: true,
+                out builderCreate,
+                out builderTaskGetter,
+                out builderSetResult,
+                out builderSetException);
+        }
+
+        private static Type GetRuntimeAsyncBuilderBodyReturnType(
+            Type builderType,
+            Type returnType,
+            bool requireTaskProperty,
+            out MethodInfo? builderCreate,
+            out MethodInfo? builderTaskGetter,
+            out MethodInfo? builderSetResult,
+            out MethodInfo? builderSetException)
+        {
+            const BindingFlags PublicInstance = BindingFlags.Public | BindingFlags.Instance;
+
+            builderCreate = builderType.GetMethod(
+                "Create",
+                BindingFlags.Public | BindingFlags.Static,
+                binder: null,
+                types: Type.EmptyTypes,
+                modifiers: null);
+            builderTaskGetter = requireTaskProperty
+                ? builderType.GetProperty("Task", PublicInstance)?.GetMethod
+                : null;
+            builderSetException = builderType.GetMethod(
+                "SetException",
+                PublicInstance,
+                binder: null,
+                types: [typeof(Exception)],
+                modifiers: null);
+
+            if (builderCreate == null ||
+                builderCreate.IsGenericMethod ||
+                builderCreate.ReturnType != builderType ||
+                (requireTaskProperty &&
+                    (builderTaskGetter == null ||
+                     builderTaskGetter.IsStatic ||
+                     builderTaskGetter.ReturnType != returnType)) ||
+                builderSetException == null ||
+                builderSetException.IsStatic ||
+                builderSetException.IsGenericMethod ||
+                builderSetException.ReturnType != typeof(void))
+            {
+                throw new NotSupportedException(SR.NotSupported_DynamicMethodAsyncReturnType);
+            }
+
+            builderSetResult = null;
+            foreach (MethodInfo method in builderType.GetMethods(PublicInstance))
+            {
+                if (method.Name != "SetResult" ||
+                    method.IsStatic ||
+                    method.IsGenericMethod ||
+                    method.ReturnType != typeof(void))
+                {
+                    continue;
+                }
+
+                ParameterInfo[] parameters = method.GetParameters();
+                if (parameters.Length > 1 ||
+                    (parameters.Length == 1 && parameters[0].ParameterType.IsByRef))
+                {
+                    continue;
+                }
+
+                if (builderSetResult != null)
+                    throw new NotSupportedException(SR.NotSupported_DynamicMethodAsyncReturnType);
+
+                builderSetResult = method;
+            }
+
+            if (builderSetResult == null)
+                throw new NotSupportedException(SR.NotSupported_DynamicMethodAsyncReturnType);
+
+            ParameterInfo[] setResultParameters = builderSetResult.GetParameters();
+            return setResultParameters.Length == 0
+                ? typeof(void)
+                : setResultParameters[0].ParameterType;
         }
         private RuntimeType _returnType;
         private DynamicILGenerator? _ilGenerator;

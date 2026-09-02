@@ -1802,10 +1802,25 @@ namespace System
             int asyncSigLen,
             MethodImplAttributes methodImplFlags,
             Interop.BOOL isAsyncValueTask,
+            RuntimeMethodHandleInternal builderCreateMethod,
+            RuntimeMethodHandleInternal builderTaskGetterMethod,
+            RuntimeMethodHandleInternal builderSetResultMethod,
+            RuntimeMethodHandleInternal builderSetExceptionMethod,
             ObjectHandleOnStack resolver,
             ObjectHandleOnStack result);
 
-        internal static IRuntimeMethodInfo GetDynamicMethod(RuntimeModule module, string name, byte[] sig, byte[] asyncSig, MethodImplAttributes methodImplFlags, bool isAsyncValueTask, Resolver resolver)
+        internal static IRuntimeMethodInfo GetDynamicMethod(
+            RuntimeModule module,
+            string name,
+            byte[] sig,
+            byte[] asyncSig,
+            MethodImplAttributes methodImplFlags,
+            bool isAsyncValueTask,
+            RuntimeMethodHandleInternal builderCreateMethod,
+            RuntimeMethodHandleInternal builderTaskGetterMethod,
+            RuntimeMethodHandleInternal builderSetResultMethod,
+            RuntimeMethodHandleInternal builderSetExceptionMethod,
+            Resolver resolver)
         {
             IRuntimeMethodInfo? methodInfo = null;
             GetDynamicMethod(
@@ -1817,6 +1832,10 @@ namespace System
                 asyncSig.Length,
                 methodImplFlags,
                 isAsyncValueTask ? Interop.BOOL.TRUE : Interop.BOOL.FALSE,
+                builderCreateMethod,
+                builderTaskGetterMethod,
+                builderSetResultMethod,
+                builderSetExceptionMethod,
                 ObjectHandleOnStack.Create(ref resolver),
                 ObjectHandleOnStack.Create(ref methodInfo));
             return methodInfo!;

@@ -10,6 +10,7 @@
 //
 
 #include "common.h"
+#include "dynamicmethod.h"
 
 bool MethodDesc::TryGenerateAsyncThunk(DynamicResolver** resolver, COR_ILMETHOD_DECODER** methodILDecoder)
 {
@@ -53,7 +54,13 @@ bool MethodDesc::TryGenerateAsyncThunk(DynamicResolver** resolver, COR_ILMETHOD_
 
     if (!IsAsyncMethod())
     {
-        EmitTaskReturningThunk(pAsyncOtherVariant, msig, &sl);
+        LCGMethodResolver* pLCGResolver = IsDynamicMethod()
+            ? ((DynamicMethodDesc*)this)->GetLCGMethodResolver()
+            : NULL;
+        if (pLCGResolver != NULL && pLCGResolver->HasRuntimeAsyncBuilder())
+            EmitAsyncMethodBuilderThunk(pAsyncOtherVariant, msig, &sl);
+        else
+            EmitTaskReturningThunk(pAsyncOtherVariant, msig, &sl);
     }
     else
     {
@@ -268,6 +275,180 @@ void MethodDesc::EmitTaskReturningThunk(MethodDesc* pAsyncCallVariant, MetaSig& 
 
     pCode->EmitLabel(returnTaskLabel);
     pCode->EmitLDLOC(returnTaskLocal);
+    pCode->EmitRET();
+}
+
+
+// Provided a runtime-async DynamicMethod with a non-Task task-like return,
+// emits the builder-backed public facade.
+void MethodDesc::EmitAsyncMethodBuilderThunk(MethodDesc* pAsyncCallVariant, MetaSig& thunkMsig, ILStubLinker* pSL)
+{
+    _ASSERTE(IsDynamicMethod());
+    _ASSERTE(!pAsyncCallVariant->IsAsyncThunkMethod());
+
+    LCGMethodResolver* pResolver = ((DynamicMethodDesc*)this)->GetLCGMethodResolver();
+    MethodDesc* pBuilderCreateMethod = pResolver->GetRuntimeAsyncBuilderCreateMethod();
+    MethodDesc* pBuilderTaskGetterMethod = pResolver->GetRuntimeAsyncBuilderTaskGetterMethod();
+    MethodDesc* pBuilderSetResultMethod = pResolver->GetRuntimeAsyncBuilderSetResultMethod();
+    MethodDesc* pBuilderSetExceptionMethod = pResolver->GetRuntimeAsyncBuilderSetExceptionMethod();
+
+    _ASSERTE(pBuilderCreateMethod != NULL);
+    _ASSERTE(pBuilderSetResultMethod != NULL);
+    _ASSERTE(pBuilderSetExceptionMethod != NULL);
+
+    ILCodeStream* pCode = pSL->NewCodeStream(ILStubLinker::kDispatch);
+
+    TypeHandle builderType(pBuilderCreateMethod->GetMethodTable());
+    int builderTypeToken = pCode->GetToken(builderType);
+    bool builderIsValueType = builderType.IsValueType();
+
+    DWORD builderLocal = pCode->NewLocal(LocalDesc(TypeHandle(CoreLibBinder::GetClass(CLASS__OBJECT))));
+    DWORD exceptionLocal = pCode->NewLocal(LocalDesc(TypeHandle(CoreLibBinder::GetClass(CLASS__EXCEPTION))));
+
+    TypeHandle logicalResultType;
+    DWORD logicalResultLocal = UINT_MAX;
+    if (!pAsyncCallVariant->IsVoid())
+    {
+        MetaSig asyncCallSig(pAsyncCallVariant);
+        logicalResultType = asyncCallSig.GetRetTypeHandleThrowing();
+        logicalResultLocal = pCode->NewLocal(LocalDesc(logicalResultType));
+    }
+
+    DWORD stackStateLocal = pCode->NewLocal(
+        LocalDesc(TypeHandle(CoreLibBinder::GetClass(CLASS__RUNTIME_ASYNC_STACK_STATE))));
+
+    LocalDesc refAwaitStateLocalDesc(TypeHandle(CoreLibBinder::GetClass(CLASS__RUNTIME_ASYNC_AWAIT_STATE)));
+    refAwaitStateLocalDesc.MakeByRef();
+    DWORD refAwaitStateLocal = pCode->NewLocal(refAwaitStateLocalDesc);
+
+    ILCodeLabel* suspendedLabel = pCode->NewCodeLabel();
+    ILCodeLabel* synchronousLabel = pCode->NewCodeLabel();
+    ILCodeLabel* exceptionLabel = pCode->NewCodeLabel();
+    ILCodeLabel* returnLabel = pCode->NewCodeLabel();
+    ILCodeLabel* finishedLabel = pCode->NewCodeLabel();
+
+    pCode->EmitCALL(pCode->GetToken(pBuilderCreateMethod), 0, 1);
+    if (builderIsValueType)
+        pCode->EmitBOX(builderTypeToken);
+    pCode->EmitSTLOC(builderLocal);
+
+    pCode->EmitLDSFLDA(pCode->GetToken(CoreLibBinder::GetField(FIELD__ASYNC_HELPERS__TLS_RUNTIME_ASYNC_AWAIT_STATE)));
+    pCode->EmitSTLOC(refAwaitStateLocal);
+
+    pCode->EmitLDLOC(refAwaitStateLocal);
+    pCode->EmitLDLOCA(stackStateLocal);
+    pCode->EmitCALL(METHOD__RUNTIME_ASYNC_AWAIT_STATE__PUSH, 2, 0);
+
+    {
+        pCode->BeginTryBlock();
+        pCode->EmitNOP("Separate try blocks");
+        {
+            pCode->BeginTryBlock();
+
+            DWORD localArg = 0;
+            if (thunkMsig.HasThis())
+                pCode->EmitLDARG(localArg++);
+
+            for (UINT iArg = 0; iArg < thunkMsig.NumFixedArgs(); iArg++)
+                pCode->EmitLDARG(localArg++);
+
+            pCode->EmitCALL(
+                GetTokenForThunkTarget(pCode, pAsyncCallVariant),
+                localArg,
+                logicalResultLocal != UINT_MAX ? 1 : 0);
+
+            if (logicalResultLocal != UINT_MAX)
+                pCode->EmitSTLOC(logicalResultLocal);
+
+            pCode->EmitCALL(METHOD__ASYNC_HELPERS__ASYNC_CALL_CONTINUATION, 0, 1);
+            pCode->EmitBRFALSE(finishedLabel);
+            pCode->EmitLEAVE(suspendedLabel);
+
+            pCode->EmitLabel(finishedLabel);
+            pCode->EmitLEAVE(synchronousLabel);
+            pCode->EndTryBlock();
+        }
+        {
+            pCode->BeginCatchBlock(pCode->GetToken(CoreLibBinder::GetClass(CLASS__EXCEPTION)));
+            pCode->EmitSTLOC(exceptionLocal);
+            pCode->EmitLEAVE(exceptionLabel);
+            pCode->EndCatchBlock();
+        }
+
+        pCode->EmitLabel(suspendedLabel);
+        MethodDesc* pFinalizeMethod;
+        if (logicalResultLocal == UINT_MAX)
+        {
+            pFinalizeMethod = CoreLibBinder::GetMethod(
+                METHOD__ASYNC_HELPERS__FINALIZE_ASYNC_METHOD_BUILDER_THUNK);
+        }
+        else
+        {
+            pFinalizeMethod = CoreLibBinder::GetMethod(
+                METHOD__ASYNC_HELPERS__FINALIZE_ASYNC_METHOD_BUILDER_THUNK_WITH_RESULT);
+            pFinalizeMethod = FindOrCreateAssociatedMethodDesc(
+                pFinalizeMethod,
+                pFinalizeMethod->GetMethodTable(),
+                FALSE,
+                Instantiation(&logicalResultType, 1),
+                FALSE);
+        }
+
+        pCode->EmitLDLOC(refAwaitStateLocal);
+        pCode->EmitLDLOC(builderLocal);
+        pCode->EmitCALL(pCode->GetToken(pFinalizeMethod), 2, 0);
+        pCode->EmitLEAVE(returnLabel);
+
+        pCode->EndTryBlock();
+    }
+    {
+        pCode->BeginFinallyBlock();
+        pCode->EmitLDLOC(refAwaitStateLocal);
+        pCode->EmitCALL(METHOD__RUNTIME_ASYNC_AWAIT_STATE__POP, 1, 0);
+        pCode->EmitENDFINALLY();
+        pCode->EndFinallyBlock();
+    }
+
+    pCode->EmitLabel(synchronousLabel);
+    pCode->EmitLDLOC(builderLocal);
+    if (builderIsValueType)
+        pCode->EmitUNBOX(builderTypeToken);
+    else
+        pCode->EmitUNBOX_ANY(builderTypeToken);
+    if (logicalResultLocal != UINT_MAX)
+        pCode->EmitLDLOC(logicalResultLocal);
+    if (builderIsValueType)
+        pCode->EmitCALL(pCode->GetToken(pBuilderSetResultMethod), logicalResultLocal != UINT_MAX ? 2 : 1, 0);
+    else
+        pCode->EmitCALLVIRT(pCode->GetToken(pBuilderSetResultMethod), logicalResultLocal != UINT_MAX ? 2 : 1, 0);
+    pCode->EmitBR(returnLabel);
+
+    pCode->EmitLabel(exceptionLabel);
+    pCode->EmitLDLOC(builderLocal);
+    if (builderIsValueType)
+        pCode->EmitUNBOX(builderTypeToken);
+    else
+        pCode->EmitUNBOX_ANY(builderTypeToken);
+    pCode->EmitLDLOC(exceptionLocal);
+    if (builderIsValueType)
+        pCode->EmitCALL(pCode->GetToken(pBuilderSetExceptionMethod), 2, 0);
+    else
+        pCode->EmitCALLVIRT(pCode->GetToken(pBuilderSetExceptionMethod), 2, 0);
+
+    pCode->EmitLabel(returnLabel);
+    if (pBuilderTaskGetterMethod != NULL)
+    {
+        pCode->EmitLDLOC(builderLocal);
+        if (builderIsValueType)
+            pCode->EmitUNBOX(builderTypeToken);
+        else
+            pCode->EmitUNBOX_ANY(builderTypeToken);
+
+        if (builderIsValueType)
+            pCode->EmitCALL(pCode->GetToken(pBuilderTaskGetterMethod), 1, 1);
+        else
+            pCode->EmitCALLVIRT(pCode->GetToken(pBuilderTaskGetterMethod), 1, 1);
+    }
     pCode->EmitRET();
 }
 

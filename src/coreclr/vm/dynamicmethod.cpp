@@ -338,7 +338,7 @@ void DynamicMethodTable::InitializeDynamicMethodDesc(DynamicMethodDesc* pNewMD, 
     RETURN;
 }
 
-DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSize, PTR_CUTF8 name, BYTE *pAsyncSig, DWORD asyncSigSize, PTR_CUTF8 asyncName, DWORD implFlags, BOOL isAsyncValueTask, DynamicMethodDesc** ppILMethod)
+DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSize, PTR_CUTF8 name, BYTE *pAsyncSig, DWORD asyncSigSize, PTR_CUTF8 asyncName, DWORD implFlags, BOOL isAsyncValueTask, BOOL hasAsyncMethodBuilder, DynamicMethodDesc** ppILMethod)
 {
     CONTRACT (DynamicMethodDesc*)
     {
@@ -383,7 +383,12 @@ DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSiz
             asyncVariantFlags |= AsyncMethodFlags::IsAsyncVariantForValueTask;
 
         InitializeDynamicMethodDesc(pAsyncMD, pAsyncSig, asyncSigSize, asyncName, memberDef, asyncVariantFlags, Signature(pAsyncSig, asyncSigSize));
-        InitializeDynamicMethodDesc(pNewMD, psig, sigSize, name, memberDef, AsyncMethodFlags::ReturnsTaskOrValueTask | AsyncMethodFlags::Thunk, Signature());
+
+        AsyncMethodFlags thunkFlags = AsyncMethodFlags::Thunk;
+        if (!hasAsyncMethodBuilder)
+            thunkFlags |= AsyncMethodFlags::ReturnsTaskOrValueTask;
+
+        InitializeDynamicMethodDesc(pNewMD, psig, sigSize, name, memberDef, thunkFlags, Signature());
         asyncMethodBackout.SuppressRelease();
     }
     else
@@ -1126,6 +1131,10 @@ void LCGMethodResolver::Reset()
     m_pJumpStubCache        = NULL;
     m_next                  = NULL;
     m_Code                  = NULL;
+    m_pRuntimeAsyncBuilderCreateMethod = NULL;
+    m_pRuntimeAsyncBuilderTaskGetterMethod = NULL;
+    m_pRuntimeAsyncBuilderSetResultMethod = NULL;
+    m_pRuntimeAsyncBuilderSetExceptionMethod = NULL;
 }
 
 //

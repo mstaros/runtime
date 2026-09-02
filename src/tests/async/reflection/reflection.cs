@@ -556,6 +556,99 @@ public class Async2Reflection
     }
 
     [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
+    public static async Task DynamicMethod_SetImplementationFlags_Async_VoidReturnSuspends()
+    {
+        DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
+            "DynamicAsyncVoidMethod",
+            typeof(void),
+            new Type[] { typeof(Task<int>), typeof(TaskCompletionSource<int>) });
+
+        ILGenerator ilGenerator = dynamicMethod.GetILGenerator();
+        ilGenerator.Emit(OpCodes.Ldarg_0);
+        ilGenerator.Emit(OpCodes.Call, s_taskIntAwaitMethod);
+        ilGenerator.Emit(OpCodes.Pop);
+        ilGenerator.Emit(OpCodes.Ldarg_1);
+        ilGenerator.Emit(OpCodes.Ldc_I4, 42);
+        ilGenerator.Emit(
+            OpCodes.Callvirt,
+            typeof(TaskCompletionSource<int>).GetMethod(nameof(TaskCompletionSource<int>.SetResult), new Type[] { typeof(int) })!);
+        ilGenerator.Emit(OpCodes.Ret);
+
+        var del = dynamicMethod.CreateDelegate<Action<Task<int>, TaskCompletionSource<int>>>();
+        var gate = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        del(gate.Task, completion);
+        Assert.False(completion.Task.IsCompleted);
+
+        gate.SetResult(0);
+        Assert.Equal(42, await completion.Task);
+    }
+
+    [AsyncMethodBuilder(typeof(DynamicCustomTaskMethodBuilder<>))]
+    private readonly struct DynamicCustomTask<T>
+    {
+        private readonly Task<T> _task;
+
+        public DynamicCustomTask(Task<T> task) => _task = task;
+
+        public TaskAwaiter<T> GetAwaiter() => _task.GetAwaiter();
+    }
+
+    private struct DynamicCustomTaskMethodBuilder<T>
+    {
+        private AsyncTaskMethodBuilder<T> _builder;
+
+        public static DynamicCustomTaskMethodBuilder<T> Create() =>
+            new DynamicCustomTaskMethodBuilder<T> { _builder = AsyncTaskMethodBuilder<T>.Create() };
+
+        public DynamicCustomTask<T> Task => new DynamicCustomTask<T>(_builder.Task);
+
+        public void SetResult(T result) => _builder.SetResult(result);
+
+        public void SetException(Exception exception) => _builder.SetException(exception);
+
+        public void SetStateMachine(IAsyncStateMachine stateMachine) => _builder.SetStateMachine(stateMachine);
+
+        public void Start<TStateMachine>(ref TStateMachine stateMachine)
+            where TStateMachine : IAsyncStateMachine =>
+            _builder.Start(ref stateMachine);
+
+        public void AwaitOnCompleted<TAwaiter, TStateMachine>(
+            ref TAwaiter awaiter,
+            ref TStateMachine stateMachine)
+            where TAwaiter : INotifyCompletion
+            where TStateMachine : IAsyncStateMachine =>
+            _builder.AwaitOnCompleted(ref awaiter, ref stateMachine);
+
+        public void AwaitUnsafeOnCompleted<TAwaiter, TStateMachine>(
+            ref TAwaiter awaiter,
+            ref TStateMachine stateMachine)
+            where TAwaiter : ICriticalNotifyCompletion
+            where TStateMachine : IAsyncStateMachine =>
+            _builder.AwaitUnsafeOnCompleted(ref awaiter, ref stateMachine);
+    }
+
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
+    public static async Task DynamicMethod_SetImplementationFlags_Async_CustomTaskLikeReturnSuspends()
+    {
+        DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
+            "DynamicAsyncCustomTaskLikeMethod",
+            typeof(DynamicCustomTask<int>),
+            new Type[] { typeof(Task<int>) });
+        EmitAwaitInt32Add(dynamicMethod.GetILGenerator(), typeof(Task<>), 1);
+
+        var del = dynamicMethod.CreateDelegate<Func<Task<int>, DynamicCustomTask<int>>>();
+        var gate = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        DynamicCustomTask<int> result = del(gate.Task);
+        Assert.False(result.GetAwaiter().IsCompleted);
+
+        gate.SetResult(41);
+        Assert.Equal(42, await result);
+    }
+
+    [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
     public static void DynamicMethod_SetImplementationFlags_Async_RequiresTaskLikeReturnType()
     {
         DynamicMethod dynamicMethod = new DynamicMethod(
