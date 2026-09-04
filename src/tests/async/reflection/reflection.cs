@@ -243,7 +243,12 @@ public class Async2Reflection
     }
 
     [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
-    public static async Task DynamicMethod_SetImplementationFlags_AsyncOnlyFlag()
+    public static void DynamicMethod_SetImplementationFlags_AsyncOnlyFlag()
+    {
+        DynamicMethod_SetImplementationFlags_AsyncOnlyFlagCore().GetAwaiter().GetResult();
+    }
+
+    private static async Task DynamicMethod_SetImplementationFlags_AsyncOnlyFlagCore()
     {
         DynamicMethod dynamicMethod = new DynamicMethod(
             "DynamicAsyncOnlyFlagMethod",
@@ -262,7 +267,12 @@ public class Async2Reflection
     }
 
     [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
-    public static async Task DynamicMethod_GetCurrentMethod_ReturnsPublicRuntimeAsyncIdentity()
+    public static void DynamicMethod_GetCurrentMethod_ReturnsPublicRuntimeAsyncIdentity()
+    {
+        DynamicMethod_GetCurrentMethod_ReturnsPublicRuntimeAsyncIdentityCore().GetAwaiter().GetResult();
+    }
+
+    private static async Task DynamicMethod_GetCurrentMethod_ReturnsPublicRuntimeAsyncIdentityCore()
     {
         DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
             "DynamicAsyncCurrentMethod",
@@ -285,7 +295,12 @@ public class Async2Reflection
     }
 
     [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
-    public static async Task DynamicMethod_SetImplementationFlags_Async()
+    public static void DynamicMethod_SetImplementationFlags_Async()
+    {
+        DynamicMethod_SetImplementationFlags_AsyncCore().GetAwaiter().GetResult();
+    }
+
+    private static async Task DynamicMethod_SetImplementationFlags_AsyncCore()
     {
         DynamicMethod dynamicMethod = CreateTaskIntAddOneAsyncDynamicMethod("DynamicAsyncMethod");
 
@@ -300,7 +315,12 @@ public class Async2Reflection
     }
 
     [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
-    public static async Task DynamicMethod_SetImplementationFlags_Async_CreateDelegateByType()
+    public static void DynamicMethod_SetImplementationFlags_Async_CreateDelegateByType()
+    {
+        DynamicMethod_SetImplementationFlags_Async_CreateDelegateByTypeCore().GetAwaiter().GetResult();
+    }
+
+    private static async Task DynamicMethod_SetImplementationFlags_Async_CreateDelegateByTypeCore()
     {
         DynamicMethod dynamicMethod = CreateTaskIntAddOneAsyncDynamicMethod("DynamicAsyncCreateDelegateByTypeMethod");
 
@@ -311,7 +331,12 @@ public class Async2Reflection
     }
 
     [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
-    public static async Task DynamicMethod_SetImplementationFlags_Async_Invoke()
+    public static void DynamicMethod_SetImplementationFlags_Async_Invoke()
+    {
+        DynamicMethod_SetImplementationFlags_Async_InvokeCore().GetAwaiter().GetResult();
+    }
+
+    private static async Task DynamicMethod_SetImplementationFlags_Async_InvokeCore()
     {
         DynamicMethod dynamicMethod = CreateTaskIntAddOneAsyncDynamicMethod("DynamicAsyncInvokeMethod");
         var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -325,7 +350,12 @@ public class Async2Reflection
     }
 
     [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
-    public static async Task DynamicMethod_SetImplementationFlags_Async_ModuleAndOwnerConstructors()
+    public static void DynamicMethod_SetImplementationFlags_Async_ModuleAndOwnerConstructors()
+    {
+        DynamicMethod_SetImplementationFlags_Async_ModuleAndOwnerConstructorsCore().GetAwaiter().GetResult();
+    }
+
+    private static async Task DynamicMethod_SetImplementationFlags_Async_ModuleAndOwnerConstructorsCore()
     {
         DynamicMethod moduleMethod = CreateTaskIntAddOneAsyncDynamicMethod(
             "DynamicAsyncModuleBoundMethod",
@@ -342,7 +372,12 @@ public class Async2Reflection
     }
 
     [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
-    public static async Task DynamicMethod_SetImplementationFlags_Async_ValueTask()
+    public static void DynamicMethod_SetImplementationFlags_Async_ValueTask()
+    {
+        DynamicMethod_SetImplementationFlags_Async_ValueTaskCore().GetAwaiter().GetResult();
+    }
+
+    private static async Task DynamicMethod_SetImplementationFlags_Async_ValueTaskCore()
     {
         DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
             "DynamicAsyncValueTaskOfInt32Method",
@@ -361,7 +396,12 @@ public class Async2Reflection
     }
 
     [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
-    public static async Task DynamicMethod_SetImplementationFlags_Async_NonGenericTask()
+    public static void DynamicMethod_SetImplementationFlags_Async_NonGenericTask()
+    {
+        DynamicMethod_SetImplementationFlags_Async_NonGenericTaskCore().GetAwaiter().GetResult();
+    }
+
+    private static async Task DynamicMethod_SetImplementationFlags_Async_NonGenericTaskCore()
     {
         DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
             "DynamicAsyncTaskMethod",
@@ -384,7 +424,12 @@ public class Async2Reflection
     }
 
     [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
-    public static async Task DynamicMethod_SetImplementationFlags_Async_NonGenericValueTask()
+    public static void DynamicMethod_SetImplementationFlags_Async_NonGenericValueTask()
+    {
+        DynamicMethod_SetImplementationFlags_Async_NonGenericValueTaskCore().GetAwaiter().GetResult();
+    }
+
+    private static async Task DynamicMethod_SetImplementationFlags_Async_NonGenericValueTaskCore()
     {
         DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
             "DynamicAsyncValueTaskMethod",
@@ -407,7 +452,12 @@ public class Async2Reflection
     }
 
     [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
-    public static async Task DynamicMethod_SetImplementationFlags_Async_DynamicILInfo()
+    public static void DynamicMethod_SetImplementationFlags_Async_DynamicILInfo()
+    {
+        DynamicMethod_SetImplementationFlags_Async_DynamicILInfoCore().GetAwaiter().GetResult();
+    }
+
+    private static async Task DynamicMethod_SetImplementationFlags_Async_DynamicILInfoCore()
     {
         DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
             "DynamicAsyncInfoMethod",
@@ -457,7 +507,12 @@ public class Async2Reflection
     }
 
     [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
-    public static async Task DynamicMethod_SetImplementationFlags_Async_MultipleAwaits()
+    public static void DynamicMethod_SetImplementationFlags_Async_MultipleAwaits()
+    {
+        DynamicMethod_SetImplementationFlags_Async_MultipleAwaitsCore().GetAwaiter().GetResult();
+    }
+
+    private static async Task DynamicMethod_SetImplementationFlags_Async_MultipleAwaitsCore()
     {
         DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
             "DynamicAsyncMultipleAwaitsMethod",
@@ -489,7 +544,12 @@ public class Async2Reflection
     }
 
     [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
-    public static async Task DynamicMethod_SetImplementationFlags_Async_AwaitsDynamicAsyncMethod()
+    public static void DynamicMethod_SetImplementationFlags_Async_AwaitsDynamicAsyncMethod()
+    {
+        DynamicMethod_SetImplementationFlags_Async_AwaitsDynamicAsyncMethodCore().GetAwaiter().GetResult();
+    }
+
+    private static async Task DynamicMethod_SetImplementationFlags_Async_AwaitsDynamicAsyncMethodCore()
     {
         DynamicMethod calleeMethod = CreateTaskIntAddOneAsyncDynamicMethod("DynamicAsyncCalleeMethod");
         var calleeDelegate = calleeMethod.CreateDelegate<Func<Task<int>, Task<int>>>();
@@ -519,7 +579,12 @@ public class Async2Reflection
     }
 
     [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
-    public static async Task DynamicMethod_SetImplementationFlags_Async_PropagatesAwaitException()
+    public static void DynamicMethod_SetImplementationFlags_Async_PropagatesAwaitException()
+    {
+        DynamicMethod_SetImplementationFlags_Async_PropagatesAwaitExceptionCore().GetAwaiter().GetResult();
+    }
+
+    private static async Task DynamicMethod_SetImplementationFlags_Async_PropagatesAwaitExceptionCore()
     {
         DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
             "DynamicAsyncExceptionMethod",
@@ -538,7 +603,12 @@ public class Async2Reflection
     }
 
     [ConditionalFact(typeof(Async2Reflection), nameof(IsRuntimeAsyncDynamicMethodSupported))]
-    public static async Task DynamicMethod_SetImplementationFlags_Async_PropagatesAwaitCancellation()
+    public static void DynamicMethod_SetImplementationFlags_Async_PropagatesAwaitCancellation()
+    {
+        DynamicMethod_SetImplementationFlags_Async_PropagatesAwaitCancellationCore().GetAwaiter().GetResult();
+    }
+
+    private static async Task DynamicMethod_SetImplementationFlags_Async_PropagatesAwaitCancellationCore()
     {
         DynamicMethod dynamicMethod = CreateAsyncDynamicMethod(
             "DynamicAsyncCancellationMethod",
