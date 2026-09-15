@@ -100,3 +100,17 @@ The two awaits use the same input task: the lifecycle check forces the first to 
 Each snapshot now also records emitted IL bytes, body statement count, await-site count, and LOH size/fragmentation after GC. Source hashes are recorded in the output JSON. These LOH snapshots cannot detect temporary LOH allocations that died before measurement. As before, forced collections and cleanup are outside the emission/first-execution timers; this is a retained-memory and startup-size experiment, not a sustained churn throughput benchmark.
 
 The original results remain in RESULTS.md and results.json. The size-sweep results are in [SIZE_RESULTS.md](SIZE_RESULTS.md) and [size-results.json](size-results.json).
+
+## Actual C# compiler pipeline
+
+`run-pipeline.cmd` compares the existing Release Merkle compiler/bridge with Roslyn PE emission and a fresh collectible ALC, starting from equivalent C# scripts and cached framework references. Both paths include Roslyn parsing and diagnostics. It also measures 1,000 empty ALCs and 1,000 loads of one precompiled PE separately.
+
+```powershell
+.\run-pipeline.cmd -RuntimeRoot D:\repos\runtime-async-dynamicmethod -CompilerRoot D:\repos\MerkleCompiler -Count 32 -Repetitions 3
+```
+
+Use `-Count 4 -Repetitions 1 -Pilot` for a short check. The runner stages the existing compiler and bridge Release DLLs plus their cached NuGet dependencies; it does not rebuild the compiler or change its implementation. It records exact binary hashes. Source checkout HEAD is context only. Each repetition retains 32 scripts at 24 statements, 8 at 96 statements, and 2 at 192 statements (or fewer when Count is smaller); the reduced large-body counts bound the real compiler's allocation cost. Scripts contain 24, 96, or 192 arithmetic/conditional statements, two awaits, and a per-script constant to avoid identical generated bodies. An outer block keeps variables local rather than C# script fields.
+
+Timings separate the shared frontend, Merkle conversion, Merkle compilation, Roslyn PE emission, loading/binding, and first execution. The production compiler's validation, guards, and retained source provenance remain enabled. Caller-held sources and reference caches are prepared before baseline. A separate diagnostics mode measures initial and immediate repeat GetDiagnostics calls on fresh compilations. Full collections occur between lifecycle stages, outside the timers. This measures creation and retained memory; it is not a sustained concurrency/throughput test.
+
+The results and limitations are in [PIPELINE_RESULTS.md](PIPELINE_RESULTS.md), with raw data in [pipeline-results.json](pipeline-results.json).
