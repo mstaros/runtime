@@ -17,6 +17,9 @@ public static class MemoryExperiment
     private static readonly Task<int> s_completed = Task.FromResult(41);
     private static readonly Process s_process = Process.GetCurrentProcess();
     private static int s_assemblyNumber;
+    private static int s_bodyStatements;
+    private static int s_expected;
+    private static int s_ilBytes;
 
     private sealed class State
     {
@@ -44,19 +47,23 @@ public static class MemoryExperiment
     {
         try
         {
-            if (args.Length != 3)
-                throw new ArgumentException("Expected: dynamic|assembly|assembly-shape count batchSize");
+            if (args.Length != 3 && args.Length != 4)
+                throw new ArgumentException("Expected: dynamic|assembly|assembly-shape count batchSize [bodyStatements]");
             string mode = args[0];
             int count = int.Parse(args[1], CultureInfo.InvariantCulture);
             int batch = int.Parse(args[2], CultureInfo.InvariantCulture);
+            s_bodyStatements = args.Length == 4 ? int.Parse(args[3], CultureInfo.InvariantCulture) : 0;
             if ((mode != "dynamic" && mode != "assembly" && mode != "assembly-shape") ||
-                count < 1 || count > 4096 || batch < 1 || batch > count)
+                count < 1 || count > 4096 || batch < 1 || batch > count ||
+                s_bodyStatements < 0 || s_bodyStatements > 768 || s_bodyStatements % 6 != 0)
                 throw new ArgumentException("Invalid experiment parameters.");
+
+            s_expected = Expected(41);
 
             if (!ThreadPool.SetMinThreads(1, 1) || !ThreadPool.SetMaxThreads(1, 1))
                 throw new InvalidOperationException("Could not fix the experiment thread-pool limits.");
 
-            Console.Error.WriteLine($"Runtime={RuntimeInformation.FrameworkDescription}; Architecture={RuntimeInformation.ProcessArchitecture}; CoreLibMvid={typeof(object).Module.ModuleVersionId}; CoreLib={typeof(object).Assembly.Location}; ServerGC={System.Runtime.GCSettings.IsServerGC}; MaxWorkerThreads=1");
+            Console.Error.WriteLine($"Runtime={RuntimeInformation.FrameworkDescription}; Architecture={RuntimeInformation.ProcessArchitecture}; CoreLibMvid={typeof(object).Module.ModuleVersionId}; CoreLib={typeof(object).Assembly.Location}; ServerGC={System.Runtime.GCSettings.IsServerGC}; MaxWorkerThreads=1; BodyStatements={s_bodyStatements}; AwaitSites={(s_bodyStatements == 0 ? 1 : 2)}");
             // Use every measured path before baseline, including real suspension and resumption.
             WarmUp(mode, Math.Min(batch, 16));
             var state = new State(count);
@@ -109,6 +116,13 @@ public static class MemoryExperiment
         var state = new State(16);
         Generate(state, mode, batch);
         InvokeCompleted(state);
+        foreach (int input in new[] { 0, -7, int.MaxValue, int.MinValue })
+        {
+            Task<int> completed = Task.FromResult(input);
+            foreach (var method in state.Delegates)
+                if (method!(completed).GetAwaiter().GetResult() != Expected(input))
+                    throw new InvalidOperationException("Larger-body arithmetic validation failed.");
+        }
         Suspend(state);
         Array.Clear(state.Delegates);
         Collect();
@@ -181,8 +195,71 @@ public static class MemoryExperiment
     {
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Call, s_await);
-        il.Emit(OpCodes.Ldc_I4_1);
-        il.Emit(OpCodes.Add);
+        if (s_bodyStatements == 0)
+        {
+            il.Emit(OpCodes.Ldc_I4_1);
+            il.Emit(OpCodes.Add);
+        }
+        else
+        {
+            var value = il.DeclareLocal(typeof(int));
+            il.Emit(OpCodes.Stloc, value);
+            for (int i = 0; i < s_bodyStatements; i++)
+            {
+                switch (i % 3)
+                {
+                    case 0:
+                        // value = unchecked(value * 1664525 + (1013904223 + i));
+                        il.Emit(OpCodes.Ldloc, value);
+                        il.Emit(OpCodes.Ldc_I4, 1664525);
+                        il.Emit(OpCodes.Mul);
+                        il.Emit(OpCodes.Ldc_I4, 1013904223 + i);
+                        il.Emit(OpCodes.Add);
+                        il.Emit(OpCodes.Stloc, value);
+                        break;
+                    case 1:
+                        // value ^= (int)((uint)value >> ((i % 13) + 1));
+                        il.Emit(OpCodes.Ldloc, value);
+                        il.Emit(OpCodes.Ldloc, value);
+                        il.Emit(OpCodes.Ldc_I4, (i % 13) + 1);
+                        il.Emit(OpCodes.Shr_Un);
+                        il.Emit(OpCodes.Xor);
+                        il.Emit(OpCodes.Stloc, value);
+                        break;
+                    default:
+                        // if ((value & 1) != 0) value = unchecked(value + 17 + i);
+                        // else value ^= 97 + i;
+                        var even = il.DefineLabel();
+                        var done = il.DefineLabel();
+                        il.Emit(OpCodes.Ldloc, value);
+                        il.Emit(OpCodes.Ldc_I4_1);
+                        il.Emit(OpCodes.And);
+                        il.Emit(OpCodes.Brfalse_S, even);
+                        il.Emit(OpCodes.Ldloc, value);
+                        il.Emit(OpCodes.Ldc_I4, 17 + i);
+                        il.Emit(OpCodes.Add);
+                        il.Emit(OpCodes.Stloc, value);
+                        il.Emit(OpCodes.Br_S, done);
+                        il.MarkLabel(even);
+                        il.Emit(OpCodes.Ldloc, value);
+                        il.Emit(OpCodes.Ldc_I4, 97 + i);
+                        il.Emit(OpCodes.Xor);
+                        il.Emit(OpCodes.Stloc, value);
+                        il.MarkLabel(done);
+                        break;
+                }
+                if (i == s_bodyStatements / 2 - 1)
+                {
+                    // value ^= await input; the value remains live across this await site.
+                    il.Emit(OpCodes.Ldloc, value);
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Call, s_await);
+                    il.Emit(OpCodes.Xor);
+                    il.Emit(OpCodes.Stloc, value);
+                }
+            }
+            il.Emit(OpCodes.Ldloc, value);
+        }
         if (constructor != null)
         {
             il.Emit(OpCodes.Newobj, constructor);
@@ -195,6 +272,32 @@ public static class MemoryExperiment
             il.Emit(OpCodes.Call, typeof(MemoryExperiment).GetMethod(nameof(InspectShape))!);
         }
         il.Emit(OpCodes.Ret);
+        s_ilBytes = il.ILOffset;
+    }
+
+    // Independent arithmetic oracle; the emitted methods must match for multiple inputs.
+    private static int Expected(int input)
+    {
+        if (s_bodyStatements == 0)
+            return unchecked(input + 1);
+        int value = input;
+        for (int i = 0; i < s_bodyStatements; i++)
+        {
+            unchecked
+            {
+                if (i % 3 == 0)
+                    value = value * 1664525 + 1013904223 + i;
+                else if (i % 3 == 1)
+                    value ^= (int)((uint)value >> ((i % 13) + 1));
+                else if ((value & 1) != 0)
+                    value += 17 + i;
+                else
+                    value ^= 97 + i;
+            }
+            if (i == s_bodyStatements / 2 - 1)
+                value ^= input;
+        }
+        return value;
     }
 
     // An ordinary callee outside the generated assembly observes the actual generated type.
@@ -215,7 +318,7 @@ public static class MemoryExperiment
     private static void InvokeCompleted(State state)
     {
         foreach (var method in state.Delegates)
-            if (method!(s_completed).GetAwaiter().GetResult() != 42)
+            if (method!(s_completed).GetAwaiter().GetResult() != s_expected)
                 throw new InvalidOperationException("Completed await result mismatch.");
     }
 
@@ -236,7 +339,7 @@ public static class MemoryExperiment
     {
         state.Source!.SetResult(41);
         foreach (var pending in state.Pending)
-            if (pending!.GetAwaiter().GetResult() != 42)
+            if (pending!.GetAwaiter().GetResult() != s_expected)
                 throw new InvalidOperationException("Resumed await result mismatch.");
         Array.Clear(state.Pending);
         Array.Clear(state.Delegates);
@@ -287,11 +390,13 @@ public static class MemoryExperiment
         long workingSet = s_process.WorkingSet64;
         int threads = s_process.Threads.Count;
         if (stage == "warmup")
-            Console.WriteLine("stage\tprivateBytes\tvirtualBytes\tworkingSetBytes\tmanagedLiveBytes\tgcCommittedBytes\tgcHeapBytes\tgcFragmentedBytes\taliveDelegates\taliveOwnerReferences\tphaseMs\temitAllocatedBytes\tthreadCount");
+            Console.WriteLine("stage\tprivateBytes\tvirtualBytes\tworkingSetBytes\tmanagedLiveBytes\tgcCommittedBytes\tgcHeapBytes\tgcFragmentedBytes\taliveDelegates\taliveOwnerReferences\tphaseMs\temitAllocatedBytes\tthreadCount\tbodyStatements\tawaitSites\tilBytes\tlohSizeBytes\tlohFragmentedBytes");
         Console.WriteLine(string.Join("\t", stage, privateBytes, virtualBytes, workingSet, managed,
             gc.TotalCommittedBytes, gc.HeapSizeBytes, gc.FragmentedBytes,
             Alive(state.DelegateReferences), Alive(state.OwnerReferences),
-            phaseMs.ToString("F3", CultureInfo.InvariantCulture), emitAllocated, threads));
+            phaseMs.ToString("F3", CultureInfo.InvariantCulture), emitAllocated, threads,
+            s_bodyStatements, s_bodyStatements == 0 ? 1 : 2, s_ilBytes,
+            gc.GenerationInfo[3].SizeAfterBytes, gc.GenerationInfo[3].FragmentationAfterBytes));
         GC.KeepAlive(state.Delegates);
         GC.KeepAlive(state.Pending);
     }

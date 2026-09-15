@@ -49,3 +49,54 @@ Forced collection establishes reachability and retained-memory snapshots, not na
 RunAndCollect amortizes fixed costs when methods are batched, but all types/methods in an assembly share its collection boundary. The shape case reuses the otherwise-required declaring type as the shape; it does not measure an additional independent type per method. Ordinary data instance memory is transient here.
 
 Measured results and conclusions are in [RESULTS.md](RESULTS.md); the complete final dataset is [results.json](results.json).
+
+## Larger async bodies
+
+Run the size sweep with the same runtime binaries:
+
+```powershell
+.\run.cmd -RuntimeRoot D:\repos\runtime-async-dynamicmethod -Count 1000 -Repetitions 3 -SizeSweep
+```
+
+This compares only DynamicMethod and one RunAndCollect assembly per method. The original tiny body is a control. Larger bodies have 24, 48, 96 or 192 unrolled arithmetic/conditional statements, plus two await statements and a return. Each group of three statements contains multiplication/addition, XOR/shift and one conditional. Constants vary with statement index. The input-dependent computation is returned, so it cannot be discarded as unused work. No source compiler runs inside the measurement.
+
+The 24-statement body is equivalent to:
+
+```csharp
+async Task<int> Run(Task<int> input)
+{
+    int value = await input;
+    value = unchecked(value * 1664525 + 1013904223);
+    value ^= (int)((uint)value >> 2);
+    if ((value & 1) != 0) value = unchecked(value + 19); else value ^= 99;
+    value = unchecked(value * 1664525 + 1013904226);
+    value ^= (int)((uint)value >> 5);
+    if ((value & 1) != 0) value = unchecked(value + 22); else value ^= 102;
+    value = unchecked(value * 1664525 + 1013904229);
+    value ^= (int)((uint)value >> 8);
+    if ((value & 1) != 0) value = unchecked(value + 25); else value ^= 105;
+    value = unchecked(value * 1664525 + 1013904232);
+    value ^= (int)((uint)value >> 11);
+    if ((value & 1) != 0) value = unchecked(value + 28); else value ^= 108;
+    value ^= await input;
+    value = unchecked(value * 1664525 + 1013904235);
+    value ^= (int)((uint)value >> 1);
+    if ((value & 1) != 0) value = unchecked(value + 31); else value ^= 111;
+    value = unchecked(value * 1664525 + 1013904238);
+    value ^= (int)((uint)value >> 4);
+    if ((value & 1) != 0) value = unchecked(value + 34); else value ^= 114;
+    value = unchecked(value * 1664525 + 1013904241);
+    value ^= (int)((uint)value >> 7);
+    if ((value & 1) != 0) value = unchecked(value + 37); else value ^= 117;
+    value = unchecked(value * 1664525 + 1013904244);
+    value ^= (int)((uint)value >> 10);
+    if ((value & 1) != 0) value = unchecked(value + 40); else value ^= 120;
+    return value;
+}
+```
+
+The two awaits use the same input task: the lifecycle check forces the first to suspend, then the second observes the completed task. Await-site count is held at two across the larger cases; this sweep does not measure scaling with the number of suspensions. Each method uses one int local. During warm-up, results are checked against a separate C# arithmetic evaluator for 41, 0, -7, int.MaxValue and int.MinValue. The larger-body results replace the fixed expected value 42.
+
+Each snapshot now also records emitted IL bytes, body statement count, await-site count, and LOH size/fragmentation after GC. Source hashes are recorded in the output JSON. These LOH snapshots cannot detect temporary LOH allocations that died before measurement. As before, forced collections and cleanup are outside the emission/first-execution timers; this is a retained-memory and startup-size experiment, not a sustained churn throughput benchmark.
+
+The original results remain in RESULTS.md and results.json. The size-sweep results are in [SIZE_RESULTS.md](SIZE_RESULTS.md) and [size-results.json](size-results.json).

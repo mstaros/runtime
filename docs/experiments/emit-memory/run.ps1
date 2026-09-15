@@ -5,7 +5,8 @@ param(
     [Parameter(Mandatory = $true)][string]$RuntimeRoot,
     [ValidateRange(1, 4096)][int]$Count = 1000,
     [ValidateRange(1, 10)][int]$Repetitions = 3,
-    [string]$OutputDirectory = ""
+    [string]$OutputDirectory = "",
+    [switch]$SizeSweep
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -61,21 +62,36 @@ $settings = [ordered]@{
     COMPlus_gcServer = "0"; DOTNET_gcServer = "0"
     COMPlus_GCStress = "0"; DOTNET_GCStress = "0"
 }
-$cases = @(
-    [ordered]@{ mode = "dynamic"; batch = 1 },
-    [ordered]@{ mode = "assembly"; batch = 1 },
-    [ordered]@{ mode = "assembly"; batch = [Math]::Min(100, $Count) },
-    [ordered]@{ mode = "assembly-shape"; batch = 1 }
-)
+if ($SizeSweep) {
+    $cases = @()
+    foreach ($statements in @(0, 24, 48, 96, 192)) {
+        $cases += [ordered]@{ mode = "dynamic"; batch = 1; bodyStatements = $statements }
+        $cases += [ordered]@{ mode = "assembly"; batch = 1; bodyStatements = $statements }
+    }
+} else {
+    $cases = @(
+        [ordered]@{ mode = "dynamic"; batch = 1; bodyStatements = 0 },
+        [ordered]@{ mode = "assembly"; batch = 1; bodyStatements = 0 },
+        [ordered]@{ mode = "assembly"; batch = [Math]::Min(100, $Count); bodyStatements = 0 },
+        [ordered]@{ mode = "assembly-shape"; batch = 1; bodyStatements = 0 }
+    )
+}
+$experimentSources = @()
+foreach ($name in @("MemoryExperiment.cs", "run.ps1")) {
+    $experimentSources += [ordered]@{
+        name = $name
+        sha256 = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+}
 $runs = @()
 for ($rep = 1; $rep -le $Repetitions; $rep++) {
     for ($offset = 0; $offset -lt $cases.Count; $offset++) {
-        $case = $cases[($offset + $rep - 1) % $cases.Count]
-        $id = "$($case.mode)-b$($case.batch)-n$Count-r$rep"
+        $case = $cases[($offset + ($rep - 1) * 3) % $cases.Count]
+        $id = "$($case.mode)-b$($case.batch)-s$($case.bodyStatements)-n$Count-r$rep"
         Write-Host "Running $id"
         $start = New-Object Diagnostics.ProcessStartInfo
         $start.FileName = $corerun
-        $start.Arguments = '"' + $worker + '" ' + $case.mode + " " + $Count + " " + $case.batch
+        $start.Arguments = '"' + $worker + '" ' + $case.mode + " " + $Count + " " + $case.batch + " " + $case.bodyStatements
         $start.WorkingDirectory = $output
         $start.UseShellExecute = $false
         $start.CreateNoWindow = $true
@@ -113,11 +129,11 @@ for ($rep = 1; $rep -le $Repetitions; $rep++) {
             $snapshots += $snapshot
         }
         if ($snapshots.Count -ne 6) { throw "Expected six measured stages for $id" }
-        $runs += [ordered]@{ id = $id; mode = $case.mode; batch = $case.batch; repetition = $rep; runtime = $stderr.Trim(); snapshots = $snapshots }
+        $runs += [ordered]@{ id = $id; mode = $case.mode; batch = $case.batch; repetition = $rep; bodyStatements = $case.bodyStatements; runtime = $stderr.Trim(); snapshots = $snapshots }
         [ordered]@{
             utc = (Get-Date).ToUniversalTime().ToString("o"); count = $Count; repetitions = $Repetitions
             runtimeRoot = $runtime; sourceHeadContextOnly = $sourceHead; binaries = $binaryInfo
-            settings = $settings; runs = $runs
+            settings = $settings; sizeSweep = [bool]$SizeSweep; experimentSources = $experimentSources; runs = $runs
         } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $output "results.json") -Encoding UTF8
         $base = $snapshots | Where-Object { $_.stage -eq "baseline" }
         $live = $snapshots | Where-Object { $_.stage -eq "jitted" }
