@@ -8,7 +8,8 @@ param(
     [ValidateRange(1, 2000)][int]$Count = 32,
     [ValidateRange(1, 5)][int]$Repetitions = 3,
     [string]$OutputDirectory = "",
-    [switch]$Pilot
+    [switch]$Pilot,
+    [switch]$Profile
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -60,7 +61,7 @@ $referenceNames = @(
     "System.Collections.Immutable", "System.Reflection.Metadata", "System.Reflection.Emit", "System.Reflection.Emit.ILGeneration",
     "System.Reflection.Emit.Lightweight", "System.Diagnostics.Process", "System.ComponentModel.Primitives",
     "System.Runtime.InteropServices", "System.Runtime.Loader", "System.Threading", "System.Threading.Tasks",
-    "System.Linq", "System.Memory", "System.Text.Json", "System.Text.Encoding.Extensions"
+    "System.Linq", "System.Memory", "System.Text.Json", "System.Text.Encoding.Extensions", "System.Diagnostics.Tracing"
 )
 $compileArgs = @("/nologo", "/target:exe", "/optimize+", "/nullable:enable", "/langversion:preview", "/nostdlib+", ('/out:"' + $worker + '"'))
 foreach ($name in $referenceNames) { $compileArgs += '/reference:"' + (Join-Path $coreRoot ($name + ".dll")) + '"' }
@@ -84,17 +85,20 @@ $settings = [ordered]@{
     COMPlus_GCStress = "0"; DOTNET_GCStress = "0"
 }
 $cases = @()
-$sizes = if ($Pilot) { @(24) } else { @(24, 96, 192) }
+$sizes = if ($Pilot) { @(24) } elseif ($Profile) { @(192) } else { @(24, 96, 192) }
 foreach ($size in $sizes) {
-    foreach ($mode in @("merkle", "roslyn-classic")) {
+    $modes = if ($Profile) { @("merkle") } else { @("merkle", "roslyn-classic") }
+    foreach ($mode in $modes) {
         $caseCount = if ($size -ge 192) { [Math]::Min($Count, 2) } elseif ($size -ge 96) { [Math]::Min($Count, 8) } else { $Count }
         $cases += [ordered]@{ mode = $mode; statements = $size; count = $caseCount }
     }
 }
+if (-not $Profile) {
 foreach ($size in $sizes) { $cases += [ordered]@{ mode = "diagnostics"; statements = $size; count = $Count } }
 $controlCount = if ($Pilot) { $Count } else { 1000 }
 $cases += [ordered]@{ mode = "alc-load"; statements = 24; count = $controlCount }
 $cases += [ordered]@{ mode = "alc-empty"; statements = 0; count = $controlCount }
+}
 $runs = @()
 for ($rep = 1; $rep -le $Repetitions; $rep++) {
     for ($offset = 0; $offset -lt $cases.Count; $offset++) {
@@ -110,6 +114,13 @@ for ($rep = 1; $rep -le $Repetitions; $rep++) {
         $start.RedirectStandardOutput = $true
         $start.RedirectStandardError = $true
         foreach ($key in $settings.Keys) { $start.EnvironmentVariables[$key] = $settings[$key] }
+        if ($Profile) {
+            $start.EnvironmentVariables["PIPELINE_PROFILE"] = "1"
+            $start.EnvironmentVariables["DOTNET_EnableEventPipe"] = "1"
+            $start.EnvironmentVariables["DOTNET_EventPipeOutputPath"] = (Join-Path $output ($id + ".nettrace"))
+            $start.EnvironmentVariables["DOTNET_EventPipeCircularMB"] = "100"
+            $start.EnvironmentVariables["DOTNET_EventPipeConfig"] = "Microsoft-Windows-DotNETRuntime:40000019:5,Microsoft-DotNETCore-SampleProfiler:0:5,Pipeline-Profile:ffffffffffffffff:5"
+        }
         $process = New-Object Diagnostics.Process
         $process.StartInfo = $start
         if (-not $process.Start()) { throw "Unable to start $id" }
@@ -129,7 +140,7 @@ for ($rep = 1; $rep -le $Repetitions; $rep++) {
         $result = $stdout | ConvertFrom-Json
         $runs += [ordered]@{ id = $id; repetition = $rep; result = $result }
         [ordered]@{
-            utc = (Get-Date).ToUniversalTime().ToString("o"); count = $Count; repetitions = $Repetitions
+            utc = (Get-Date).ToUniversalTime().ToString("o"); count = $Count; repetitions = $Repetitions; profile = [bool]$Profile
             runtimeRoot = $runtime; compilerRoot = $compilerRepo
             compilerSourceHeadContextOnly = (& git -C $compilerRepo rev-parse HEAD).Trim()
             experimentSources = @("PipelineExperiment.cs", "run-pipeline.ps1") | ForEach-Object { [ordered]@{ name = $_; sha256 = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot $_) -Algorithm SHA256).Hash.ToLowerInvariant() } }

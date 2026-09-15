@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.Tracing;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -37,6 +38,10 @@ public static class PipelineExperiment
     private static string? PrebuiltScriptType;
     private static readonly Dictionary<string, Phase> Phases = new();
     private static readonly List<object> Snapshots = new();
+    private static bool ProfileActive;
+    private static readonly bool Profiling = Environment.GetEnvironmentVariable("PIPELINE_PROFILE") == "1";
+    private static void ProfileStart(string phase) { if (ProfileActive) PipelineProfile.Log.PhaseStart(phase); }
+    private static void ProfileStop(string phase) { if (ProfileActive) PipelineProfile.Log.PhaseStop(phase); }
     private static long PeBytes;
     private static int LoadedTypes;
     private static int RuntimeAsyncMethods;
@@ -99,7 +104,9 @@ public static class PipelineExperiment
                 PrebuiltScriptType = compilation.ScriptClass!.MetadataName;
                 PrebuiltPe = EmitPe(compilation);
             }
+            if (Profiling) PipelineProfile.Log.PhaseStart("warmup");
             WarmUp();
+            if (Profiling) PipelineProfile.Log.PhaseStop("warmup");
             var state = new State(count, 1000);
             Snapshot("measurement-warmup", state);
             Snapshots.Clear();
@@ -110,11 +117,14 @@ public static class PipelineExperiment
             Collect();
             Snapshot("baseline", state);
             int[] gcBefore = Enumerable.Range(0, 3).Select(GC.CollectionCount).ToArray();
+            ProfileActive = Profiling;
+            ProfileStart("generation");
             long allocated = GC.GetTotalAllocatedBytes(true);
             long start = Stopwatch.GetTimestamp();
             Generate(state);
             double generationMs = Elapsed(start);
             long generationAllocated = GC.GetTotalAllocatedBytes(true) - allocated;
+            ProfileStop("generation");
             int[] generationCollections = Enumerable.Range(0, 3).Select(i => GC.CollectionCount(i) - gcBefore[i]).ToArray();
             Collect();
             Snapshot("generated", state);
@@ -122,7 +132,9 @@ public static class PipelineExperiment
             if (Mode != "alc-empty")
             {
                 start = Stopwatch.GetTimestamp();
+                ProfileStart("firstInvoke");
                 Invoke(state, 41);
+                ProfileStop("firstInvoke");
                 firstInvokeMs = Elapsed(start);
                 Collect();
                 Snapshot("jitted", state);
@@ -217,18 +229,21 @@ public static class PipelineExperiment
             (method, owner) = LoadPe(state, index, PrebuiltPe!, PrebuiltScriptType!);
         else
         {
+            ProfileStart("frontend");
             long bytes = GC.GetAllocatedBytesForCurrentThread();
             long start = Stopwatch.GetTimestamp();
             var compilation = Frontend(state.Sources[index]);
             AddPhase("frontend", start, bytes);
             if (Mode == "merkle")
             {
+                ProfileStart("bridge");
                 bytes = GC.GetAllocatedBytesForCurrentThread();
                 start = Stopwatch.GetTimestamp();
                 var root = RoslynScriptBridgeService.BuildRoot(compilation, compilation.SyntaxTrees.Single(),
                     new MerkleTypeBuilder(AssemblyLoadContext.Default, compilation, typeof(PipelineGlobals)), MerkleTypeRuntime.From(typeof(int)));
                 var unit = root.Value as MerkleScriptUnit ?? throw new InvalidOperationException("Expected script IR.");
                 AddPhase("bridge", start, bytes);
+                ProfileStart("merkleCompile");
                 bytes = GC.GetAllocatedBytesForCurrentThread();
                 start = Stopwatch.GetTimestamp();
                 var result = MerkleDelegateCompiler.CompileInstanceScriptUnit(unit, Array.Empty<string?>(),
@@ -243,6 +258,7 @@ public static class PipelineExperiment
             }
             else
             {
+                ProfileStart("roslynEmit");
                 bytes = GC.GetAllocatedBytesForCurrentThread();
                 start = Stopwatch.GetTimestamp();
                 byte[] pe = EmitPe(compilation);
@@ -267,6 +283,7 @@ public static class PipelineExperiment
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static (Func<PipelineGlobals, Task<int>>, object) LoadPe(State state, int index, byte[] pe, string typeName)
     {
+        ProfileStart("loadAndBind");
         long bytes = GC.GetAllocatedBytesForCurrentThread();
         long start = Stopwatch.GetTimestamp();
         var context = new AssemblyLoadContext("Loaded" + ++Serial, isCollectible: true);
@@ -418,6 +435,7 @@ public static class PipelineExperiment
         if (!Phases.TryGetValue(name, out var phase)) Phases[name] = phase = new Phase();
         phase.Milliseconds += elapsed;
         phase.ThreadAllocatedBytes += bytes;
+        ProfileStop(name);
     }
     private static int Alive(WeakReference[] references) => references.Count(reference => reference.IsAlive);
     private static void Collect()
@@ -443,4 +461,14 @@ public static class PipelineExperiment
             delegates = Alive(state.DelegateRefs), owners = Alive(state.OwnerRefs), contexts = Alive(state.ContextRefs)
         });
     }
+}
+
+[EventSource(Name = "Pipeline-Profile")]
+public sealed class PipelineProfile : EventSource
+{
+    public static readonly PipelineProfile Log = new();
+    [Event(1, Level = EventLevel.Informational)]
+    public void PhaseStart(string phase) => WriteEvent(1, phase);
+    [Event(2, Level = EventLevel.Informational)]
+    public void PhaseStop(string phase) => WriteEvent(2, phase);
 }

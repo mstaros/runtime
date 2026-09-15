@@ -114,3 +114,14 @@ Use `-Count 4 -Repetitions 1 -Pilot` for a short check. The runner stages the ex
 Timings separate the shared frontend, Merkle conversion, Merkle compilation, Roslyn PE emission, loading/binding, and first execution. The production compiler's validation, guards, and retained source provenance remain enabled. Caller-held sources and reference caches are prepared before baseline. A separate diagnostics mode measures initial and immediate repeat GetDiagnostics calls on fresh compilations. Full collections occur between lifecycle stages, outside the timers. This measures creation and retained memory; it is not a sustained concurrency/throughput test.
 
 The results and limitations are in [PIPELINE_RESULTS.md](PIPELINE_RESULTS.md), with raw data in [pipeline-results.json](pipeline-results.json).
+
+## Profile the warmed Merkle compiler
+
+```powershell
+.\run-pipeline.cmd -RuntimeRoot D:\repos\runtime-async-dynamicmethod -CompilerRoot D:\repos\MerkleCompiler -Count 1 -Repetitions 1 -Profile
+.\analyze-profile.cmd -RuntimeRoot D:\repos\runtime-async-dynamicmethod -CaptureDirectory <capture-directory-printed-by-runner>
+```
+
+Profile mode selects only the 192-statement Merkle case (24 with -Pilot), warms it twice, records phase markers, sampled managed stacks and weighted allocation events, and writes a .nettrace beside the normal results. Existing compiler binaries are used. The analyzer compiles with cached TraceEvent 3.1.28 dependencies; it preserves raw traces and analysis outside the disposable worktree under RuntimeRoot/artifacts/experiments/pipeline-profile. Give the analyzer the original runner output directory.
+
+[PROFILE_RESULTS.md](PROFILE_RESULTS.md) ranks measured hotspots and source-confirmed related issues. [profile-results.json](profile-results.json) retains the compact profile, capture metadata and trace hash. Compiler-thread stack shares include GC waits and allocation figures represent churn, not retained memory. No Merkle implementation fix was applied.

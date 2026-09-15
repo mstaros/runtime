@@ -1,0 +1,920 @@
+{
+  "capture": {
+    "binaries": [
+      {
+        "name": "corerun.exe",
+        "sha256": "b0e88889843e4bf48603f9202e87c7cd1d615a4a37c1a44b034dfbfa7e30acbb"
+      },
+      {
+        "name": "coreclr.dll",
+        "sha256": "921df467cd5dfe1eee633cfabe4da09ca8db09aeb1d7ecd5d1b0e1be8f8b6530"
+      },
+      {
+        "name": "clrjit.dll",
+        "sha256": "7fca5b8e633ff575fe0248fa7cf36822c2af08818c089a6861952ae7909a0486"
+      },
+      {
+        "name": "System.Private.CoreLib.dll",
+        "sha256": "c31692506055fd39ee6264b7cb5bff2a74fb1b9977cf05c6417eebac800c160a"
+      }
+    ],
+    "compilerRoot": "D:\\repos\\MerkleCompiler",
+    "compilerSourceHeadContextOnly": "83471e9eb1ff219a482653c199b860367faa8947",
+    "count": 1,
+    "experimentSources": [
+      {
+        "name": "PipelineExperiment.cs",
+        "sha256": "6f895e95f0cadba9774df67723a976c01bc2baeed1c12634a4746c65e1740e58"
+      },
+      {
+        "name": "run-pipeline.ps1",
+        "sha256": "123302e106e92c2bd24dc7e890b279b3d7ff5776d95567078dc577c12c48f15b"
+      }
+    ],
+    "payload": [
+      {
+        "bytes": 15872,
+        "name": "MpsAgent.Merkle.EmitRuntime.dll",
+        "sha256": "d5552c2937346ae3d4a7c6087976e30f8f9fab30fef47bfd5b8b316a8a075a96",
+        "source": "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\MpsAgent.Merkle.EmitRuntime.dll"
+      },
+      {
+        "bytes": 596516,
+        "name": "roaring.dll",
+        "sha256": "a1c4d73875b878bb9ecefea83e4d0f2e32ea528908e0e35493b46920f7e450a2",
+        "source": "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\roaring.dll"
+      },
+      {
+        "bytes": 149504,
+        "name": "mimalloc.dll",
+        "sha256": "22bc4634d175c17fd42651e5b39249f6972c77bcbd69f835583207457694d8bd",
+        "source": "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\mimalloc.dll"
+      },
+      {
+        "bytes": 2455552,
+        "name": "MpsAgent.Merkle.Compiler.dll",
+        "sha256": "5d457d23fdd426b33969b021e999bce8c4e3f26f754b7507c3062944c1860784",
+        "source": "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\MpsAgent.Merkle.Compiler.dll"
+      },
+      {
+        "bytes": 262144,
+        "name": "ColorMinePortable.dll",
+        "sha256": "c7622ac58ca746636b6366669d5370be1a3463078b843993730680d439ac1438",
+        "source": "D:\\cache\\nuget\\colormineportable\\2.0.1\\lib\\netstandard2.0\\ColorMinePortable.dll"
+      },
+      {
+        "bytes": 825888,
+        "name": "NuGet.Protocol.dll",
+        "sha256": "66f70be58ef42aae6e16e8f16667aca73abca9b472ea10267d2cfc76553566e3",
+        "source": "D:\\cache\\nuget\\nuget.protocol\\7.6.0\\lib\\net8.0\\NuGet.Protocol.dll"
+      },
+      {
+        "bytes": 53760,
+        "name": "Spreads.Native.dll",
+        "sha256": "66a4291b0e147a6282c63727582ee9adc3d12c23f529fc988d4356d0f3e76379",
+        "source": "D:\\cache\\nuget\\spreads.native\\2020.1.114\\lib\\netstandard2.0\\Spreads.Native.dll"
+      },
+      {
+        "bytes": 27496,
+        "name": "Microsoft.VisualStudio.Validation.dll",
+        "sha256": "5297cdb7c4bed7a211e32372e5db0cec38db389cdd5d47b661b917b0bcb21c19",
+        "source": "D:\\cache\\nuget\\microsoft.visualstudio.validation\\15.5.31\\lib\\netstandard2.1\\Microsoft.VisualStudio.Validation.dll"
+      },
+      {
+        "bytes": 7094608,
+        "name": "Microsoft.CodeAnalysis.CSharp.dll",
+        "sha256": "f87092657deb876433deef3733229aeb14b58348f0031e93bcf3c659d6544d39",
+        "source": "D:\\cache\\nuget\\microsoft.codeanalysis.csharp\\5.11.0-1.26407.4\\lib\\net10.0\\Microsoft.CodeAnalysis.CSharp.dll"
+      },
+      {
+        "bytes": 108576,
+        "name": "NuGet.Common.dll",
+        "sha256": "2486b7d4b891d509c92c45913decf1c58bd0b762e85a116577f181aa632ea629",
+        "source": "D:\\cache\\nuget\\nuget.common\\7.6.0\\lib\\net8.0\\NuGet.Common.dll"
+      },
+      {
+        "bytes": 19752,
+        "name": "Microsoft.Bcl.HashCode.dll",
+        "sha256": "cba1991e35612990ab7c130b77d1ad8d5c8280f3aaad094cf81c3adabc38da43",
+        "source": "D:\\cache\\nuget\\microsoft.bcl.hashcode\\6.0.0\\lib\\net6.0\\Microsoft.Bcl.HashCode.dll"
+      },
+      {
+        "bytes": 378880,
+        "name": "MessagePack.dll",
+        "sha256": "8abd8fa8d66f41d5bdd243b740c9dd392915a8b4df1373df5a1f3fdfe093a9c8",
+        "source": "D:\\cache\\nuget\\messagepack\\3.1.4\\lib\\net9.0\\MessagePack.dll"
+      },
+      {
+        "bytes": 137552,
+        "name": "Microsoft.CodeAnalysis.Scripting.dll",
+        "sha256": "f7785d9459ec47d2cdf34ccf9f091f71c1540406bc2516ca07fb0212437b0875",
+        "source": "D:\\cache\\nuget\\microsoft.codeanalysis.scripting.common\\5.11.0-1.26407.4\\lib\\net10.0\\Microsoft.CodeAnalysis.Scripting.dll"
+      },
+      {
+        "bytes": 1229312,
+        "name": "MpsAgent.Merkle.Bridge.dll",
+        "sha256": "edf4bea5836b250a81730714a62e83b749afcde9160b85dfaf239c898b861ac9",
+        "source": "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Bridge\\bin\\Release\\net11.0\\MpsAgent.Merkle.Bridge.dll"
+      },
+      {
+        "bytes": 122912,
+        "name": "NuGet.Frameworks.dll",
+        "sha256": "80528b5f0c5482a33866669d460df7120c1b1a135e38d3337fa31207ba0398bb",
+        "source": "D:\\cache\\nuget\\nuget.frameworks\\7.6.0\\lib\\net8.0\\NuGet.Frameworks.dll"
+      },
+      {
+        "bytes": 54272,
+        "name": "CRoaring.Net.dll",
+        "sha256": "7966d3a2216ef17beb5b913fa2afe423bd068b113d651fe521f9fbe76c0a4503",
+        "source": "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\CRoaring.Net.dll"
+      },
+      {
+        "bytes": 62024,
+        "name": "NuGet.Versioning.dll",
+        "sha256": "457f94606721f8534623b572cde896050750357da0172d139faa25defd5042c8",
+        "source": "D:\\cache\\nuget\\nuget.versioning\\7.6.0\\lib\\net8.0\\NuGet.Versioning.dll"
+      },
+      {
+        "bytes": 172104,
+        "name": "NuGet.Configuration.dll",
+        "sha256": "69f2f90c3298b068101986f8d0e468b9c7cd37acf26eafad3201710e608914ca",
+        "source": "D:\\cache\\nuget\\nuget.configuration\\7.6.0\\lib\\net8.0\\NuGet.Configuration.dll"
+      },
+      {
+        "bytes": 13824,
+        "name": "LinqFasterSIMD.dll",
+        "sha256": "da4ddc57585baea7d0922b56206815fd5af01c59d40cf0bf44402cb0ee69891a",
+        "source": "D:\\cache\\nuget\\linqfaster.simd\\1.0.3\\lib\\netstandard2.0\\LinqFasterSIMD.dll"
+      },
+      {
+        "bytes": 55808,
+        "name": "mimalloc-redirect.dll",
+        "sha256": "f9ffa1bc946e746c3a908ad83887d03d1ba8e16891e19aa119f427005207804e",
+        "source": "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\mimalloc-redirect.dll"
+      },
+      {
+        "bytes": 34600,
+        "name": "Microsoft.CodeAnalysis.CSharp.Scripting.dll",
+        "sha256": "13feb4c133b24b01659b54f819f4aa3dee317cd05d71a0c9348bbc0a9d570d9a",
+        "source": "D:\\cache\\nuget\\microsoft.codeanalysis.csharp.scripting\\5.11.0-1.26407.4\\lib\\net10.0\\Microsoft.CodeAnalysis.CSharp.Scripting.dll"
+      },
+      {
+        "bytes": 6500864,
+        "name": "Basic.Reference.Assemblies.Net110.dll",
+        "sha256": "33866004b03639318950d1d5f77621fedc1cfdf94d669cc90f16b48d8be61b7f",
+        "source": "D:\\cache\\nuget\\basic.reference.assemblies.net110\\1.8.8\\lib\\netstandard2.0\\Basic.Reference.Assemblies.Net110.dll"
+      },
+      {
+        "bytes": 26624,
+        "name": "Mimm.dll",
+        "sha256": "c642973704c042382c1d7bf8922c59d8cf783c3a160ba9f108cd72ef431e50f5",
+        "source": "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\Mimm.dll"
+      },
+      {
+        "bytes": 355944,
+        "name": "Humanizer.dll",
+        "sha256": "d6853075547d7e303efd60354d911a2ff18edba582cda2fa59d91a2e5dcf9e98",
+        "source": "D:\\cache\\nuget\\humanizer.core\\2.14.1\\lib\\net6.0\\Humanizer.dll"
+      },
+      {
+        "bytes": 62976,
+        "name": "MpsAgent.Merkle.Runtime.dll",
+        "sha256": "facc7a26a52f744e28475dd674e8b41537826a52449206726a0697f6f7e306eb",
+        "source": "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\MpsAgent.Merkle.Runtime.dll"
+      },
+      {
+        "bytes": 66592,
+        "name": "NuGet.Resolver.dll",
+        "sha256": "45216367d7ed12d58a2071e5e46165988ed2a1db38b4ef2cb919e842d78bdcce",
+        "source": "D:\\cache\\nuget\\nuget.resolver\\7.6.0\\lib\\net8.0\\NuGet.Resolver.dll"
+      },
+      {
+        "bytes": 6364160,
+        "name": "MerkleV2.dll",
+        "sha256": "4bab1a161ff016b4cad4f9c6069018ca26e1af2cb7fc9b14e9eca1038eccf147",
+        "source": "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\MerkleV2.dll"
+      },
+      {
+        "bytes": 18432,
+        "name": "MessagePack.Annotations.dll",
+        "sha256": "4d7aa07d288c6a39109eedf6435e3ba8c413342876ed08bb5a64d55dd39dd04d",
+        "source": "D:\\cache\\nuget\\messagepack.annotations\\3.1.4\\lib\\netstandard2.0\\MessagePack.Annotations.dll"
+      },
+      {
+        "bytes": 133987,
+        "name": "roaring64_extensions.dll",
+        "sha256": "05a50c5e6e0a318c2abc3d5a822c46b3b3c6f25bae3fd1f8b83fb424d45e9349",
+        "source": "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\roaring64_extensions.dll"
+      },
+      {
+        "bytes": 26112,
+        "name": "XXH3Lib.dll",
+        "sha256": "25a61bbc225aa3a87ed1675ce69170255472643404d6af1b10de6a0604294850",
+        "source": "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\XXH3Lib.dll"
+      },
+      {
+        "bytes": 406016,
+        "name": "RoslynManager.dll",
+        "sha256": "ca0e714d1fad05c8beb23d493b8f7f04d69989c8778c812d2c93236d0da44c67",
+        "source": "D:\\cache\\nuget\\roslynmanager\\0.1.24\\lib\\net11.0\\RoslynManager.dll"
+      },
+      {
+        "bytes": 3104080,
+        "name": "Microsoft.CodeAnalysis.dll",
+        "sha256": "d13471bf9978b35be9b6b9fef6985a3dbebcc0199d2b39fc21e9ad52614fc0ba",
+        "source": "D:\\cache\\nuget\\microsoft.codeanalysis.common\\5.11.0-1.26407.4\\lib\\net10.0\\Microsoft.CodeAnalysis.dll"
+      },
+      {
+        "bytes": 30880,
+        "name": "Microsoft.NET.StringTools.dll",
+        "sha256": "e51c8678fd602a21c249b369e833966019935132476f9434da896bef808ba3b1",
+        "source": "D:\\cache\\nuget\\microsoft.net.stringtools\\17.11.4\\lib\\net8.0\\Microsoft.NET.StringTools.dll"
+      },
+      {
+        "bytes": 1035560,
+        "name": "Microsoft.CodeAnalysis.CSharp.Workspaces.dll",
+        "sha256": "8a347e637899b658fde360fe798819059ed99ba9217205db705be48d4ab4ba7b",
+        "source": "D:\\cache\\nuget\\microsoft.codeanalysis.csharp.workspaces\\5.11.0-1.26407.4\\lib\\net10.0\\Microsoft.CodeAnalysis.CSharp.Workspaces.dll"
+      },
+      {
+        "bytes": 196608,
+        "name": "Utils.dll",
+        "sha256": "570d91ca7ff983e7aa0445d3b96567935f867d56bb0c97c133295dd65c143369",
+        "source": "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\Utils.dll"
+      },
+      {
+        "bytes": 224632,
+        "name": "Microsoft.VisualStudio.Threading.dll",
+        "sha256": "46fcb93624716cb190459bfdecbb8c30e7afd358b9d5b5315e32654269c50ac3",
+        "source": "D:\\cache\\nuget\\microsoft.visualstudio.threading\\16.7.56\\lib\\netcoreapp3.0\\Microsoft.VisualStudio.Threading.dll"
+      },
+      {
+        "bytes": 854528,
+        "name": "Spreads.Core.dll",
+        "sha256": "ea1b19197facb018df69f7b23799a821c858ddfc3edc41415fa6066c69dc546f",
+        "source": "D:\\cache\\nuget\\spreads.core\\2020.0.114\\lib\\netcoreapp3.0\\Spreads.Core.dll"
+      },
+      {
+        "bytes": 21384,
+        "name": "Microsoft.Extensions.ObjectPool.dll",
+        "sha256": "2c3535efb929b4cd3874d9c4a76dcd2647e01ddace38475707effbb846a41172",
+        "source": "D:\\cache\\nuget\\microsoft.extensions.objectpool\\5.0.2\\lib\\net5.0\\Microsoft.Extensions.ObjectPool.dll"
+      },
+      {
+        "bytes": 4329256,
+        "name": "Microsoft.CodeAnalysis.Workspaces.dll",
+        "sha256": "e29dc73e624ffe60a51e8ed0fabe72ad57848bc47d38fdf484bc1a2ffe57ffff",
+        "source": "D:\\cache\\nuget\\microsoft.codeanalysis.workspaces.common\\5.11.0-1.26407.4\\lib\\net10.0\\Microsoft.CodeAnalysis.Workspaces.dll"
+      },
+      {
+        "bytes": 47616,
+        "name": "xxhash.dll",
+        "sha256": "842757fb14330335779ea095e36f198a4a03dee6c9a5bb16f71a372d5c2ec2d9",
+        "source": "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\xxhash.dll"
+      },
+      {
+        "bytes": 525824,
+        "name": "MpsAgent.Merkle.ControlFlow.dll",
+        "sha256": "2a90aea59c68b43864f37f1294fe63ad848087b00cac0d009fcd3d83a3678022",
+        "source": "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\MpsAgent.Merkle.ControlFlow.dll"
+      },
+      {
+        "bytes": 11776,
+        "name": "PinnedArrayPool.dll",
+        "sha256": "f2fab2810b1f40b5a90d4d4817af118bf9f7f4cb438a97020f49fc86c7cab2dc",
+        "source": "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\PinnedArrayPool.dll"
+      },
+      {
+        "bytes": 19456,
+        "name": "Unions.dll",
+        "sha256": "6243512ef9f40eae080109a2e79f4a9bb9e90585ce4d46d6e7f0ee165e187717",
+        "source": "D:\\cache\\nuget\\mpsagent.unions\\1.0.1\\lib\\net11.0\\Unions.dll"
+      },
+      {
+        "bytes": 728096,
+        "name": "NuGet.Packaging.dll",
+        "sha256": "05a065acafaf18c02c5abb44542eb838f0a6516a7fb17b79a077e4f42a5b0eda",
+        "source": "D:\\cache\\nuget\\nuget.packaging\\7.6.0\\lib\\net8.0\\NuGet.Packaging.dll"
+      },
+      {
+        "bytes": 189952,
+        "name": "Nerdbank.Streams.dll",
+        "sha256": "74163d8e9d04dd668d2622b19e26e0fdba882ef1944f83212cd2594957f7bb0c",
+        "source": "D:\\cache\\nuget\\nerdbank.streams\\2.6.81\\lib\\netcoreapp3.1\\Nerdbank.Streams.dll"
+      }
+    ],
+    "profile": true,
+    "repetitions": 1,
+    "runs": [
+      {
+        "id": "merkle-s192-n1-r1",
+        "repetition": 1,
+        "result": {
+          "compilerOptimizationsDisabled": false,
+          "contextAlive": 0,
+          "coreLibMvid": "36d8bd66-9b46-4a81-8b3e-69002748af16",
+          "count": 1,
+          "delegateAlive": 0,
+          "firstInvokeMs": 4.1389,
+          "generationAllocatedBytes": 3392632248,
+          "generationCollections": [
+            242,
+            189,
+            106
+          ],
+          "generationMs": 8537.0922,
+          "loadedTypeCount": 0,
+          "mode": "merkle",
+          "ownerAlive": 0,
+          "peBytes": 0,
+          "phases": {
+            "bridge": {
+              "Milliseconds": 1350.0683,
+              "ThreadAllocatedBytes": 293592528
+            },
+            "frontend": {
+              "Milliseconds": 9.1085,
+              "ThreadAllocatedBytes": 2731760
+            },
+            "merkleCompile": {
+              "Milliseconds": 7177.8577,
+              "ThreadAllocatedBytes": 3096203704
+            }
+          },
+          "roslyn": "5.11.0.0",
+          "runtime": ".NET 11.0.0-dev",
+          "runtimeAsyncMethodCount": 1,
+          "serverGC": false,
+          "snapshots": [
+            {
+              "committedBytes": 10383360,
+              "contexts": 0,
+              "delegates": 0,
+              "heapBytes": 5644608,
+              "lohBytes": 1963056,
+              "managedLiveBytes": 5442528,
+              "owners": 0,
+              "privateBytes": 47177728,
+              "stage": "baseline",
+              "threads": 12,
+              "workingSetBytes": 109494272
+            },
+            {
+              "committedBytes": 28667904,
+              "contexts": 0,
+              "delegates": 1,
+              "heapBytes": 6942496,
+              "lohBytes": 2254752,
+              "managedLiveBytes": 6560936,
+              "owners": 1,
+              "privateBytes": 62369792,
+              "stage": "generated",
+              "threads": 10,
+              "workingSetBytes": 126038016
+            },
+            {
+              "committedBytes": 28667904,
+              "contexts": 0,
+              "delegates": 1,
+              "heapBytes": 6944160,
+              "lohBytes": 2254752,
+              "managedLiveBytes": 6560816,
+              "owners": 1,
+              "privateBytes": 64180224,
+              "stage": "jitted",
+              "threads": 10,
+              "workingSetBytes": 127688704
+            },
+            {
+              "committedBytes": 11894784,
+              "contexts": 0,
+              "delegates": 1,
+              "heapBytes": 6944824,
+              "lohBytes": 2254752,
+              "managedLiveBytes": 6561480,
+              "owners": 1,
+              "privateBytes": 47411200,
+              "stage": "suspended",
+              "threads": 10,
+              "workingSetBytes": 110780416
+            },
+            {
+              "committedBytes": 10563584,
+              "contexts": 0,
+              "delegates": 0,
+              "heapBytes": 5708240,
+              "lohBytes": 1963056,
+              "managedLiveBytes": 5508768,
+              "owners": 1,
+              "privateBytes": 46206976,
+              "stage": "delegates-released-pending",
+              "threads": 10,
+              "workingSetBytes": 109445120
+            },
+            {
+              "committedBytes": 10563584,
+              "contexts": 0,
+              "delegates": 0,
+              "heapBytes": 5645480,
+              "lohBytes": 1963056,
+              "managedLiveBytes": 5446432,
+              "owners": 0,
+              "privateBytes": 46206976,
+              "stage": "released",
+              "threads": 10,
+              "workingSetBytes": 109445120
+            }
+          ],
+          "sourceLines": 199,
+          "statements": 192
+        }
+      }
+    ],
+    "runtimeRoot": "D:\\repos\\runtime-async-dynamicmethod",
+    "settings": {
+      "COMPlus_GCStress": "0",
+      "COMPlus_ReadyToRun": "0",
+      "COMPlus_TieredCompilation": "0",
+      "COMPlus_gcServer": "0",
+      "DOTNET_GCStress": "0",
+      "DOTNET_ReadyToRun": "0",
+      "DOTNET_TieredCompilation": "0",
+      "DOTNET_gcServer": "0"
+    },
+    "utc": "2026-09-15T16:35:27.3190658Z"
+  },
+  "analysis": {
+    "eventsLost": 0,
+    "intervals": [
+      {
+        "EndMs": 28052.3759,
+        "Phase": "warmup",
+        "StartMs": 695.5542,
+        "ThreadId": 855220
+      },
+      {
+        "EndMs": 28555.18,
+        "Phase": "frontend",
+        "StartMs": 28546.0654,
+        "ThreadId": 855220
+      },
+      {
+        "EndMs": 29905.2825,
+        "Phase": "bridge",
+        "StartMs": 28555.182,
+        "ThreadId": 855220
+      },
+      {
+        "EndMs": 37083.1525,
+        "Phase": "merkleCompile",
+        "StartMs": 29905.2873,
+        "ThreadId": 855220
+      },
+      {
+        "EndMs": 37083.1644,
+        "Phase": "generation",
+        "StartMs": 28545.8608,
+        "ThreadId": 855220
+      },
+      {
+        "EndMs": 37433.7056,
+        "Phase": "firstInvoke",
+        "StartMs": 37429.5975,
+        "ThreadId": 855220
+      }
+    ],
+    "note": "Main-thread sampled stacks include GC waits; percentages are inclusive and must not be summed. Allocation bytes are weighted GC allocation ticks, not retained memory.",
+    "phases": [
+      {
+        "AllocationBytes": 2654536,
+        "AllocationTicks": 25,
+        "AllocationWithoutStack": 0,
+        "CpuSamples": 1,
+        "CpuWithoutStack": 0,
+        "allocationTypes": [
+          {
+            "name": "AvlNode[Microsoft.CodeAnalysis.CSharp.Symbols.TypeParameterSymbol,Microsoft.CodeAnalysis.CSharp.Symbols.TypeWithAnnotations]",
+            "percent": 28.013935392098656,
+            "value": 743640
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.CSharp.Symbols.TypeWithAnnotations[]",
+            "percent": 11.999083832353376,
+            "value": 318520
+          },
+          {
+            "name": "System.String",
+            "percent": 8.002603844890407,
+            "value": 212432
+          },
+          {
+            "name": "Entry[System.ReadOnlyMemory`1[System.Char],Microsoft.CodeAnalysis.PooledObjects.ArrayBuilder`1[Microsoft.CodeAnalysis.CSharp.Symbols.Metadata.PE.PENamedTypeSymbol]][]",
+            "percent": 4.133001021647474,
+            "value": 109712
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.CSharp.Symbols.AssemblySymbol[]",
+            "percent": 4.0320417579569465,
+            "value": 107032
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionStatementSyntax",
+            "percent": 4.006123857427437,
+            "value": 106344
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.CSharp.BoundLocal",
+            "percent": 4.006123857427437,
+            "value": 106344
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.CSharp.Syntax.BinaryExpressionSyntax",
+            "percent": 3.996479987462969,
+            "value": 106088
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.CSharp.Symbols.Metadata.PE.PEPropertySymbol",
+            "percent": 3.996479987462969,
+            "value": 106088
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.CSharp.Symbols.Metadata.PE.PETypeParameterSymbol",
+            "percent": 3.996479987462969,
+            "value": 106088
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.CSharp.Symbols.ConstructedNamedTypeSymbol",
+            "percent": 3.996479987462969,
+            "value": 106088
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.CSharp.Symbols.Metadata.PE.PEParameterSymbol",
+            "percent": 3.996479987462969,
+            "value": 106088
+          }
+        ],
+        "cpuExclusive": [
+          {
+            "name": "System.Threading.Thread.<PollGC>g__PollGCWorker|75_0",
+            "percent": 100,
+            "value": 1
+          }
+        ],
+        "functions": [],
+        "phase": "frontend"
+      },
+      {
+        "AllocationBytes": 293893224,
+        "AllocationTicks": 2449,
+        "AllocationWithoutStack": 0,
+        "CpuSamples": 89,
+        "CpuWithoutStack": 0,
+        "allocationTypes": [
+          {
+            "name": "Entry[Microsoft.CodeAnalysis.SyntaxNode,Microsoft.CodeAnalysis.IOperation][]",
+            "percent": 25.63537565602397,
+            "value": 75340632
+          },
+          {
+            "name": "Entry[Microsoft.CodeAnalysis.SyntaxNode,Microsoft.CodeAnalysis.Collections.OneOrMany`1[Microsoft.CodeAnalysis.CSharp.BoundNode]][]",
+            "percent": 12.799663594829937,
+            "value": 37617344
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.CSharp.Symbols.PublicModel.NonErrorNamedTypeSymbol",
+            "percent": 8.473972846682576,
+            "value": 24904432
+          },
+          {
+            "name": "UncommonData",
+            "percent": 4.566210754147908,
+            "value": 13419784
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.Operations.BinaryOperation",
+            "percent": 3.8070833507886523,
+            "value": 11188760
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.CSharp.BoundLocal",
+            "percent": 3.5499722851725224,
+            "value": 10433128
+          },
+          {
+            "name": "AvlNode[Microsoft.CodeAnalysis.SyntaxNode,Microsoft.CodeAnalysis.CSharp.Binder]",
+            "percent": 3.4807498658084066,
+            "value": 10229688
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.Operations.LocalReferenceOperation",
+            "percent": 3.36968095596515,
+            "value": 9903264
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.CSharp.EmbeddedStatementBinder",
+            "percent": 3.0494040924196333,
+            "value": 8961992
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.CSharp.Binder",
+            "percent": 2.9327576467023273,
+            "value": 8619176
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.CSharp.BoundBinaryOperator",
+            "percent": 2.5740232786040687,
+            "value": 7564880
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.Operations.LiteralOperation",
+            "percent": 2.3902231920801276,
+            "value": 7024704
+          }
+        ],
+        "cpuExclusive": [
+          {
+            "name": "System.Threading.Thread.<PollGC>g__PollGCWorker|75_0",
+            "percent": 58.42696629213483,
+            "value": 52
+          },
+          {
+            "name": "System.Collections.Generic.Dictionary`2[System.__Canon,Microsoft.CodeAnalysis.Collections.OrderPreservingMultiDictionary`2+ValueSet[System.__Canon,System.__Canon]].FindValue",
+            "percent": 4.49438202247191,
+            "value": 4
+          },
+          {
+            "name": "System.Reflection.MethodBaseInvoker.InvokeWithOneArg",
+            "percent": 3.3707865168539324,
+            "value": 3
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.Operations.CSharpOperationFactory.Create",
+            "percent": 3.3707865168539324,
+            "value": 3
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.CSharp.CSharpSyntaxWalker.DefaultVisit",
+            "percent": 3.3707865168539324,
+            "value": 3
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.Operations.CSharpOperationFactory.CreateBoundBinaryOperatorOperation",
+            "percent": 2.247191011235955,
+            "value": 2
+          },
+          {
+            "name": "System.Collections.Generic.Dictionary`2+KeyCollection+Enumerator[System.__Canon,Microsoft.CodeAnalysis.Collections.OrderPreservingMultiDictionary`2+ValueSet[System.__Canon,System.__Canon]].MoveNext",
+            "percent": 2.247191011235955,
+            "value": 2
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.CSharp.Syntax.LocalDeclarationStatementSyntax.get_Modifiers",
+            "percent": 1.1235955056179776,
+            "value": 1
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.CSharp.MemberSemanticModel+NodeMapBuilder.AddToMap",
+            "percent": 1.1235955056179776,
+            "value": 1
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.Operations.CSharpOperationFactory.CreateBoundLocalOperation",
+            "percent": 1.1235955056179776,
+            "value": 1
+          },
+          {
+            "name": "Microsoft.CodeAnalysis.SmallDictionary`2[System.__Canon,System.__Canon].Insert",
+            "percent": 1.1235955056179776,
+            "value": 1
+          },
+          {
+            "name": "System.Collections.Generic.Dictionary`2[System.__Canon,System.__Canon].TryInsert",
+            "percent": 1.1235955056179776,
+            "value": 1
+          }
+        ],
+        "functions": [
+          {
+            "allocationBytes": 215705552,
+            "allocationPercent": 73.39589156366532,
+            "name": "Microsoft.CodeAnalysis.CSharp.MemberSemanticModel.GetRootOperation",
+            "samplePercent": 87.64044943820225,
+            "samples": 78
+          },
+          {
+            "allocationBytes": 292216752,
+            "allocationPercent": 99.42956425562231,
+            "name": "Microsoft.CodeAnalysis.CSharp.MemberSemanticModel.GetOperationWorker",
+            "samplePercent": 89.88764044943821,
+            "samples": 80
+          },
+          {
+            "allocationBytes": 291561896,
+            "allocationPercent": 99.20674319459641,
+            "name": "MpsAgent.Merkle.Bridge.Symbols.MerkleInitializerExpressionBuilder.BuildCore",
+            "samplePercent": 96.62921348314607,
+            "samples": 86
+          }
+        ],
+        "phase": "bridge"
+      },
+      {
+        "AllocationBytes": 3098535968,
+        "AllocationTicks": 27896,
+        "AllocationWithoutStack": 0,
+        "CpuSamples": 544,
+        "CpuWithoutStack": 0,
+        "allocationTypes": [
+          {
+            "name": "MerkleV2.Navigation.MerklePathSegment[]",
+            "percent": 26.606572152594097,
+            "value": 824414208
+          },
+          {
+            "name": "System.ValueTuple`2[System.Int32,MerkleV2.Navigation.MerkleCursor][]",
+            "percent": 16.457553801744346,
+            "value": 509943224
+          },
+          {
+            "name": "MerkleV2.Navigation.MerkleCursor",
+            "percent": 16.05632560467344,
+            "value": 497511024
+          },
+          {
+            "name": "Entry[MerkleV2.Navigation.MerklePath,MerkleV2.Navigation.MerkleCursor][]",
+            "percent": 13.834420785397189,
+            "value": 428664504
+          },
+          {
+            "name": "MerkleV2.Navigation.MerklePath",
+            "percent": 8.16223876733775,
+            "value": 252909904
+          },
+          {
+            "name": "IListSkipTakeIterator`1[MerkleV2.Navigation.MerklePathSegment]",
+            "percent": 8.006909668379231,
+            "value": 248096976
+          },
+          {
+            "name": "System.ValueTuple`3[System.Int32,MerkleV2.Navigation.MerklePath,MerkleV2.Nodes.MerkleNumericConstantExpression][]",
+            "percent": 3.945631913348827,
+            "value": 122256824
+          },
+          {
+            "name": "System.ValueTuple`3[System.Int32,MerkleV2.Navigation.MerklePath,MerkleV2.Nodes.MerkleLocalReferenceExpression][]",
+            "percent": 1.30309386164918,
+            "value": 40376832
+          },
+          {
+            "name": "System.ValueTuple`3[System.Int32,MerkleV2.Navigation.MerklePath,MerkleV2.Nodes.MerkleBitwiseAndExpression][]",
+            "percent": 1.0723084819133524,
+            "value": 33225864
+          },
+          {
+            "name": "System.ValueTuple`3[System.Int32,MerkleV2.Navigation.MerklePath,MerkleV2.Nodes.MerkleExpressionStatement][]",
+            "percent": 0.5873610049376713,
+            "value": 18199592
+          },
+          {
+            "name": "System.Int32[]",
+            "percent": 0.5165241961135111,
+            "value": 16004688
+          },
+          {
+            "name": "System.ValueTuple`3[System.Int32,MerkleV2.Navigation.MerklePath,MerkleV2.Nodes.MerkleNotEqualExpression][]",
+            "percent": 0.5125535467077722,
+            "value": 15881656
+          }
+        ],
+        "cpuExclusive": [
+          {
+            "name": "System.Threading.Thread.<PollGC>g__PollGCWorker|75_0",
+            "percent": 33.455882352941174,
+            "value": 182
+          },
+          {
+            "name": "MerkleV2.Navigation.MerkleOccurrenceSnapshotProjection.BuildCursors",
+            "percent": 15.073529411764707,
+            "value": 82
+          },
+          {
+            "name": "MerkleV2.Navigation.MerklePath.GetHashCode",
+            "percent": 5.147058823529412,
+            "value": 28
+          },
+          {
+            "name": "System.Collections.Generic.ArraySortHelper`1[System.ValueTuple`2[System.Int32,System.__Canon]].PickPivotAndPartition",
+            "percent": 4.595588235294118,
+            "value": 25
+          },
+          {
+            "name": "System.Collections.Generic.ArraySortHelper`1[System.ValueTuple`2[System.Int32,System.__Canon]].IntroSort",
+            "percent": 4.595588235294118,
+            "value": 25
+          },
+          {
+            "name": "MerkleV2.Navigation.MerklePath.Equals",
+            "percent": 4.044117647058823,
+            "value": 22
+          },
+          {
+            "name": "System.Collections.Generic.Dictionary`2[System.__Canon,System.__Canon].FindValue",
+            "percent": 3.860294117647059,
+            "value": 21
+          },
+          {
+            "name": "System.Collections.Generic.Dictionary`2[System.__Canon,System.__Canon].TryInsert",
+            "percent": 3.125,
+            "value": 17
+          },
+          {
+            "name": "System.Collections.Generic.Dictionary`2[System.__Canon,System.__Canon].Resize",
+            "percent": 3.125,
+            "value": 17
+          },
+          {
+            "name": "System.Collections.Generic.ArraySortHelper`1[System.ValueTuple`2[System.Int32,System.__Canon]].InsertionSort",
+            "percent": 2.7573529411764706,
+            "value": 15
+          },
+          {
+            "name": "MerkleV2.Visitors.MerkleContextualWalkerBase`1[System.__Canon].Visit",
+            "percent": 1.838235294117647,
+            "value": 10
+          },
+          {
+            "name": "System.Linq.Enumerable+IListSkipTakeIterator`1[MerkleV2.Navigation.MerklePathSegment].ToArray",
+            "percent": 1.286764705882353,
+            "value": 7
+          }
+        ],
+        "functions": [
+          {
+            "allocationBytes": 16598336,
+            "allocationPercent": 0.5356831797796965,
+            "name": "MerkleV2.Compiler.Backend.DelegateCompiler.TryPrepareStatementBodyForEmission",
+            "samplePercent": 2.389705882352941,
+            "samples": 13
+          },
+          {
+            "allocationBytes": 14406328,
+            "allocationPercent": 0.46493983445022896,
+            "name": "MerkleV2.Compiler.Backend.StatementBodyRewriteProvenance.TryValidate",
+            "samplePercent": 1.6544117647058822,
+            "samples": 9
+          },
+          {
+            "allocationBytes": 5815792,
+            "allocationPercent": 0.18769483588579727,
+            "name": "MerkleV2.Compiler.Backend.StatementBodyRewriteProvenance.TryProjectRewrite",
+            "samplePercent": 1.1029411764705883,
+            "samples": 6
+          },
+          {
+            "allocationBytes": 923147576,
+            "allocationPercent": 29.793024368081177,
+            "name": "MerkleV2.Navigation.MerkleTraversalSnapshot.CollectCursors",
+            "samplePercent": 25,
+            "samples": 136
+          },
+          {
+            "allocationBytes": 2136559904,
+            "allocationPercent": 68.9538519502511,
+            "name": "MerkleV2.Navigation.MerkleOccurrenceSnapshotProjection.BuildCursors",
+            "samplePercent": 68.93382352941177,
+            "samples": 375
+          },
+          {
+            "allocationBytes": 3053661520,
+            "allocationPercent": 98.55175320011001,
+            "name": "MerkleV2.Compiler.Backend.FinalLoweredBodyControlFlowAnalyzer.TryBuildStatementOccurrences",
+            "samplePercent": 96.13970588235294,
+            "samples": 523
+          },
+          {
+            "allocationBytes": 1268040,
+            "allocationPercent": 0.040923843166438274,
+            "name": "MerkleV2.Navigation.MerkleTraversalSnapshot.CollectCursors",
+            "samplePercent": 0,
+            "samples": 0
+          }
+        ],
+        "phase": "merkleCompile"
+      }
+    ],
+    "trace": "D:\\repos\\runtime-async-dynamicmethod\\artifacts\\experiments\\pipeline-profile\\20260915-193444\\merkle-s192-n1-r1.nettrace",
+    "traceBytes": 32670090
+  },
+  "traceManifest": {
+    "analyzer": "34f80482a35add6f95d7cbe33279946dca3b12c786aad635f27f4cb7a20fef23",
+    "bytes": 32670090,
+    "sha256": "166acd55dc253b375e9f64580bbba50e57d56fc30b92bbecf36e5f6dd1a680fe",
+    "trace": "D:\\repos\\runtime-async-dynamicmethod\\artifacts\\experiments\\pipeline-profile\\20260915-193444\\merkle-s192-n1-r1.nettrace",
+    "traceEventVersion": "3.1.28"
+  },
+  "eventPipe": {
+    "config": "Microsoft-Windows-DotNETRuntime:40000019:5,Microsoft-DotNETCore-SampleProfiler:0:5,Pipeline-Profile:ffffffffffffffff:5",
+    "circularMBHex": "100"
+  },
+  "scope": "Pre-fix profile; user reports cursor-index fix is WIP. No product changes applied."
+}
