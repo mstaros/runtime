@@ -7,6 +7,8 @@ param(
     [string]$PackageRoot = "D:\cache\nuget",
     [ValidateRange(1, 2000)][int]$Count = 32,
     [ValidateRange(1, 5)][int]$Repetitions = 3,
+    [ValidateSet("all", "merkle", "roslyn-classic", "diagnostics", "alc-load", "alc-empty")][string]$Mode = "all",
+    [int]$Statements = -1,
     [string]$OutputDirectory = "",
     [switch]$Pilot,
     [switch]$Profile,
@@ -159,19 +161,29 @@ $settings = [ordered]@{
     COMPlus_GCStress = "0"; DOTNET_GCStress = "0"
 }
 $cases = @()
-$sizes = if ($Pilot) { @(24) } elseif ($Profile) { @(192) } else { @(24, 96, 192) }
-foreach ($size in $sizes) {
-    $modes = if ($Profile) { @("merkle") } else { @("merkle", "roslyn-classic") }
-    foreach ($mode in $modes) {
-        $caseCount = if ($size -ge 192) { [Math]::Min($Count, 2) } elseif ($size -ge 96) { [Math]::Min($Count, 8) } else { $Count }
-        $cases += [ordered]@{ mode = $mode; statements = $size; count = $caseCount }
+if ($Mode -ne "all") {
+    if ($Mode -in @("merkle", "roslyn-classic", "diagnostics") -and ($Statements -lt 0 -or $Statements -gt 384 -or $Statements % 6 -ne 0)) {
+        throw "-Statements must be between 0 and 384 and divisible by 6 for mode $Mode."
     }
-}
-if (-not $Profile) {
-foreach ($size in $sizes) { $cases += [ordered]@{ mode = "diagnostics"; statements = $size; count = $Count } }
-$controlCount = if ($Pilot) { $Count } else { 1000 }
-$cases += [ordered]@{ mode = "alc-load"; statements = 24; count = $controlCount }
-$cases += [ordered]@{ mode = "alc-empty"; statements = 0; count = $controlCount }
+    if ($Mode -in @("alc-load", "alc-empty") -and $Statements -lt 0) {
+        $Statements = if ($Mode -eq "alc-load") { 24 } else { 0 }
+    }
+    $cases += [ordered]@{ mode = $Mode; statements = $Statements; count = $Count }
+} else {
+    $sizes = if ($Pilot) { @(24) } elseif ($Profile) { @(192) } else { @(24, 96, 192) }
+    foreach ($size in $sizes) {
+        $modes = if ($Profile) { @("merkle") } else { @("merkle", "roslyn-classic") }
+        foreach ($modeName in $modes) {
+            $caseCount = if ($size -ge 192) { [Math]::Min($Count, 2) } elseif ($size -ge 96) { [Math]::Min($Count, 8) } else { $Count }
+            $cases += [ordered]@{ mode = $modeName; statements = $size; count = $caseCount }
+        }
+    }
+    if (-not $Profile) {
+        foreach ($size in $sizes) { $cases += [ordered]@{ mode = "diagnostics"; statements = $size; count = $Count } }
+        $controlCount = if ($Pilot) { $Count } else { 1000 }
+        $cases += [ordered]@{ mode = "alc-load"; statements = 24; count = $controlCount }
+        $cases += [ordered]@{ mode = "alc-empty"; statements = 0; count = $controlCount }
+    }
 }
 $runs = @()
 for ($rep = 1; $rep -le $Repetitions; $rep++) {
