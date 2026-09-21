@@ -11,7 +11,7 @@
     <StrongNameKeyId>Open</StrongNameKeyId>
     <RunAnalyzers>false</RunAnalyzers>
     <IsPackable>true</IsPackable>
-    <PackageId>Microsoft.ILVerification</PackageId>
+    <PackageId>Mps.ILVerification</PackageId>
     <PackageDescription>IL verification library.</PackageDescription>
     <PackageReleaseNotes>
         9.0.0 - In the ILVerify.IResolver interface, the type of the first parameter of each method is now System.Reflection.Metadata.AssemblyNameInfo rather than System.Reflection.AssemblyName.

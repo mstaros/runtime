@@ -34,6 +34,8 @@ namespace ILVerify
             _verifierOptions = verifierOptions ?? new VerifierOptions();
         }
 
+        public TypeSystemContext TypeSystemContext => _typeSystemContext;
+
         public void SetSystemModuleName(AssemblyNameInfo name)
         {
             PEReader peReader = _typeSystemContext._resolver.ResolveAssembly(name);
@@ -152,6 +154,26 @@ namespace ILVerify
             {
                 yield return result;
             }
+        }
+
+        public IEnumerable<VerificationResult> Verify(MethodIL methodIL)
+        {
+            if (methodIL == null)
+            {
+                throw new ArgumentNullException(nameof(methodIL));
+            }
+
+            if (methodIL.OwningMethod.Context != _typeSystemContext)
+            {
+                throw new ArgumentException("The method does not belong to this verifier's type system context.", nameof(methodIL));
+            }
+
+            if (_typeSystemContext.SystemModule == null)
+            {
+                ThrowMissingSystemModule();
+            }
+
+            return VerifyMethod(module: null, methodIL, methodHandle: default);
         }
 
         private IEnumerable<VerificationResult> VerifyMethods(EcmaModule module, IEnumerable<MethodDefinitionHandle> methodHandles)
