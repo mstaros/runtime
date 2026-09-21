@@ -1,0 +1,406 @@
+{
+  "note": "Live ScriptMcp server durations include compilation, execution, result projection and operation bookkeeping; they are not isolated compiler timings. Bodies use Task.FromResult(41) instead of the benchmark's host Input task; ScriptMcp returns object. No benchmark workers ran concurrently with these probes.",
+  "assemblyProbe": {
+    "events": [
+      {
+        "byteCount": 18,
+        "kind": "status",
+        "level": "info",
+        "message": "Operation started.",
+        "sequence": 1,
+        "timestamp": "2026-09-15T16:14:54.9914338+00:00",
+        "truncated": false
+      },
+      {
+        "byteCount": 25,
+        "kind": "info",
+        "level": "info",
+        "message": "Script execution started.",
+        "sequence": 2,
+        "timestamp": "2026-09-15T16:14:55.0228777+00:00",
+        "truncated": false
+      },
+      {
+        "byteCount": 195,
+        "data": {
+          "argumentsCaptureMode": "hash_only",
+          "argumentsTruncated": false,
+          "hasResult": true,
+          "resultCaptureMode": "hash_only",
+          "resultTruncated": false,
+          "summaryTruncated": false,
+          "telemetry": null
+        },
+        "kind": "status",
+        "level": "info",
+        "message": "Script completed.",
+        "sequence": 3,
+        "timestamp": "2026-09-15T16:14:55.742078+00:00",
+        "truncated": false
+      }
+    ],
+    "eventsPurged": false,
+    "operation": {
+      "argumentsBytes": 643,
+      "argumentsCaptureMode": "hash_only",
+      "argumentsHash": "9af2312d05fe8b06c09be172c475d61a511e7af0bdaf2213133b93562a5f00bd",
+      "argumentsTruncated": false,
+      "cancellationAllowed": false,
+      "endedAt": "2026-09-15T16:14:55.7412212+00:00",
+      "eventCount": 3,
+      "eventsTruncated": false,
+      "lastEventAt": "2026-09-15T16:14:55.742078+00:00",
+      "logTruncated": false,
+      "operationId": "op_49b61b2d4dfc4b35",
+      "outcomeSummary": "Script completed.",
+      "ownerInstanceId": "7a02d8ed-22d3-4832-b711-2412e9212036",
+      "ownerLeaseExpiresAt": "2026-09-15T16:15:55.0228777+00:00",
+      "resultBytes": 2419,
+      "resultCaptureMode": "hash_only",
+      "resultHash": "a69ce1ecc26301d2f0559055792cd344f651c855e5418b9dd6e1855dd5f0c148",
+      "resultTruncated": false,
+      "retainedBytes": 238,
+      "startedAt": "2026-09-15T16:14:54.9875302+00:00",
+      "status": "succeeded",
+      "toolName": "run_script_async"
+    },
+    "responseOriginalBytes": 4295,
+    "responseReturnedBytes": 4295,
+    "responseTruncated": false,
+    "result": {
+      "diagnosticCount": 0,
+      "diagnostics": [],
+      "diagnosticsTruncated": false,
+      "error": null,
+      "errorReport": null,
+      "failureStage": null,
+      "result": [
+        {
+          "Mvid": "350d78c0-e0ec-4283-9f8d-e64f8b068550",
+          "Name": "System.Private.CoreLib",
+          "Path": "D:\\mcp\\csharp\\script-platform\\cache\\73bf3a34d324f68612958370cca4e7bebbc3ce1333e3f1664abc8d7c779aba7b\\runtime\\shared\\Microsoft.NETCore.App\\11.0.0-preview.7.26381.103\\System.Private.CoreLib.dll",
+          "Version": "11.0.0.0"
+        },
+        {
+          "Mvid": "4da42700-a981-45d4-87f4-fc0de7aa5d4a",
+          "Name": "MpsAgent.ScriptPlatform",
+          "Path": "D:\\repos\\ScriptMcp\\src\\ScriptMcp.Server\\bin\\Debug\\net11.0\\win-x64\\MpsAgent.ScriptPlatform.dll",
+          "Version": "1.0.0.0"
+        },
+        {
+          "Mvid": "de74dcf0-a5dc-4cfb-89a9-7e72c7e21c11",
+          "Name": "RoslynManager",
+          "Path": "D:\\repos\\ScriptMcp\\src\\ScriptMcp.Server\\bin\\Debug\\net11.0\\win-x64\\RoslynManager.dll",
+          "Version": "0.1.0.0"
+        },
+        {
+          "Mvid": "e42a0dc8-c384-4f0b-b995-3adc82ee53a4",
+          "Name": "Microsoft.CodeAnalysis.CSharp",
+          "Path": "D:\\repos\\ScriptMcp\\src\\ScriptMcp.Server\\bin\\Debug\\net11.0\\win-x64\\Microsoft.CodeAnalysis.CSharp.dll",
+          "Version": "5.11.0.0"
+        },
+        {
+          "Mvid": "7053e370-8efb-42b9-ae30-1a775c18739b",
+          "Name": "MpsAgent.Merkle.Bridge",
+          "Path": "D:\\repos\\ScriptMcp\\src\\ScriptMcp.Server\\bin\\Debug\\net11.0\\win-x64\\MpsAgent.Merkle.Bridge.dll",
+          "Version": "1.0.0.0"
+        },
+        {
+          "Mvid": "6ee693d5-55e0-4c56-adc9-667767e72e33",
+          "Name": "MerkleV2",
+          "Path": "D:\\repos\\ScriptMcp\\src\\ScriptMcp.Server\\bin\\Debug\\net11.0\\win-x64\\MerkleV2.dll",
+          "Version": "1.0.0.0"
+        },
+        {
+          "Mvid": "571c3086-0fa1-4440-bc21-3afabb15fec6",
+          "Name": "MpsAgent.Merkle.Compiler",
+          "Path": "D:\\repos\\ScriptMcp\\src\\ScriptMcp.Server\\bin\\Debug\\net11.0\\win-x64\\MpsAgent.Merkle.Compiler.dll",
+          "Version": "1.0.0.0"
+        },
+        {
+          "Mvid": "7fcc1ddf-865a-4b19-bfec-492e22b108c9",
+          "Name": "MpsAgent.Merkle.EmitRuntime",
+          "Path": "D:\\repos\\ScriptMcp\\src\\ScriptMcp.Server\\bin\\Debug\\net11.0\\win-x64\\MpsAgent.Merkle.EmitRuntime.dll",
+          "Version": "1.0.0.0"
+        },
+        {
+          "Mvid": "1b3b8b53-ba2e-4120-aff0-8f83d2b24692",
+          "Name": "MpsAgent.Merkle.ControlFlow",
+          "Path": "D:\\repos\\ScriptMcp\\src\\ScriptMcp.Server\\bin\\Debug\\net11.0\\win-x64\\MpsAgent.Merkle.ControlFlow.dll",
+          "Version": "1.0.0.0"
+        },
+        {
+          "Mvid": "e1289d5a-07ad-41a9-af58-c8d3693a91ff",
+          "Name": "MpsAgent.Merkle.Runtime",
+          "Path": "D:\\repos\\ScriptMcp\\src\\ScriptMcp.Server\\bin\\Debug\\net11.0\\win-x64\\MpsAgent.Merkle.Runtime.dll",
+          "Version": "1.0.0.0"
+        }
+      ],
+      "resultText": null,
+      "resultTruncated": false,
+      "scriptExecuted": true,
+      "succeeded": true
+    }
+  },
+  "runs": [
+    {
+      "statements": 192,
+      "salt": 1000,
+      "source": "using System.Threading.Tasks;\nint value = await Task.FromResult(41);\nvalue = unchecked(value + (1000));\nvalue = unchecked(value * 1664525 + 1013904223);\nvalue ^= (int)((uint)value >> 2);\nif ((value & 1) != 0) value = unchecked(value + 19); else value ^= 99;\nvalue = unchecked(value * 1664525 + 1013904226);\nvalue ^= (int)((uint)value >> 5);\nif ((value & 1) != 0) value = unchecked(value + 22); else value ^= 102;\nvalue = unchecked(value * 1664525 + 1013904229);\nvalue ^= (int)((uint)value >> 8);\nif ((value & 1) != 0) value = unchecked(value + 25); else value ^= 105;\nvalue = unchecked(value * 1664525 + 1013904232);\nvalue ^= (int)((uint)value >> 11);\nif ((value & 1) != 0) value = unchecked(value + 28); else value ^= 108;\nvalue = unchecked(value * 1664525 + 1013904235);\nvalue ^= (int)((uint)value >> 1);\nif ((value & 1) != 0) value = unchecked(value + 31); else value ^= 111;\nvalue = unchecked(value * 1664525 + 1013904238);\nvalue ^= (int)((uint)value >> 4);\nif ((value & 1) != 0) value = unchecked(value + 34); else value ^= 114;\nvalue = unchecked(value * 1664525 + 1013904241);\nvalue ^= (int)((uint)value >> 7);\nif ((value & 1) != 0) value = unchecked(value + 37); else value ^= 117;\nvalue = unchecked(value * 1664525 + 1013904244);\nvalue ^= (int)((uint)value >> 10);\nif ((value & 1) != 0) value = unchecked(value + 40); else value ^= 120;\nvalue = unchecked(value * 1664525 + 1013904247);\nvalue ^= (int)((uint)value >> 13);\nif ((value & 1) != 0) value = unchecked(value + 43); else value ^= 123;\nvalue = unchecked(value * 1664525 + 1013904250);\nvalue ^= (int)((uint)value >> 3);\nif ((value & 1) != 0) value = unchecked(value + 46); else value ^= 126;\nvalue = unchecked(value * 1664525 + 1013904253);\nvalue ^= (int)((uint)value >> 6);\nif ((value & 1) != 0) value = unchecked(value + 49); else value ^= 129;\nvalue = unchecked(value * 1664525 + 1013904256);\nvalue ^= (int)((uint)value >> 9);\nif ((value & 1) != 0) value = unchecked(value + 52); else value ^= 132;\nvalue = unchecked(value * 1664525 + 1013904259);\nvalue ^= (int)((uint)value >> 12);\nif ((value & 1) != 0) value = unchecked(value + 55); else value ^= 135;\nvalue = unchecked(value * 1664525 + 1013904262);\nvalue ^= (int)((uint)value >> 2);\nif ((value & 1) != 0) value = unchecked(value + 58); else value ^= 138;\nvalue = unchecked(value * 1664525 + 1013904265);\nvalue ^= (int)((uint)value >> 5);\nif ((value & 1) != 0) value = unchecked(value + 61); else value ^= 141;\nvalue = unchecked(value * 1664525 + 1013904268);\nvalue ^= (int)((uint)value >> 8);\nif ((value & 1) != 0) value = unchecked(value + 64); else value ^= 144;\nvalue = unchecked(value * 1664525 + 1013904271);\nvalue ^= (int)((uint)value >> 11);\nif ((value & 1) != 0) value = unchecked(value + 67); else value ^= 147;\nvalue = unchecked(value * 1664525 + 1013904274);\nvalue ^= (int)((uint)value >> 1);\nif ((value & 1) != 0) value = unchecked(value + 70); else value ^= 150;\nvalue = unchecked(value * 1664525 + 1013904277);\nvalue ^= (int)((uint)value >> 4);\nif ((value & 1) != 0) value = unchecked(value + 73); else value ^= 153;\nvalue = unchecked(value * 1664525 + 1013904280);\nvalue ^= (int)((uint)value >> 7);\nif ((value & 1) != 0) value = unchecked(value + 76); else value ^= 156;\nvalue = unchecked(value * 1664525 + 1013904283);\nvalue ^= (int)((uint)value >> 10);\nif ((value & 1) != 0) value = unchecked(value + 79); else value ^= 159;\nvalue = unchecked(value * 1664525 + 1013904286);\nvalue ^= (int)((uint)value >> 13);\nif ((value & 1) != 0) value = unchecked(value + 82); else value ^= 162;\nvalue = unchecked(value * 1664525 + 1013904289);\nvalue ^= (int)((uint)value >> 3);\nif ((value & 1) != 0) value = unchecked(value + 85); else value ^= 165;\nvalue = unchecked(value * 1664525 + 1013904292);\nvalue ^= (int)((uint)value >> 6);\nif ((value & 1) != 0) value = unchecked(value + 88); else value ^= 168;\nvalue = unchecked(value * 1664525 + 1013904295);\nvalue ^= (int)((uint)value >> 9);\nif ((value & 1) != 0) value = unchecked(value + 91); else value ^= 171;\nvalue = unchecked(value * 1664525 + 1013904298);\nvalue ^= (int)((uint)value >> 12);\nif ((value & 1) != 0) value = unchecked(value + 94); else value ^= 174;\nvalue = unchecked(value * 1664525 + 1013904301);\nvalue ^= (int)((uint)value >> 2);\nif ((value & 1) != 0) value = unchecked(value + 97); else value ^= 177;\nvalue = unchecked(value * 1664525 + 1013904304);\nvalue ^= (int)((uint)value >> 5);\nif ((value & 1) != 0) value = unchecked(value + 100); else value ^= 180;\nvalue = unchecked(value * 1664525 + 1013904307);\nvalue ^= (int)((uint)value >> 8);\nif ((value & 1) != 0) value = unchecked(value + 103); else value ^= 183;\nvalue = unchecked(value * 1664525 + 1013904310);\nvalue ^= (int)((uint)value >> 11);\nif ((value & 1) != 0) value = unchecked(value + 106); else value ^= 186;\nvalue = unchecked(value * 1664525 + 1013904313);\nvalue ^= (int)((uint)value >> 1);\nif ((value & 1) != 0) value = unchecked(value + 109); else value ^= 189;\nvalue = unchecked(value * 1664525 + 1013904316);\nvalue ^= (int)((uint)value >> 4);\nif ((value & 1) != 0) value = unchecked(value + 112); else value ^= 192;\nvalue ^= await Task.FromResult(41);\nvalue = unchecked(value * 1664525 + 1013904319);\nvalue ^= (int)((uint)value >> 7);\nif ((value & 1) != 0) value = unchecked(value + 115); else value ^= 195;\nvalue = unchecked(value * 1664525 + 1013904322);\nvalue ^= (int)((uint)value >> 10);\nif ((value & 1) != 0) value = unchecked(value + 118); else value ^= 198;\nvalue = unchecked(value * 1664525 + 1013904325);\nvalue ^= (int)((uint)value >> 13);\nif ((value & 1) != 0) value = unchecked(value + 121); else value ^= 201;\nvalue = unchecked(value * 1664525 + 1013904328);\nvalue ^= (int)((uint)value >> 3);\nif ((value & 1) != 0) value = unchecked(value + 124); else value ^= 204;\nvalue = unchecked(value * 1664525 + 1013904331);\nvalue ^= (int)((uint)value >> 6);\nif ((value & 1) != 0) value = unchecked(value + 127); else value ^= 207;\nvalue = unchecked(value * 1664525 + 1013904334);\nvalue ^= (int)((uint)value >> 9);\nif ((value & 1) != 0) value = unchecked(value + 130); else value ^= 210;\nvalue = unchecked(value * 1664525 + 1013904337);\nvalue ^= (int)((uint)value >> 12);\nif ((value & 1) != 0) value = unchecked(value + 133); else value ^= 213;\nvalue = unchecked(value * 1664525 + 1013904340);\nvalue ^= (int)((uint)value >> 2);\nif ((value & 1) != 0) value = unchecked(value + 136); else value ^= 216;\nvalue = unchecked(value * 1664525 + 1013904343);\nvalue ^= (int)((uint)value >> 5);\nif ((value & 1) != 0) value = unchecked(value + 139); else value ^= 219;\nvalue = unchecked(value * 1664525 + 1013904346);\nvalue ^= (int)((uint)value >> 8);\nif ((value & 1) != 0) value = unchecked(value + 142); else value ^= 222;\nvalue = unchecked(value * 1664525 + 1013904349);\nvalue ^= (int)((uint)value >> 11);\nif ((value & 1) != 0) value = unchecked(value + 145); else value ^= 225;\nvalue = unchecked(value * 1664525 + 1013904352);\nvalue ^= (int)((uint)value >> 1);\nif ((value & 1) != 0) value = unchecked(value + 148); else value ^= 228;\nvalue = unchecked(value * 1664525 + 1013904355);\nvalue ^= (int)((uint)value >> 4);\nif ((value & 1) != 0) value = unchecked(value + 151); else value ^= 231;\nvalue = unchecked(value * 1664525 + 1013904358);\nvalue ^= (int)((uint)value >> 7);\nif ((value & 1) != 0) value = unchecked(value + 154); else value ^= 234;\nvalue = unchecked(value * 1664525 + 1013904361);\nvalue ^= (int)((uint)value >> 10);\nif ((value & 1) != 0) value = unchecked(value + 157); else value ^= 237;\nvalue = unchecked(value * 1664525 + 1013904364);\nvalue ^= (int)((uint)value >> 13);\nif ((value & 1) != 0) value = unchecked(value + 160); else value ^= 240;\nvalue = unchecked(value * 1664525 + 1013904367);\nvalue ^= (int)((uint)value >> 3);\nif ((value & 1) != 0) value = unchecked(value + 163); else value ^= 243;\nvalue = unchecked(value * 1664525 + 1013904370);\nvalue ^= (int)((uint)value >> 6);\nif ((value & 1) != 0) value = unchecked(value + 166); else value ^= 246;\nvalue = unchecked(value * 1664525 + 1013904373);\nvalue ^= (int)((uint)value >> 9);\nif ((value & 1) != 0) value = unchecked(value + 169); else value ^= 249;\nvalue = unchecked(value * 1664525 + 1013904376);\nvalue ^= (int)((uint)value >> 12);\nif ((value & 1) != 0) value = unchecked(value + 172); else value ^= 252;\nvalue = unchecked(value * 1664525 + 1013904379);\nvalue ^= (int)((uint)value >> 2);\nif ((value & 1) != 0) value = unchecked(value + 175); else value ^= 255;\nvalue = unchecked(value * 1664525 + 1013904382);\nvalue ^= (int)((uint)value >> 5);\nif ((value & 1) != 0) value = unchecked(value + 178); else value ^= 258;\nvalue = unchecked(value * 1664525 + 1013904385);\nvalue ^= (int)((uint)value >> 8);\nif ((value & 1) != 0) value = unchecked(value + 181); else value ^= 261;\nvalue = unchecked(value * 1664525 + 1013904388);\nvalue ^= (int)((uint)value >> 11);\nif ((value & 1) != 0) value = unchecked(value + 184); else value ^= 264;\nvalue = unchecked(value * 1664525 + 1013904391);\nvalue ^= (int)((uint)value >> 1);\nif ((value & 1) != 0) value = unchecked(value + 187); else value ^= 267;\nvalue = unchecked(value * 1664525 + 1013904394);\nvalue ^= (int)((uint)value >> 4);\nif ((value & 1) != 0) value = unchecked(value + 190); else value ^= 270;\nvalue = unchecked(value * 1664525 + 1013904397);\nvalue ^= (int)((uint)value >> 7);\nif ((value & 1) != 0) value = unchecked(value + 193); else value ^= 273;\nvalue = unchecked(value * 1664525 + 1013904400);\nvalue ^= (int)((uint)value >> 10);\nif ((value & 1) != 0) value = unchecked(value + 196); else value ^= 276;\nvalue = unchecked(value * 1664525 + 1013904403);\nvalue ^= (int)((uint)value >> 13);\nif ((value & 1) != 0) value = unchecked(value + 199); else value ^= 279;\nvalue = unchecked(value * 1664525 + 1013904406);\nvalue ^= (int)((uint)value >> 3);\nif ((value & 1) != 0) value = unchecked(value + 202); else value ^= 282;\nvalue = unchecked(value * 1664525 + 1013904409);\nvalue ^= (int)((uint)value >> 6);\nif ((value & 1) != 0) value = unchecked(value + 205); else value ^= 285;\nvalue = unchecked(value * 1664525 + 1013904412);\nvalue ^= (int)((uint)value >> 9);\nif ((value & 1) != 0) value = unchecked(value + 208); else value ^= 288;\nreturn value;",
+      "response": {
+        "events": [
+          {
+            "byteCount": 18,
+            "kind": "status",
+            "level": "info",
+            "message": "Operation started.",
+            "sequence": 1,
+            "timestamp": "2026-09-15T16:15:26.8427416+00:00",
+            "truncated": false
+          },
+          {
+            "byteCount": 25,
+            "kind": "info",
+            "level": "info",
+            "message": "Script execution started.",
+            "sequence": 2,
+            "timestamp": "2026-09-15T16:15:26.8442289+00:00",
+            "truncated": false
+          },
+          {
+            "byteCount": 195,
+            "data": {
+              "argumentsCaptureMode": "hash_only",
+              "argumentsTruncated": false,
+              "hasResult": true,
+              "resultCaptureMode": "hash_only",
+              "resultTruncated": false,
+              "summaryTruncated": false,
+              "telemetry": null
+            },
+            "kind": "status",
+            "level": "info",
+            "message": "Script completed.",
+            "sequence": 3,
+            "timestamp": "2026-09-15T16:15:33.2210047+00:00",
+            "truncated": false
+          }
+        ],
+        "eventsPurged": false,
+        "operation": {
+          "argumentsBytes": 11989,
+          "argumentsCaptureMode": "hash_only",
+          "argumentsHash": "45cf40d840c951ab9c82ad344cc2034cd3a423a8ee7201f2ace7a467b1b39a15",
+          "argumentsTruncated": false,
+          "cancellationAllowed": false,
+          "endedAt": "2026-09-15T16:15:33.2208355+00:00",
+          "eventCount": 3,
+          "eventsTruncated": false,
+          "lastEventAt": "2026-09-15T16:15:33.2210047+00:00",
+          "logTruncated": false,
+          "operationId": "op_61e82067a53a4689",
+          "outcomeSummary": "Script completed.",
+          "ownerInstanceId": "7a02d8ed-22d3-4832-b711-2412e9212036",
+          "ownerLeaseExpiresAt": "2026-09-15T16:16:26.8442289+00:00",
+          "resultBytes": 220,
+          "resultCaptureMode": "hash_only",
+          "resultHash": "3af8b8bcb8ae6a9024a166d26948b6217a799434fd805b05e8579639b0eca9c0",
+          "resultTruncated": false,
+          "retainedBytes": 238,
+          "startedAt": "2026-09-15T16:15:26.8420346+00:00",
+          "status": "succeeded",
+          "toolName": "run_script_async"
+        },
+        "responseOriginalBytes": 2099,
+        "responseReturnedBytes": 2099,
+        "responseTruncated": false,
+        "result": {
+          "diagnosticCount": 0,
+          "diagnostics": [],
+          "diagnosticsTruncated": false,
+          "error": null,
+          "errorReport": null,
+          "failureStage": null,
+          "result": 1584255456,
+          "resultText": null,
+          "resultTruncated": false,
+          "scriptExecuted": true,
+          "succeeded": true
+        }
+      }
+    },
+    {
+      "statements": 192,
+      "salt": 1001,
+      "source": "using System.Threading.Tasks;\nint value = await Task.FromResult(41);\nvalue = unchecked(value + (1001));\nvalue = unchecked(value * 1664525 + 1013904223);\nvalue ^= (int)((uint)value >> 2);\nif ((value & 1) != 0) value = unchecked(value + 19); else value ^= 99;\nvalue = unchecked(value * 1664525 + 1013904226);\nvalue ^= (int)((uint)value >> 5);\nif ((value & 1) != 0) value = unchecked(value + 22); else value ^= 102;\nvalue = unchecked(value * 1664525 + 1013904229);\nvalue ^= (int)((uint)value >> 8);\nif ((value & 1) != 0) value = unchecked(value + 25); else value ^= 105;\nvalue = unchecked(value * 1664525 + 1013904232);\nvalue ^= (int)((uint)value >> 11);\nif ((value & 1) != 0) value = unchecked(value + 28); else value ^= 108;\nvalue = unchecked(value * 1664525 + 1013904235);\nvalue ^= (int)((uint)value >> 1);\nif ((value & 1) != 0) value = unchecked(value + 31); else value ^= 111;\nvalue = unchecked(value * 1664525 + 1013904238);\nvalue ^= (int)((uint)value >> 4);\nif ((value & 1) != 0) value = unchecked(value + 34); else value ^= 114;\nvalue = unchecked(value * 1664525 + 1013904241);\nvalue ^= (int)((uint)value >> 7);\nif ((value & 1) != 0) value = unchecked(value + 37); else value ^= 117;\nvalue = unchecked(value * 1664525 + 1013904244);\nvalue ^= (int)((uint)value >> 10);\nif ((value & 1) != 0) value = unchecked(value + 40); else value ^= 120;\nvalue = unchecked(value * 1664525 + 1013904247);\nvalue ^= (int)((uint)value >> 13);\nif ((value & 1) != 0) value = unchecked(value + 43); else value ^= 123;\nvalue = unchecked(value * 1664525 + 1013904250);\nvalue ^= (int)((uint)value >> 3);\nif ((value & 1) != 0) value = unchecked(value + 46); else value ^= 126;\nvalue = unchecked(value * 1664525 + 1013904253);\nvalue ^= (int)((uint)value >> 6);\nif ((value & 1) != 0) value = unchecked(value + 49); else value ^= 129;\nvalue = unchecked(value * 1664525 + 1013904256);\nvalue ^= (int)((uint)value >> 9);\nif ((value & 1) != 0) value = unchecked(value + 52); else value ^= 132;\nvalue = unchecked(value * 1664525 + 1013904259);\nvalue ^= (int)((uint)value >> 12);\nif ((value & 1) != 0) value = unchecked(value + 55); else value ^= 135;\nvalue = unchecked(value * 1664525 + 1013904262);\nvalue ^= (int)((uint)value >> 2);\nif ((value & 1) != 0) value = unchecked(value + 58); else value ^= 138;\nvalue = unchecked(value * 1664525 + 1013904265);\nvalue ^= (int)((uint)value >> 5);\nif ((value & 1) != 0) value = unchecked(value + 61); else value ^= 141;\nvalue = unchecked(value * 1664525 + 1013904268);\nvalue ^= (int)((uint)value >> 8);\nif ((value & 1) != 0) value = unchecked(value + 64); else value ^= 144;\nvalue = unchecked(value * 1664525 + 1013904271);\nvalue ^= (int)((uint)value >> 11);\nif ((value & 1) != 0) value = unchecked(value + 67); else value ^= 147;\nvalue = unchecked(value * 1664525 + 1013904274);\nvalue ^= (int)((uint)value >> 1);\nif ((value & 1) != 0) value = unchecked(value + 70); else value ^= 150;\nvalue = unchecked(value * 1664525 + 1013904277);\nvalue ^= (int)((uint)value >> 4);\nif ((value & 1) != 0) value = unchecked(value + 73); else value ^= 153;\nvalue = unchecked(value * 1664525 + 1013904280);\nvalue ^= (int)((uint)value >> 7);\nif ((value & 1) != 0) value = unchecked(value + 76); else value ^= 156;\nvalue = unchecked(value * 1664525 + 1013904283);\nvalue ^= (int)((uint)value >> 10);\nif ((value & 1) != 0) value = unchecked(value + 79); else value ^= 159;\nvalue = unchecked(value * 1664525 + 1013904286);\nvalue ^= (int)((uint)value >> 13);\nif ((value & 1) != 0) value = unchecked(value + 82); else value ^= 162;\nvalue = unchecked(value * 1664525 + 1013904289);\nvalue ^= (int)((uint)value >> 3);\nif ((value & 1) != 0) value = unchecked(value + 85); else value ^= 165;\nvalue = unchecked(value * 1664525 + 1013904292);\nvalue ^= (int)((uint)value >> 6);\nif ((value & 1) != 0) value = unchecked(value + 88); else value ^= 168;\nvalue = unchecked(value * 1664525 + 1013904295);\nvalue ^= (int)((uint)value >> 9);\nif ((value & 1) != 0) value = unchecked(value + 91); else value ^= 171;\nvalue = unchecked(value * 1664525 + 1013904298);\nvalue ^= (int)((uint)value >> 12);\nif ((value & 1) != 0) value = unchecked(value + 94); else value ^= 174;\nvalue = unchecked(value * 1664525 + 1013904301);\nvalue ^= (int)((uint)value >> 2);\nif ((value & 1) != 0) value = unchecked(value + 97); else value ^= 177;\nvalue = unchecked(value * 1664525 + 1013904304);\nvalue ^= (int)((uint)value >> 5);\nif ((value & 1) != 0) value = unchecked(value + 100); else value ^= 180;\nvalue = unchecked(value * 1664525 + 1013904307);\nvalue ^= (int)((uint)value >> 8);\nif ((value & 1) != 0) value = unchecked(value + 103); else value ^= 183;\nvalue = unchecked(value * 1664525 + 1013904310);\nvalue ^= (int)((uint)value >> 11);\nif ((value & 1) != 0) value = unchecked(value + 106); else value ^= 186;\nvalue = unchecked(value * 1664525 + 1013904313);\nvalue ^= (int)((uint)value >> 1);\nif ((value & 1) != 0) value = unchecked(value + 109); else value ^= 189;\nvalue = unchecked(value * 1664525 + 1013904316);\nvalue ^= (int)((uint)value >> 4);\nif ((value & 1) != 0) value = unchecked(value + 112); else value ^= 192;\nvalue ^= await Task.FromResult(41);\nvalue = unchecked(value * 1664525 + 1013904319);\nvalue ^= (int)((uint)value >> 7);\nif ((value & 1) != 0) value = unchecked(value + 115); else value ^= 195;\nvalue = unchecked(value * 1664525 + 1013904322);\nvalue ^= (int)((uint)value >> 10);\nif ((value & 1) != 0) value = unchecked(value + 118); else value ^= 198;\nvalue = unchecked(value * 1664525 + 1013904325);\nvalue ^= (int)((uint)value >> 13);\nif ((value & 1) != 0) value = unchecked(value + 121); else value ^= 201;\nvalue = unchecked(value * 1664525 + 1013904328);\nvalue ^= (int)((uint)value >> 3);\nif ((value & 1) != 0) value = unchecked(value + 124); else value ^= 204;\nvalue = unchecked(value * 1664525 + 1013904331);\nvalue ^= (int)((uint)value >> 6);\nif ((value & 1) != 0) value = unchecked(value + 127); else value ^= 207;\nvalue = unchecked(value * 1664525 + 1013904334);\nvalue ^= (int)((uint)value >> 9);\nif ((value & 1) != 0) value = unchecked(value + 130); else value ^= 210;\nvalue = unchecked(value * 1664525 + 1013904337);\nvalue ^= (int)((uint)value >> 12);\nif ((value & 1) != 0) value = unchecked(value + 133); else value ^= 213;\nvalue = unchecked(value * 1664525 + 1013904340);\nvalue ^= (int)((uint)value >> 2);\nif ((value & 1) != 0) value = unchecked(value + 136); else value ^= 216;\nvalue = unchecked(value * 1664525 + 1013904343);\nvalue ^= (int)((uint)value >> 5);\nif ((value & 1) != 0) value = unchecked(value + 139); else value ^= 219;\nvalue = unchecked(value * 1664525 + 1013904346);\nvalue ^= (int)((uint)value >> 8);\nif ((value & 1) != 0) value = unchecked(value + 142); else value ^= 222;\nvalue = unchecked(value * 1664525 + 1013904349);\nvalue ^= (int)((uint)value >> 11);\nif ((value & 1) != 0) value = unchecked(value + 145); else value ^= 225;\nvalue = unchecked(value * 1664525 + 1013904352);\nvalue ^= (int)((uint)value >> 1);\nif ((value & 1) != 0) value = unchecked(value + 148); else value ^= 228;\nvalue = unchecked(value * 1664525 + 1013904355);\nvalue ^= (int)((uint)value >> 4);\nif ((value & 1) != 0) value = unchecked(value + 151); else value ^= 231;\nvalue = unchecked(value * 1664525 + 1013904358);\nvalue ^= (int)((uint)value >> 7);\nif ((value & 1) != 0) value = unchecked(value + 154); else value ^= 234;\nvalue = unchecked(value * 1664525 + 1013904361);\nvalue ^= (int)((uint)value >> 10);\nif ((value & 1) != 0) value = unchecked(value + 157); else value ^= 237;\nvalue = unchecked(value * 1664525 + 1013904364);\nvalue ^= (int)((uint)value >> 13);\nif ((value & 1) != 0) value = unchecked(value + 160); else value ^= 240;\nvalue = unchecked(value * 1664525 + 1013904367);\nvalue ^= (int)((uint)value >> 3);\nif ((value & 1) != 0) value = unchecked(value + 163); else value ^= 243;\nvalue = unchecked(value * 1664525 + 1013904370);\nvalue ^= (int)((uint)value >> 6);\nif ((value & 1) != 0) value = unchecked(value + 166); else value ^= 246;\nvalue = unchecked(value * 1664525 + 1013904373);\nvalue ^= (int)((uint)value >> 9);\nif ((value & 1) != 0) value = unchecked(value + 169); else value ^= 249;\nvalue = unchecked(value * 1664525 + 1013904376);\nvalue ^= (int)((uint)value >> 12);\nif ((value & 1) != 0) value = unchecked(value + 172); else value ^= 252;\nvalue = unchecked(value * 1664525 + 1013904379);\nvalue ^= (int)((uint)value >> 2);\nif ((value & 1) != 0) value = unchecked(value + 175); else value ^= 255;\nvalue = unchecked(value * 1664525 + 1013904382);\nvalue ^= (int)((uint)value >> 5);\nif ((value & 1) != 0) value = unchecked(value + 178); else value ^= 258;\nvalue = unchecked(value * 1664525 + 1013904385);\nvalue ^= (int)((uint)value >> 8);\nif ((value & 1) != 0) value = unchecked(value + 181); else value ^= 261;\nvalue = unchecked(value * 1664525 + 1013904388);\nvalue ^= (int)((uint)value >> 11);\nif ((value & 1) != 0) value = unchecked(value + 184); else value ^= 264;\nvalue = unchecked(value * 1664525 + 1013904391);\nvalue ^= (int)((uint)value >> 1);\nif ((value & 1) != 0) value = unchecked(value + 187); else value ^= 267;\nvalue = unchecked(value * 1664525 + 1013904394);\nvalue ^= (int)((uint)value >> 4);\nif ((value & 1) != 0) value = unchecked(value + 190); else value ^= 270;\nvalue = unchecked(value * 1664525 + 1013904397);\nvalue ^= (int)((uint)value >> 7);\nif ((value & 1) != 0) value = unchecked(value + 193); else value ^= 273;\nvalue = unchecked(value * 1664525 + 1013904400);\nvalue ^= (int)((uint)value >> 10);\nif ((value & 1) != 0) value = unchecked(value + 196); else value ^= 276;\nvalue = unchecked(value * 1664525 + 1013904403);\nvalue ^= (int)((uint)value >> 13);\nif ((value & 1) != 0) value = unchecked(value + 199); else value ^= 279;\nvalue = unchecked(value * 1664525 + 1013904406);\nvalue ^= (int)((uint)value >> 3);\nif ((value & 1) != 0) value = unchecked(value + 202); else value ^= 282;\nvalue = unchecked(value * 1664525 + 1013904409);\nvalue ^= (int)((uint)value >> 6);\nif ((value & 1) != 0) value = unchecked(value + 205); else value ^= 285;\nvalue = unchecked(value * 1664525 + 1013904412);\nvalue ^= (int)((uint)value >> 9);\nif ((value & 1) != 0) value = unchecked(value + 208); else value ^= 288;\nreturn value;",
+      "response": {
+        "events": [
+          {
+            "byteCount": 18,
+            "kind": "status",
+            "level": "info",
+            "message": "Operation started.",
+            "sequence": 1,
+            "timestamp": "2026-09-15T16:16:23.631672+00:00",
+            "truncated": false
+          },
+          {
+            "byteCount": 25,
+            "kind": "info",
+            "level": "info",
+            "message": "Script execution started.",
+            "sequence": 2,
+            "timestamp": "2026-09-15T16:16:23.6323572+00:00",
+            "truncated": false
+          },
+          {
+            "byteCount": 195,
+            "data": {
+              "argumentsCaptureMode": "hash_only",
+              "argumentsTruncated": false,
+              "hasResult": true,
+              "resultCaptureMode": "hash_only",
+              "resultTruncated": false,
+              "summaryTruncated": false,
+              "telemetry": null
+            },
+            "kind": "status",
+            "level": "info",
+            "message": "Script completed.",
+            "sequence": 3,
+            "timestamp": "2026-09-15T16:16:33.9889062+00:00",
+            "truncated": false
+          }
+        ],
+        "eventsPurged": false,
+        "operation": {
+          "argumentsBytes": 11989,
+          "argumentsCaptureMode": "hash_only",
+          "argumentsHash": "98f06c8bef3b7ebfdf1af672e4a6f1d88a4aec9165d78241e65a5ee5a0497bda",
+          "argumentsTruncated": false,
+          "cancellationAllowed": false,
+          "endedAt": "2026-09-15T16:16:33.9887677+00:00",
+          "eventCount": 3,
+          "eventsTruncated": false,
+          "lastEventAt": "2026-09-15T16:16:33.9889062+00:00",
+          "logTruncated": false,
+          "operationId": "op_58ce242fd5884a52",
+          "outcomeSummary": "Script completed.",
+          "ownerInstanceId": "7a02d8ed-22d3-4832-b711-2412e9212036",
+          "ownerLeaseExpiresAt": "2026-09-15T16:17:23.6323572+00:00",
+          "resultBytes": 220,
+          "resultCaptureMode": "hash_only",
+          "resultHash": "5125351ff540413a60468a94091a4f3696b2d93c2ae8501a7aa75526c3bf8ac3",
+          "resultTruncated": false,
+          "retainedBytes": 238,
+          "startedAt": "2026-09-15T16:16:23.6310555+00:00",
+          "status": "succeeded",
+          "toolName": "run_script_async"
+        },
+        "responseOriginalBytes": 2098,
+        "responseReturnedBytes": 2098,
+        "responseTruncated": false,
+        "result": {
+          "diagnosticCount": 0,
+          "diagnostics": [],
+          "diagnosticsTruncated": false,
+          "error": null,
+          "errorReport": null,
+          "failureStage": null,
+          "result": -243031298,
+          "resultText": null,
+          "resultTruncated": false,
+          "scriptExecuted": true,
+          "succeeded": true
+        }
+      }
+    },
+    {
+      "statements": 24,
+      "salt": 1000,
+      "note": "Second await is after all 24 statements, unlike the midpoint placement in the benchmark.",
+      "source": "using System.Threading.Tasks;\nint value = await Task.FromResult(41);\nvalue = unchecked(value + (1000));\nvalue = unchecked(value * 1664525 + 1013904223);\nvalue ^= (int)((uint)value >> 2);\nif ((value & 1) != 0) value = unchecked(value + 19); else value ^= 99;\nvalue = unchecked(value * 1664525 + 1013904226);\nvalue ^= (int)((uint)value >> 5);\nif ((value & 1) != 0) value = unchecked(value + 22); else value ^= 102;\nvalue = unchecked(value * 1664525 + 1013904229);\nvalue ^= (int)((uint)value >> 8);\nif ((value & 1) != 0) value = unchecked(value + 25); else value ^= 105;\nvalue = unchecked(value * 1664525 + 1013904232);\nvalue ^= (int)((uint)value >> 11);\nif ((value & 1) != 0) value = unchecked(value + 28); else value ^= 108;\nvalue = unchecked(value * 1664525 + 1013904235);\nvalue ^= (int)((uint)value >> 1);\nif ((value & 1) != 0) value = unchecked(value + 31); else value ^= 111;\nvalue = unchecked(value * 1664525 + 1013904238);\nvalue ^= (int)((uint)value >> 4);\nif ((value & 1) != 0) value = unchecked(value + 34); else value ^= 114;\nvalue = unchecked(value * 1664525 + 1013904241);\nvalue ^= (int)((uint)value >> 7);\nif ((value & 1) != 0) value = unchecked(value + 37); else value ^= 117;\nvalue = unchecked(value * 1664525 + 1013904244);\nvalue ^= (int)((uint)value >> 10);\nif ((value & 1) != 0) value = unchecked(value + 40); else value ^= 120;\nvalue ^= await Task.FromResult(41);\nreturn value;",
+      "response": {
+        "events": [
+          {
+            "byteCount": 18,
+            "kind": "status",
+            "level": "info",
+            "message": "Operation started.",
+            "sequence": 1,
+            "timestamp": "2026-09-15T16:17:24.6970879+00:00",
+            "truncated": false
+          },
+          {
+            "byteCount": 25,
+            "kind": "info",
+            "level": "info",
+            "message": "Script execution started.",
+            "sequence": 2,
+            "timestamp": "2026-09-15T16:17:24.6997258+00:00",
+            "truncated": false
+          },
+          {
+            "byteCount": 195,
+            "data": {
+              "argumentsCaptureMode": "hash_only",
+              "argumentsTruncated": false,
+              "hasResult": true,
+              "resultCaptureMode": "hash_only",
+              "resultTruncated": false,
+              "summaryTruncated": false,
+              "telemetry": null
+            },
+            "kind": "status",
+            "level": "info",
+            "message": "Script completed.",
+            "sequence": 3,
+            "timestamp": "2026-09-15T16:17:24.8262931+00:00",
+            "truncated": false
+          }
+        ],
+        "eventsPurged": false,
+        "operation": {
+          "argumentsBytes": 1687,
+          "argumentsCaptureMode": "hash_only",
+          "argumentsHash": "a43d7784f65483f0cc831a308c87843e455baccc974a92ea70da36da6e0027b2",
+          "argumentsTruncated": false,
+          "cancellationAllowed": false,
+          "endedAt": "2026-09-15T16:17:24.8261624+00:00",
+          "eventCount": 3,
+          "eventsTruncated": false,
+          "lastEventAt": "2026-09-15T16:17:24.8262931+00:00",
+          "logTruncated": false,
+          "operationId": "op_1d18e547ffb144bd",
+          "outcomeSummary": "Script completed.",
+          "ownerInstanceId": "7a02d8ed-22d3-4832-b711-2412e9212036",
+          "ownerLeaseExpiresAt": "2026-09-15T16:18:24.6997258+00:00",
+          "resultBytes": 219,
+          "resultCaptureMode": "hash_only",
+          "resultHash": "08eca19b80269cc1fb3e769839a13920ff4aa6ae6370b4acfec20b4fd6cb2cdf",
+          "resultTruncated": false,
+          "retainedBytes": 238,
+          "startedAt": "2026-09-15T16:17:24.6961944+00:00",
+          "status": "succeeded",
+          "toolName": "run_script_async"
+        },
+        "responseOriginalBytes": 2097,
+        "responseReturnedBytes": 2097,
+        "responseTruncated": false,
+        "result": {
+          "diagnosticCount": 0,
+          "diagnostics": [],
+          "diagnosticsTruncated": false,
+          "error": null,
+          "errorReport": null,
+          "failureStage": null,
+          "result": 474905574,
+          "resultText": null,
+          "resultTruncated": false,
+          "scriptExecuted": true,
+          "succeeded": true
+        }
+      }
+    }
+  ]
+}

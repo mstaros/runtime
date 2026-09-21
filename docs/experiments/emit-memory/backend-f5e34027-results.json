@@ -1,0 +1,690 @@
+{
+    "utc":  "2026-09-16T03:25:17.8146243Z",
+    "count":  1,
+    "repetitions":  3,
+    "profile":  true,
+    "runtimeRoot":  "D:\\repos\\runtime-async-dynamicmethod",
+    "compilerRoot":  "D:\\repos\\MerkleCompiler",
+    "compilerSourceHeadContextOnly":  "f5e34027a1783803a883bf90e61a8deb2c0ad3ed",
+    "experimentSources":  [
+                              {
+                                  "name":  "PipelineExperiment.cs",
+                                  "sha256":  "6de2179f2c826ee550914893f956026c8c17df8321f88ffbc7801fe3b178cb9f"
+                              },
+                              {
+                                  "name":  "run-pipeline.ps1",
+                                  "sha256":  "43ffbdc7696812464ec08de1f16f053adc3c99748f4aaa08f049b624fc63f3ab"
+                              }
+                          ],
+    "binaries":  [
+                     {
+                         "name":  "corerun.exe",
+                         "sha256":  "b0e88889843e4bf48603f9202e87c7cd1d615a4a37c1a44b034dfbfa7e30acbb"
+                     },
+                     {
+                         "name":  "coreclr.dll",
+                         "sha256":  "921df467cd5dfe1eee633cfabe4da09ca8db09aeb1d7ecd5d1b0e1be8f8b6530"
+                     },
+                     {
+                         "name":  "clrjit.dll",
+                         "sha256":  "7fca5b8e633ff575fe0248fa7cf36822c2af08818c089a6861952ae7909a0486"
+                     },
+                     {
+                         "name":  "System.Private.CoreLib.dll",
+                         "sha256":  "c31692506055fd39ee6264b7cb5bff2a74fb1b9977cf05c6417eebac800c160a"
+                     }
+                 ],
+    "payload":  [
+                    {
+                        "name":  "MpsAgent.Merkle.EmitRuntime.dll",
+                        "source":  "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\MpsAgent.Merkle.EmitRuntime.dll",
+                        "sha256":  "cbf0a34bc42b88db7fd73c31ea9fb41faff5e1129efad68f2d047e6d684fd161",
+                        "bytes":  15360
+                    },
+                    {
+                        "name":  "roaring.dll",
+                        "source":  "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\roaring.dll",
+                        "sha256":  "a1c4d73875b878bb9ecefea83e4d0f2e32ea528908e0e35493b46920f7e450a2",
+                        "bytes":  596516
+                    },
+                    {
+                        "name":  "mimalloc.dll",
+                        "source":  "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\mimalloc.dll",
+                        "sha256":  "22bc4634d175c17fd42651e5b39249f6972c77bcbd69f835583207457694d8bd",
+                        "bytes":  149504
+                    },
+                    {
+                        "name":  "MpsAgent.Merkle.Compiler.dll",
+                        "source":  "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\MpsAgent.Merkle.Compiler.dll",
+                        "sha256":  "232ee6683f997be61dffdba9fd2c30f1df7f0795a62b607c3089f087213b2f79",
+                        "bytes":  2462208
+                    },
+                    {
+                        "name":  "ColorMinePortable.dll",
+                        "source":  "D:\\cache\\nuget\\colormineportable\\2.0.1\\lib\\netstandard2.0\\ColorMinePortable.dll",
+                        "sha256":  "c7622ac58ca746636b6366669d5370be1a3463078b843993730680d439ac1438",
+                        "bytes":  262144
+                    },
+                    {
+                        "name":  "NuGet.Protocol.dll",
+                        "source":  "D:\\cache\\nuget\\nuget.protocol\\7.6.0\\lib\\net8.0\\NuGet.Protocol.dll",
+                        "sha256":  "66f70be58ef42aae6e16e8f16667aca73abca9b472ea10267d2cfc76553566e3",
+                        "bytes":  825888
+                    },
+                    {
+                        "name":  "Spreads.Native.dll",
+                        "source":  "D:\\cache\\nuget\\spreads.native\\2020.1.114\\lib\\netstandard2.0\\Spreads.Native.dll",
+                        "sha256":  "66a4291b0e147a6282c63727582ee9adc3d12c23f529fc988d4356d0f3e76379",
+                        "bytes":  53760
+                    },
+                    {
+                        "name":  "Microsoft.VisualStudio.Validation.dll",
+                        "source":  "D:\\cache\\nuget\\microsoft.visualstudio.validation\\15.5.31\\lib\\netstandard2.1\\Microsoft.VisualStudio.Validation.dll",
+                        "sha256":  "5297cdb7c4bed7a211e32372e5db0cec38db389cdd5d47b661b917b0bcb21c19",
+                        "bytes":  27496
+                    },
+                    {
+                        "name":  "Microsoft.CodeAnalysis.CSharp.dll",
+                        "source":  "D:\\cache\\nuget\\microsoft.codeanalysis.csharp\\5.11.0-1.26407.4\\lib\\net10.0\\Microsoft.CodeAnalysis.CSharp.dll",
+                        "sha256":  "f87092657deb876433deef3733229aeb14b58348f0031e93bcf3c659d6544d39",
+                        "bytes":  7094608
+                    },
+                    {
+                        "name":  "NuGet.Common.dll",
+                        "source":  "D:\\cache\\nuget\\nuget.common\\7.6.0\\lib\\net8.0\\NuGet.Common.dll",
+                        "sha256":  "2486b7d4b891d509c92c45913decf1c58bd0b762e85a116577f181aa632ea629",
+                        "bytes":  108576
+                    },
+                    {
+                        "name":  "Microsoft.Bcl.HashCode.dll",
+                        "source":  "D:\\cache\\nuget\\microsoft.bcl.hashcode\\6.0.0\\lib\\net6.0\\Microsoft.Bcl.HashCode.dll",
+                        "sha256":  "cba1991e35612990ab7c130b77d1ad8d5c8280f3aaad094cf81c3adabc38da43",
+                        "bytes":  19752
+                    },
+                    {
+                        "name":  "MessagePack.dll",
+                        "source":  "D:\\cache\\nuget\\messagepack\\3.1.4\\lib\\net9.0\\MessagePack.dll",
+                        "sha256":  "8abd8fa8d66f41d5bdd243b740c9dd392915a8b4df1373df5a1f3fdfe093a9c8",
+                        "bytes":  378880
+                    },
+                    {
+                        "name":  "Microsoft.CodeAnalysis.Scripting.dll",
+                        "source":  "D:\\cache\\nuget\\microsoft.codeanalysis.scripting.common\\5.11.0-1.26407.4\\lib\\net10.0\\Microsoft.CodeAnalysis.Scripting.dll",
+                        "sha256":  "f7785d9459ec47d2cdf34ccf9f091f71c1540406bc2516ca07fb0212437b0875",
+                        "bytes":  137552
+                    },
+                    {
+                        "name":  "MpsAgent.Merkle.Bridge.dll",
+                        "source":  "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Bridge\\bin\\Release\\net11.0\\MpsAgent.Merkle.Bridge.dll",
+                        "sha256":  "0d65535f21e0d7817a91b6e5ed4c284d23b58b72af87235c84d58f357fcfe157",
+                        "bytes":  1230848
+                    },
+                    {
+                        "name":  "NuGet.Frameworks.dll",
+                        "source":  "D:\\cache\\nuget\\nuget.frameworks\\7.6.0\\lib\\net8.0\\NuGet.Frameworks.dll",
+                        "sha256":  "80528b5f0c5482a33866669d460df7120c1b1a135e38d3337fa31207ba0398bb",
+                        "bytes":  122912
+                    },
+                    {
+                        "name":  "CRoaring.Net.dll",
+                        "source":  "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\CRoaring.Net.dll",
+                        "sha256":  "173b7e573d4a1f4b53932147d0e09cc5a41fe014a094902f88b5f3d9965b9dd7",
+                        "bytes":  54272
+                    },
+                    {
+                        "name":  "NuGet.Versioning.dll",
+                        "source":  "D:\\cache\\nuget\\nuget.versioning\\7.6.0\\lib\\net8.0\\NuGet.Versioning.dll",
+                        "sha256":  "457f94606721f8534623b572cde896050750357da0172d139faa25defd5042c8",
+                        "bytes":  62024
+                    },
+                    {
+                        "name":  "NuGet.Configuration.dll",
+                        "source":  "D:\\cache\\nuget\\nuget.configuration\\7.6.0\\lib\\net8.0\\NuGet.Configuration.dll",
+                        "sha256":  "69f2f90c3298b068101986f8d0e468b9c7cd37acf26eafad3201710e608914ca",
+                        "bytes":  172104
+                    },
+                    {
+                        "name":  "LinqFasterSIMD.dll",
+                        "source":  "D:\\cache\\nuget\\linqfaster.simd\\1.0.3\\lib\\netstandard2.0\\LinqFasterSIMD.dll",
+                        "sha256":  "da4ddc57585baea7d0922b56206815fd5af01c59d40cf0bf44402cb0ee69891a",
+                        "bytes":  13824
+                    },
+                    {
+                        "name":  "mimalloc-redirect.dll",
+                        "source":  "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\mimalloc-redirect.dll",
+                        "sha256":  "f9ffa1bc946e746c3a908ad83887d03d1ba8e16891e19aa119f427005207804e",
+                        "bytes":  55808
+                    },
+                    {
+                        "name":  "Microsoft.CodeAnalysis.CSharp.Scripting.dll",
+                        "source":  "D:\\cache\\nuget\\microsoft.codeanalysis.csharp.scripting\\5.11.0-1.26407.4\\lib\\net10.0\\Microsoft.CodeAnalysis.CSharp.Scripting.dll",
+                        "sha256":  "13feb4c133b24b01659b54f819f4aa3dee317cd05d71a0c9348bbc0a9d570d9a",
+                        "bytes":  34600
+                    },
+                    {
+                        "name":  "Basic.Reference.Assemblies.Net110.dll",
+                        "source":  "D:\\cache\\nuget\\basic.reference.assemblies.net110\\1.8.8\\lib\\netstandard2.0\\Basic.Reference.Assemblies.Net110.dll",
+                        "sha256":  "33866004b03639318950d1d5f77621fedc1cfdf94d669cc90f16b48d8be61b7f",
+                        "bytes":  6500864
+                    },
+                    {
+                        "name":  "Mimm.dll",
+                        "source":  "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\Mimm.dll",
+                        "sha256":  "938170ceddb4978a1795ebb7ef2595879055cce6e066a9a45fda81e6b303e32a",
+                        "bytes":  26624
+                    },
+                    {
+                        "name":  "Humanizer.dll",
+                        "source":  "D:\\cache\\nuget\\humanizer.core\\2.14.1\\lib\\net6.0\\Humanizer.dll",
+                        "sha256":  "d6853075547d7e303efd60354d911a2ff18edba582cda2fa59d91a2e5dcf9e98",
+                        "bytes":  355944
+                    },
+                    {
+                        "name":  "MpsAgent.Merkle.Runtime.dll",
+                        "source":  "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\MpsAgent.Merkle.Runtime.dll",
+                        "sha256":  "e12eff892fa863cd017c45d682aa318643aa03b02ca89fa80f1b6cdffc50fe2c",
+                        "bytes":  62464
+                    },
+                    {
+                        "name":  "NuGet.Resolver.dll",
+                        "source":  "D:\\cache\\nuget\\nuget.resolver\\7.6.0\\lib\\net8.0\\NuGet.Resolver.dll",
+                        "sha256":  "45216367d7ed12d58a2071e5e46165988ed2a1db38b4ef2cb919e842d78bdcce",
+                        "bytes":  66592
+                    },
+                    {
+                        "name":  "MerkleV2.dll",
+                        "source":  "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\MerkleV2.dll",
+                        "sha256":  "74a658c060bfbe5db0b371b1362531c2ebd6254b9a729b4a3a045a07e58dce81",
+                        "bytes":  6202880
+                    },
+                    {
+                        "name":  "MessagePack.Annotations.dll",
+                        "source":  "D:\\cache\\nuget\\messagepack.annotations\\3.1.4\\lib\\netstandard2.0\\MessagePack.Annotations.dll",
+                        "sha256":  "4d7aa07d288c6a39109eedf6435e3ba8c413342876ed08bb5a64d55dd39dd04d",
+                        "bytes":  18432
+                    },
+                    {
+                        "name":  "roaring64_extensions.dll",
+                        "source":  "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\roaring64_extensions.dll",
+                        "sha256":  "05a50c5e6e0a318c2abc3d5a822c46b3b3c6f25bae3fd1f8b83fb424d45e9349",
+                        "bytes":  133987
+                    },
+                    {
+                        "name":  "XXH3Lib.dll",
+                        "source":  "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\XXH3Lib.dll",
+                        "sha256":  "0f978f57d05ce7582f158e53d5c6a38de9941c4ed73f684d2d5f683a76fcca6b",
+                        "bytes":  26112
+                    },
+                    {
+                        "name":  "RoslynManager.dll",
+                        "source":  "D:\\cache\\nuget\\roslynmanager\\0.1.24\\lib\\net11.0\\RoslynManager.dll",
+                        "sha256":  "ca0e714d1fad05c8beb23d493b8f7f04d69989c8778c812d2c93236d0da44c67",
+                        "bytes":  406016
+                    },
+                    {
+                        "name":  "Microsoft.CodeAnalysis.dll",
+                        "source":  "D:\\cache\\nuget\\microsoft.codeanalysis.common\\5.11.0-1.26407.4\\lib\\net10.0\\Microsoft.CodeAnalysis.dll",
+                        "sha256":  "d13471bf9978b35be9b6b9fef6985a3dbebcc0199d2b39fc21e9ad52614fc0ba",
+                        "bytes":  3104080
+                    },
+                    {
+                        "name":  "Microsoft.NET.StringTools.dll",
+                        "source":  "D:\\cache\\nuget\\microsoft.net.stringtools\\17.11.4\\lib\\net8.0\\Microsoft.NET.StringTools.dll",
+                        "sha256":  "e51c8678fd602a21c249b369e833966019935132476f9434da896bef808ba3b1",
+                        "bytes":  30880
+                    },
+                    {
+                        "name":  "Microsoft.CodeAnalysis.CSharp.Workspaces.dll",
+                        "source":  "D:\\cache\\nuget\\microsoft.codeanalysis.csharp.workspaces\\5.11.0-1.26407.4\\lib\\net10.0\\Microsoft.CodeAnalysis.CSharp.Workspaces.dll",
+                        "sha256":  "8a347e637899b658fde360fe798819059ed99ba9217205db705be48d4ab4ba7b",
+                        "bytes":  1035560
+                    },
+                    {
+                        "name":  "Utils.dll",
+                        "source":  "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\Utils.dll",
+                        "sha256":  "c0ea03154655e6122895c66a8f15b180b475a66a5b43a241aa8fcc116782ae80",
+                        "bytes":  196608
+                    },
+                    {
+                        "name":  "Microsoft.VisualStudio.Threading.dll",
+                        "source":  "D:\\cache\\nuget\\microsoft.visualstudio.threading\\16.7.56\\lib\\netcoreapp3.0\\Microsoft.VisualStudio.Threading.dll",
+                        "sha256":  "46fcb93624716cb190459bfdecbb8c30e7afd358b9d5b5315e32654269c50ac3",
+                        "bytes":  224632
+                    },
+                    {
+                        "name":  "Spreads.Core.dll",
+                        "source":  "D:\\cache\\nuget\\spreads.core\\2020.0.114\\lib\\netcoreapp3.0\\Spreads.Core.dll",
+                        "sha256":  "ea1b19197facb018df69f7b23799a821c858ddfc3edc41415fa6066c69dc546f",
+                        "bytes":  854528
+                    },
+                    {
+                        "name":  "Microsoft.Extensions.ObjectPool.dll",
+                        "source":  "D:\\cache\\nuget\\microsoft.extensions.objectpool\\5.0.2\\lib\\net5.0\\Microsoft.Extensions.ObjectPool.dll",
+                        "sha256":  "2c3535efb929b4cd3874d9c4a76dcd2647e01ddace38475707effbb846a41172",
+                        "bytes":  21384
+                    },
+                    {
+                        "name":  "Microsoft.CodeAnalysis.Workspaces.dll",
+                        "source":  "D:\\cache\\nuget\\microsoft.codeanalysis.workspaces.common\\5.11.0-1.26407.4\\lib\\net10.0\\Microsoft.CodeAnalysis.Workspaces.dll",
+                        "sha256":  "e29dc73e624ffe60a51e8ed0fabe72ad57848bc47d38fdf484bc1a2ffe57ffff",
+                        "bytes":  4329256
+                    },
+                    {
+                        "name":  "xxhash.dll",
+                        "source":  "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\xxhash.dll",
+                        "sha256":  "842757fb14330335779ea095e36f198a4a03dee6c9a5bb16f71a372d5c2ec2d9",
+                        "bytes":  47616
+                    },
+                    {
+                        "name":  "MpsAgent.Merkle.ControlFlow.dll",
+                        "source":  "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\MpsAgent.Merkle.ControlFlow.dll",
+                        "sha256":  "90538ad993d477762346d9ed11dbe260243bf3e236b895186d296867d7bc8ee0",
+                        "bytes":  525824
+                    },
+                    {
+                        "name":  "PinnedArrayPool.dll",
+                        "source":  "D:\\repos\\MerkleCompiler\\MpsAgent.Merkle.Compiler\\bin\\Release\\net11.0\\PinnedArrayPool.dll",
+                        "sha256":  "a167312cbcb1395eacef1563a6254b704823c90a765ebb3256126c2b63d4fabc",
+                        "bytes":  11776
+                    },
+                    {
+                        "name":  "Unions.dll",
+                        "source":  "D:\\cache\\nuget\\mpsagent.unions\\1.0.1\\lib\\net11.0\\Unions.dll",
+                        "sha256":  "6243512ef9f40eae080109a2e79f4a9bb9e90585ce4d46d6e7f0ee165e187717",
+                        "bytes":  19456
+                    },
+                    {
+                        "name":  "NuGet.Packaging.dll",
+                        "source":  "D:\\cache\\nuget\\nuget.packaging\\7.6.0\\lib\\net8.0\\NuGet.Packaging.dll",
+                        "sha256":  "05a065acafaf18c02c5abb44542eb838f0a6516a7fb17b79a077e4f42a5b0eda",
+                        "bytes":  728096
+                    },
+                    {
+                        "name":  "Nerdbank.Streams.dll",
+                        "source":  "D:\\cache\\nuget\\nerdbank.streams\\2.6.81\\lib\\netcoreapp3.1\\Nerdbank.Streams.dll",
+                        "sha256":  "74163d8e9d04dd668d2622b19e26e0fdba882ef1944f83212cd2594957f7bb0c",
+                        "bytes":  189952
+                    }
+                ],
+    "settings":  {
+                     "COMPlus_TieredCompilation":  "0",
+                     "DOTNET_TieredCompilation":  "0",
+                     "COMPlus_ReadyToRun":  "0",
+                     "DOTNET_ReadyToRun":  "0",
+                     "COMPlus_gcServer":  "0",
+                     "DOTNET_gcServer":  "0",
+                     "COMPlus_GCStress":  "0",
+                     "DOTNET_GCStress":  "0"
+                 },
+    "runs":  [
+                 {
+                     "id":  "merkle-s192-n1-r1",
+                     "repetition":  1,
+                     "result":  {
+                                    "mode":  "merkle",
+                                    "count":  1,
+                                    "statements":  192,
+                                    "sourceLines":  199,
+                                    "generationMs":  71.2002,
+                                    "generationAllocatedBytes":  19549936,
+                                    "firstInvokeMs":  5.9958,
+                                    "generationCollections":  [
+                                                                  1,
+                                                                  0,
+                                                                  0
+                                                              ],
+                                    "phases":  {
+                                                   "frontend":  {
+                                                                    "Milliseconds":  9.8295,
+                                                                    "ThreadAllocatedBytes":  2733080
+                                                                },
+                                                   "bridge":  {
+                                                                  "Milliseconds":  26.6298,
+                                                                  "ThreadAllocatedBytes":  3516152
+                                                              },
+                                                   "merkleCompile":  {
+                                                                         "Milliseconds":  34.7101,
+                                                                         "ThreadAllocatedBytes":  13300224
+                                                                     }
+                                               },
+                                    "snapshots":  [
+                                                      {
+                                                          "stage":  "baseline",
+                                                          "managedLiveBytes":  5441720,
+                                                          "privateBytes":  49897472,
+                                                          "workingSetBytes":  112791552,
+                                                          "threads":  11,
+                                                          "heapBytes":  5551360,
+                                                          "committedBytes":  14274560,
+                                                          "lohBytes":  1865824,
+                                                          "delegates":  0,
+                                                          "owners":  0,
+                                                          "contexts":  0
+                                                      },
+                                                      {
+                                                          "stage":  "generated",
+                                                          "managedLiveBytes":  6567128,
+                                                          "privateBytes":  57585664,
+                                                          "workingSetBytes":  122544128,
+                                                          "threads":  11,
+                                                          "heapBytes":  6780304,
+                                                          "committedBytes":  24010752,
+                                                          "lohBytes":  2060288,
+                                                          "delegates":  1,
+                                                          "owners":  1,
+                                                          "contexts":  0
+                                                      },
+                                                      {
+                                                          "stage":  "jitted",
+                                                          "managedLiveBytes":  6567216,
+                                                          "privateBytes":  56971264,
+                                                          "workingSetBytes":  122261504,
+                                                          "threads":  11,
+                                                          "heapBytes":  6780392,
+                                                          "committedBytes":  24010752,
+                                                          "lohBytes":  2060288,
+                                                          "delegates":  1,
+                                                          "owners":  1,
+                                                          "contexts":  0
+                                                      },
+                                                      {
+                                                          "stage":  "suspended",
+                                                          "managedLiveBytes":  6567880,
+                                                          "privateBytes":  48820224,
+                                                          "workingSetBytes":  113889280,
+                                                          "threads":  11,
+                                                          "heapBytes":  6781056,
+                                                          "committedBytes":  15618048,
+                                                          "lohBytes":  2060288,
+                                                          "delegates":  1,
+                                                          "owners":  1,
+                                                          "contexts":  0
+                                                      },
+                                                      {
+                                                          "stage":  "delegates-released-pending",
+                                                          "managedLiveBytes":  5515144,
+                                                          "privateBytes":  47591424,
+                                                          "workingSetBytes":  112787456,
+                                                          "threads":  11,
+                                                          "heapBytes":  5616104,
+                                                          "committedBytes":  14422016,
+                                                          "lohBytes":  1865824,
+                                                          "delegates":  0,
+                                                          "owners":  1,
+                                                          "contexts":  0
+                                                      },
+                                                      {
+                                                          "stage":  "released",
+                                                          "managedLiveBytes":  5452808,
+                                                          "privateBytes":  47591424,
+                                                          "workingSetBytes":  112771072,
+                                                          "threads":  11,
+                                                          "heapBytes":  5554112,
+                                                          "committedBytes":  14422016,
+                                                          "lohBytes":  1865824,
+                                                          "delegates":  0,
+                                                          "owners":  0,
+                                                          "contexts":  0
+                                                      }
+                                                  ],
+                                    "peBytes":  0,
+                                    "loadedTypeCount":  0,
+                                    "runtimeAsyncMethodCount":  1,
+                                    "delegateAlive":  0,
+                                    "ownerAlive":  0,
+                                    "contextAlive":  0,
+                                    "runtime":  ".NET 11.0.0-dev",
+                                    "coreLibMvid":  "36d8bd66-9b46-4a81-8b3e-69002748af16",
+                                    "roslyn":  "5.11.0.0",
+                                    "serverGC":  false,
+                                    "compilerOptimizationsDisabled":  false
+                                }
+                 },
+                 {
+                     "id":  "merkle-s192-n1-r2",
+                     "repetition":  2,
+                     "result":  {
+                                    "mode":  "merkle",
+                                    "count":  1,
+                                    "statements":  192,
+                                    "sourceLines":  199,
+                                    "generationMs":  63.0208,
+                                    "generationAllocatedBytes":  19537576,
+                                    "firstInvokeMs":  3.8736,
+                                    "generationCollections":  [
+                                                                  1,
+                                                                  0,
+                                                                  0
+                                                              ],
+                                    "phases":  {
+                                                   "frontend":  {
+                                                                    "Milliseconds":  7.5034,
+                                                                    "ThreadAllocatedBytes":  2733080
+                                                                },
+                                                   "bridge":  {
+                                                                  "Milliseconds":  21.425,
+                                                                  "ThreadAllocatedBytes":  3516152
+                                                              },
+                                                   "merkleCompile":  {
+                                                                         "Milliseconds":  34.0592,
+                                                                         "ThreadAllocatedBytes":  13287864
+                                                                     }
+                                               },
+                                    "snapshots":  [
+                                                      {
+                                                          "stage":  "baseline",
+                                                          "managedLiveBytes":  5435240,
+                                                          "privateBytes":  62377984,
+                                                          "workingSetBytes":  127234048,
+                                                          "threads":  11,
+                                                          "heapBytes":  5544880,
+                                                          "committedBytes":  14266368,
+                                                          "lohBytes":  1865824,
+                                                          "delegates":  0,
+                                                          "owners":  0,
+                                                          "contexts":  0
+                                                      },
+                                                      {
+                                                          "stage":  "generated",
+                                                          "managedLiveBytes":  6554504,
+                                                          "privateBytes":  59125760,
+                                                          "workingSetBytes":  122970112,
+                                                          "threads":  11,
+                                                          "heapBytes":  6761464,
+                                                          "committedBytes":  23990272,
+                                                          "lohBytes":  2060288,
+                                                          "delegates":  1,
+                                                          "owners":  1,
+                                                          "contexts":  0
+                                                      },
+                                                      {
+                                                          "stage":  "jitted",
+                                                          "managedLiveBytes":  6554592,
+                                                          "privateBytes":  58609664,
+                                                          "workingSetBytes":  122966016,
+                                                          "threads":  11,
+                                                          "heapBytes":  6761552,
+                                                          "committedBytes":  23990272,
+                                                          "lohBytes":  2060288,
+                                                          "delegates":  1,
+                                                          "owners":  1,
+                                                          "contexts":  0
+                                                      },
+                                                      {
+                                                          "stage":  "suspended",
+                                                          "managedLiveBytes":  6555256,
+                                                          "privateBytes":  48902144,
+                                                          "workingSetBytes":  114106368,
+                                                          "threads":  11,
+                                                          "heapBytes":  6762216,
+                                                          "committedBytes":  15597568,
+                                                          "lohBytes":  2060288,
+                                                          "delegates":  1,
+                                                          "owners":  1,
+                                                          "contexts":  0
+                                                      },
+                                                      {
+                                                          "stage":  "delegates-released-pending",
+                                                          "managedLiveBytes":  5502520,
+                                                          "privateBytes":  47714304,
+                                                          "workingSetBytes":  113049600,
+                                                          "threads":  11,
+                                                          "heapBytes":  5609624,
+                                                          "committedBytes":  14413824,
+                                                          "lohBytes":  1865824,
+                                                          "delegates":  0,
+                                                          "owners":  1,
+                                                          "contexts":  0
+                                                      },
+                                                      {
+                                                          "stage":  "released",
+                                                          "managedLiveBytes":  5440184,
+                                                          "privateBytes":  47714304,
+                                                          "workingSetBytes":  113045504,
+                                                          "threads":  11,
+                                                          "heapBytes":  5547632,
+                                                          "committedBytes":  14413824,
+                                                          "lohBytes":  1865824,
+                                                          "delegates":  0,
+                                                          "owners":  0,
+                                                          "contexts":  0
+                                                      }
+                                                  ],
+                                    "peBytes":  0,
+                                    "loadedTypeCount":  0,
+                                    "runtimeAsyncMethodCount":  1,
+                                    "delegateAlive":  0,
+                                    "ownerAlive":  0,
+                                    "contextAlive":  0,
+                                    "runtime":  ".NET 11.0.0-dev",
+                                    "coreLibMvid":  "36d8bd66-9b46-4a81-8b3e-69002748af16",
+                                    "roslyn":  "5.11.0.0",
+                                    "serverGC":  false,
+                                    "compilerOptimizationsDisabled":  false
+                                }
+                 },
+                 {
+                     "id":  "merkle-s192-n1-r3",
+                     "repetition":  3,
+                     "result":  {
+                                    "mode":  "merkle",
+                                    "count":  1,
+                                    "statements":  192,
+                                    "sourceLines":  199,
+                                    "generationMs":  388.6601,
+                                    "generationAllocatedBytes":  19539984,
+                                    "firstInvokeMs":  6.5746,
+                                    "generationCollections":  [
+                                                                  1,
+                                                                  0,
+                                                                  0
+                                                              ],
+                                    "phases":  {
+                                                   "frontend":  {
+                                                                    "Milliseconds":  100.5466,
+                                                                    "ThreadAllocatedBytes":  2733544
+                                                                },
+                                                   "bridge":  {
+                                                                  "Milliseconds":  174.5342,
+                                                                  "ThreadAllocatedBytes":  3518096
+                                                              },
+                                                   "merkleCompile":  {
+                                                                         "Milliseconds":  113.5096,
+                                                                         "ThreadAllocatedBytes":  13287864
+                                                                     }
+                                               },
+                                    "snapshots":  [
+                                                      {
+                                                          "stage":  "baseline",
+                                                          "managedLiveBytes":  5435280,
+                                                          "privateBytes":  62570496,
+                                                          "workingSetBytes":  126791680,
+                                                          "threads":  11,
+                                                          "heapBytes":  5544896,
+                                                          "committedBytes":  14266368,
+                                                          "lohBytes":  1865824,
+                                                          "delegates":  0,
+                                                          "owners":  0,
+                                                          "contexts":  0
+                                                      },
+                                                      {
+                                                          "stage":  "generated",
+                                                          "managedLiveBytes":  6554544,
+                                                          "privateBytes":  57696256,
+                                                          "workingSetBytes":  122331136,
+                                                          "threads":  11,
+                                                          "heapBytes":  6761480,
+                                                          "committedBytes":  23990272,
+                                                          "lohBytes":  2060288,
+                                                          "delegates":  1,
+                                                          "owners":  1,
+                                                          "contexts":  0
+                                                      },
+                                                      {
+                                                          "stage":  "jitted",
+                                                          "managedLiveBytes":  6554632,
+                                                          "privateBytes":  57151488,
+                                                          "workingSetBytes":  122208256,
+                                                          "threads":  11,
+                                                          "heapBytes":  6761568,
+                                                          "committedBytes":  23990272,
+                                                          "lohBytes":  2060288,
+                                                          "delegates":  1,
+                                                          "owners":  1,
+                                                          "contexts":  0
+                                                      },
+                                                      {
+                                                          "stage":  "suspended",
+                                                          "managedLiveBytes":  6555296,
+                                                          "privateBytes":  48738304,
+                                                          "workingSetBytes":  113815552,
+                                                          "threads":  11,
+                                                          "heapBytes":  6762232,
+                                                          "committedBytes":  15597568,
+                                                          "lohBytes":  2060288,
+                                                          "delegates":  1,
+                                                          "owners":  1,
+                                                          "contexts":  0
+                                                      },
+                                                      {
+                                                          "stage":  "delegates-released-pending",
+                                                          "managedLiveBytes":  5502560,
+                                                          "privateBytes":  47550464,
+                                                          "workingSetBytes":  112754688,
+                                                          "threads":  11,
+                                                          "heapBytes":  5609640,
+                                                          "committedBytes":  14413824,
+                                                          "lohBytes":  1865824,
+                                                          "delegates":  0,
+                                                          "owners":  1,
+                                                          "contexts":  0
+                                                      },
+                                                      {
+                                                          "stage":  "released",
+                                                          "managedLiveBytes":  5440224,
+                                                          "privateBytes":  47550464,
+                                                          "workingSetBytes":  112758784,
+                                                          "threads":  11,
+                                                          "heapBytes":  5547648,
+                                                          "committedBytes":  14413824,
+                                                          "lohBytes":  1865824,
+                                                          "delegates":  0,
+                                                          "owners":  0,
+                                                          "contexts":  0
+                                                      }
+                                                  ],
+                                    "peBytes":  0,
+                                    "loadedTypeCount":  0,
+                                    "runtimeAsyncMethodCount":  1,
+                                    "delegateAlive":  0,
+                                    "ownerAlive":  0,
+                                    "contextAlive":  0,
+                                    "runtime":  ".NET 11.0.0-dev",
+                                    "coreLibMvid":  "36d8bd66-9b46-4a81-8b3e-69002748af16",
+                                    "roslyn":  "5.11.0.0",
+                                    "serverGC":  false,
+                                    "compilerOptimizationsDisabled":  false
+                                }
+                 }
+             ]
+}
