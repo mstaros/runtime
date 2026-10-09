@@ -18,6 +18,7 @@
         10.0.0 - The ILVerification package now targets .NET 10.0 and later.
         Accept proven array-backed and default Span&lt;T&gt;/ReadOnlySpan&lt;T&gt; returns while retaining escape checks for unknown or stack-backed storage.
     </PackageReleaseNotes>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
   <Import Project="ILVerification.projitems" />
 </Project>
