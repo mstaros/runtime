@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="ILVerification/ILVerification.csproj" />
+  <Project Path="ILVerification.Tests/ILVerification.Tests.csproj" />
+</Solution>

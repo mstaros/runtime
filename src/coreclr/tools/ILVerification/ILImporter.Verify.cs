@@ -46,6 +46,13 @@ namespace Internal.IL
         readonly byte[] _ilBytes;
         readonly LocalVariableDefinition[] _locals;
 
+        // A span local is return-safe only when every reachable write is proven to
+        // contain heap/default storage and its address has not escaped. This deliberately
+        // conservative, method-wide invariant also covers writes in exception handlers.
+        // Facts only change from safe to unknown; affected blocks are then reimported.
+        bool[] _safeSpanLocals;
+        bool _spanLocalsChanged;
+
         readonly bool _initLocals;
         readonly int _maxStack;
 
@@ -136,11 +143,14 @@ namespace Internal.IL
             _stack[_stackTop++] = value;
         }
 
-        StackValue Pop(bool allowUninitThis = false)
+        StackValue Pop(bool allowUninitThis = false, bool allowSpanLocalAddress = false)
         {
             FatalCheck(_stackTop > 0, VerifierError.StackUnderflow);
 
             var stackValue = _stack[--_stackTop];
+
+            if (!allowSpanLocalAddress)
+                InvalidateSpanLocal(stackValue);
 
             if (!allowUninitThis)
                 Check(!_trackObjCtorState || !stackValue.IsThisPtr || _isThisInitialized, VerifierError.UninitStack, stackValue);
@@ -194,6 +204,17 @@ namespace Internal.IL
 
             _ilBytes = _methodIL.GetILBytes();
             _locals = _methodIL.GetLocals();
+            if (IsSupportedSpan(_methodSignature.ReturnType))
+            {
+                for (int i = 0; i < _locals.Length; i++)
+                {
+                    if (IsSupportedSpan(_locals[i].Type))
+                    {
+                        _safeSpanLocals ??= new bool[_locals.Length];
+                        _safeSpanLocals[i] = _initLocals;
+                    }
+                }
+            }
 
             var ilExceptionRegions = _methodIL.GetExceptionRegions();
             _exceptionRegions = new ExceptionRegion[ilExceptionRegions.Length];
@@ -1417,6 +1438,60 @@ namespace Internal.IL
         void EndImportingBasicBlock(BasicBlock basicBlock)
         {
             basicBlock.State = BasicBlock.ImportState.WasVerified;
+            if (_spanLocalsChanged)
+            {
+                _spanLocalsChanged = false;
+                foreach (BasicBlock visited in _basicBlocks)
+                {
+                    if (visited != null && visited.State == BasicBlock.ImportState.WasVerified && visited.ErrorCount == 0)
+                    {
+                        visited.State = BasicBlock.ImportState.Unmarked;
+                        MarkBasicBlock(visited);
+                    }
+                }
+            }
+        }
+
+        bool IsSupportedSpan(TypeDesc type)
+        {
+            if (!type.IsByRefLike || !type.HasInstantiation || type.Instantiation.Length != 1)
+                return false;
+
+            TypeDesc definition = type.GetTypeDefinition();
+            return definition == _typeSystemContext.SystemModule.GetType("System"u8, "Span`1"u8, false)
+                || definition == _typeSystemContext.SystemModule.GetType("System"u8, "ReadOnlySpan`1"u8, false);
+        }
+
+        void InvalidateSpanLocal(StackValue address)
+        {
+            if (address.SpanLocalIndex >= 0)
+                InvalidateSpanLocal(address.SpanLocalIndex);
+        }
+
+        void InvalidateSpanLocal(int index)
+        {
+            if (_safeSpanLocals != null && _safeSpanLocals[index])
+            {
+                _safeSpanLocals[index] = false;
+                _spanLocalsChanged = true;
+            }
+        }
+
+        bool IsArrayBackedSpanCreation(MethodDesc method)
+        {
+            MethodSignature signature = method.Signature;
+            TypeDesc span = method.IsConstructor ? method.OwningType : signature.ReturnType;
+            if (!IsSupportedSpan(span) || method.OwningType != span || signature.Length == 0)
+                return false;
+            if (signature[0] is not ArrayType array || !array.IsSzArray || array.ElementType != span.Instantiation[0])
+                return false;
+
+            if (!method.IsConstructor)
+                return signature.IsStatic && method.Name == "op_Implicit"u8 && signature.Length == 1;
+
+            return !signature.IsStatic && (signature.Length == 1
+                || (signature.Length == 3 && signature[1].IsWellKnownType(WellKnownType.Int32)
+                    && signature[2].IsWellKnownType(WellKnownType.Int32)));
         }
 
         void ImportNop()
@@ -1459,6 +1534,8 @@ namespace Internal.IL
             CheckIsNotPointer(varType);
 
             var stackValue = StackValue.CreateFromType(varType);
+            if (!argument && _safeSpanLocals != null && _safeSpanLocals[index])
+                stackValue.SetIsPermanentHome();
             if (index == 0 && argument && _thisType != null)
             {
                 Debug.Assert(varType == _thisType);
@@ -1478,6 +1555,8 @@ namespace Internal.IL
                 Check(index != 0 || !argument, VerifierError.ThisUninitStore);
 
             CheckIsAssignable(value, StackValue.CreateFromType(varType));
+            if (!argument && !value.IsPermanentHome)
+                InvalidateSpanLocal(index);
         }
 
         void ImportAddressOfVar(int index, bool argument)
@@ -1490,6 +1569,8 @@ namespace Internal.IL
             Check(!varType.IsByRef, VerifierError.ByrefOfByref);
 
             var stackValue = StackValue.CreateByRef(varType);
+            if (!argument && _safeSpanLocals != null && IsSupportedSpan(varType))
+                stackValue.SetSpanLocalIndex(index);
             if (index == 0 && argument && _thisType != null)
             {
                 Debug.Assert(varType == _thisType);
@@ -1503,7 +1584,7 @@ namespace Internal.IL
 
         void ImportDup()
         {
-            var value = Pop(allowUninitThis: true);
+            var value = Pop(allowUninitThis: true, allowSpanLocalAddress: true);
 
             // this could be the beginning of a delegate create
             _delegateCreateStart = _currentInstructionOffset;
@@ -1566,6 +1647,7 @@ namespace Internal.IL
             MethodDesc method = ResolveMethodToken(token);
 
             MethodSignature sig = method.Signature;
+            bool safeSpanResult = IsArrayBackedSpanCreation(method);
 
             TypeDesc methodType = sig.IsStatic ? null : method.OwningType;
 
@@ -1643,7 +1725,9 @@ namespace Internal.IL
             else
             if (methodType != null)
             {
-                var actualThis = Pop(allowUninitThis: true);
+                var actualThis = Pop(allowUninitThis: true, allowSpanLocalAddress: true);
+                if (!safeSpanResult)
+                    InvalidateSpanLocal(actualThis);
                 instance = actualThis.Type;
                 var declaredThis = methodType.IsValueType ?
                     StackValue.CreateByRef(methodType) : StackValue.CreateObjRef(methodType);
@@ -1762,7 +1846,10 @@ namespace Internal.IL
             // now push on the result
             if (opcode == ILOpcode.newobj)
             {
-                Push(StackValue.CreateFromType(methodType));
+                var returnValue = StackValue.CreateFromType(methodType);
+                if (safeSpanResult)
+                    returnValue.SetIsPermanentHome();
+                Push(returnValue);
             }
             else
             if (!returnType.IsVoid)
@@ -1782,7 +1869,7 @@ namespace Internal.IL
                     ClearPendingPrefix(Prefix.ReadOnly);
                 }
 
-                if (returnValue.Kind == StackValueKind.ByRef)
+                if (returnValue.Kind == StackValueKind.ByRef || safeSpanResult)
                     returnValue.SetIsPermanentHome();
 
                 Push(returnValue);
@@ -2038,6 +2125,14 @@ namespace Internal.IL
 
             PropagateThisState(_currentBasicBlock, next);
 
+            // An address crossing a branch requires alias analysis outside this
+            // bounded span-return proof. Keep the corresponding local unknown.
+            for (int i = 0; i < _stackTop; i++)
+            {
+                InvalidateSpanLocal(_stack[i]);
+                _stack[i].ClearSpanLocalIndex();
+            }
+
             // Propagate stack across block bounds
             StackValue[] entryStack = next.EntryStack;
 
@@ -2049,6 +2144,14 @@ namespace Internal.IL
                 {
                     // TODO: Do we need to allow conversions?
                     FatalCheck(entryStack[i].Kind == _stack[i].Kind, VerifierError.PathStackUnexpected, entryStack[i], _stack[i]);
+
+                    if (entryStack[i].Type != null && entryStack[i].Type.IsByRefLike
+                        && entryStack[i].IsPermanentHome && !_stack[i].IsPermanentHome)
+                    {
+                        entryStack[i].ClearIsPermanentHome();
+                        if (next.ErrorCount == 0 && next.State != BasicBlock.ImportState.IsPending)
+                            next.State = BasicBlock.ImportState.Unmarked;
+                    }
 
                     if (entryStack[i].Type != _stack[i].Type)
                     {
@@ -2304,7 +2407,7 @@ namespace Internal.IL
             ClearPendingPrefix(Prefix.Unaligned);
             ClearPendingPrefix(Prefix.Volatile);
 
-            var address = Pop();
+            var address = Pop(allowSpanLocalAddress: true);
             CheckIsByRef(address);
 
             if (type == null)
@@ -2316,7 +2419,10 @@ namespace Internal.IL
             {
                 CheckIsAssignable(address.Type.GetVerificationType(), type.GetVerificationType());
             }
-            Push(StackValue.CreateFromType(type));
+            var value = StackValue.CreateFromType(type);
+            if (IsSupportedSpan(type) && address.SpanLocalIndex >= 0 && _safeSpanLocals[address.SpanLocalIndex])
+                value.SetIsPermanentHome();
+            Push(value);
         }
 
         void ImportStoreIndirect(int token)
@@ -2330,7 +2436,9 @@ namespace Internal.IL
             ClearPendingPrefix(Prefix.Volatile);
 
             var value = Pop();
-            var address = Pop();
+            var address = Pop(allowSpanLocalAddress: true);
+            if (!value.IsPermanentHome)
+                InvalidateSpanLocal(address);
 
             Check(!address.IsReadOnly, VerifierError.ReadOnlyIllegalWrite);
 
@@ -2373,7 +2481,7 @@ namespace Internal.IL
         {
             var type = ResolveTypeToken(token);
 
-            var value = Pop();
+            var value = Pop(allowSpanLocalAddress: true);
 
             Check(value.Kind == StackValueKind.ByRef, VerifierError.StackByRef, value);
 
@@ -2855,3 +2963,4 @@ namespace Internal.IL
         }
     }
 }
+
