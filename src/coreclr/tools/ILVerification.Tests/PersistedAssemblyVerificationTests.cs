@@ -148,6 +148,82 @@ namespace ILVerification.Tests
             }
         }
 
+        [Theory]
+        [InlineData("loop-access")]
+        [InlineData("loop-stackalloc")]
+        [InlineData("merge-access")]
+        [InlineData("predecessor-access")]
+        public static void Span_lifetime_analysis_continues_after_filterable_findings(string scenario)
+        {
+            foreach (Type spanType in new[] { typeof(Span<int>), typeof(ReadOnlySpan<int>) })
+            {
+                var assembly = new PersistedAssemblyBuilder(new AssemblyName($"SpanFindings_{Guid.NewGuid():N}"), typeof(object).Assembly);
+                ModuleBuilder module = assembly.DefineDynamicModule("SpanFindings");
+                TypeBuilder owner = module.DefineType("PrivateData");
+                FieldBuilder field = owner.DefineField("Value", typeof(int), FieldAttributes.Private | FieldAttributes.Static);
+                owner.CreateType();
+                TypeBuilder type = module.DefineType("SpanFindings", TypeAttributes.Public);
+                MethodBuilder method = type.DefineMethod("SpanReturn", MethodAttributes.Public | MethodAttributes.Static,
+                    spanType, new[] { typeof(bool), typeof(int[]) });
+                ILGenerator il = method.GetILGenerator();
+                LocalBuilder result = il.DeclareLocal(spanType);
+                LocalBuilder element = il.DeclareLocal(typeof(int));
+                ConstructorInfo arrayConstructor = spanType.GetConstructor(new[] { typeof(int[]) });
+                ConstructorInfo refConstructor = spanType.GetConstructor(new[] { typeof(int).MakeByRefType() });
+                void ArrayValue() { il.Emit(OpCodes.Ldarg_1); il.Emit(OpCodes.Newobj, arrayConstructor); }
+                void UnsafeValue() { il.Emit(OpCodes.Ldloca, element); il.Emit(OpCodes.Newobj, refConstructor); }
+                void AccessFinding() { il.Emit(OpCodes.Ldsfld, field); il.Emit(OpCodes.Pop); }
+
+                if (scenario.StartsWith("loop", StringComparison.Ordinal))
+                {
+                    Label body = il.DefineLabel(), condition = il.DefineLabel();
+                    ArrayValue(); il.Emit(OpCodes.Stloc, result); il.Emit(OpCodes.Br, condition);
+                    il.MarkLabel(body); UnsafeValue(); il.Emit(OpCodes.Stloc, result);
+                    il.Emit(OpCodes.Ldc_I4_0); il.Emit(OpCodes.Starg_S, (byte)0);
+                    il.MarkLabel(condition); il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Brtrue, body);
+                    if (scenario == "loop-stackalloc")
+                    {
+                        il.Emit(OpCodes.Ldc_I4_4); il.Emit(OpCodes.Conv_U); il.Emit(OpCodes.Localloc);
+                        il.Emit(OpCodes.Ldc_I4_1);
+                        il.Emit(OpCodes.Newobj, spanType.GetConstructor(new[] { typeof(void).MakePointerType(), typeof(int) }));
+                        il.Emit(OpCodes.Pop);
+                    }
+                    else AccessFinding();
+                    il.Emit(OpCodes.Ldloc, result);
+                }
+                else if (scenario == "merge-access")
+                {
+                    Label alternate = il.DefineLabel(), join = il.DefineLabel();
+                    il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Brfalse, alternate);
+                    ArrayValue(); il.Emit(OpCodes.Br, join);
+                    il.MarkLabel(alternate); UnsafeValue();
+                    il.MarkLabel(join); AccessFinding();
+                }
+                else
+                {
+                    Label alternate = il.DefineLabel(), writer = il.DefineLabel(), join = il.DefineLabel();
+                    ArrayValue(); il.Emit(OpCodes.Stloc, result);
+                    il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Brfalse, alternate); il.Emit(OpCodes.Br, join);
+                    il.MarkLabel(alternate); AccessFinding(); il.Emit(OpCodes.Br, writer);
+                    il.MarkLabel(writer); UnsafeValue(); il.Emit(OpCodes.Stloc, result); il.Emit(OpCodes.Br, join);
+                    il.MarkLabel(join); il.Emit(OpCodes.Ldloc, result);
+                }
+                il.Emit(OpCodes.Ret);
+                type.CreateType();
+                using var image = new MemoryStream();
+                assembly.Save(image);
+                using var resolver = new ImageResolver(image.ToArray());
+                var verifier = new Verifier(resolver, new VerifierOptions { SanityChecks = true });
+                verifier.SetSystemModuleName(resolver.SystemModuleName);
+                VerificationResult[] findings = verifier.Verify(resolver.GeneratedAssembly,
+                    FindMethod(resolver.GeneratedAssembly.GetMetadataReader(), "SpanReturn")).ToArray();
+                Assert.Contains(findings, finding => finding.Code == (scenario == "loop-stackalloc"
+                    ? VerifierError.Unverifiable : VerifierError.FieldAccess));
+                Assert.Contains(findings, finding => finding.Code == VerifierError.ReturnPtrToStack);
+                // Deliberately malformed lifetime: never load or execute this image.
+            }
+        }
+
         private static byte[] CreateSpanReturnImage(Type spanType, string scenario)
         {
             var assembly = new PersistedAssemblyBuilder(new AssemblyName($"SpanReturns_{Guid.NewGuid():N}"), typeof(object).Assembly);

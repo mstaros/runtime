@@ -50,6 +50,7 @@ namespace Internal.IL
         // contain heap/default storage and its address has not escaped. This deliberately
         // conservative, method-wide invariant also covers writes in exception handlers.
         // Facts only change from safe to unknown; affected blocks are then reimported.
+        readonly bool _trackSpanReturns;
         bool[] _safeSpanLocals;
         bool _spanLocalsChanged;
 
@@ -126,9 +127,15 @@ namespace Internal.IL
                 get;
                 private set;
             }
-            public void IncrementErrorCount()
+            public int NonBlockingErrorCount { get; private set; }
+
+            public void IncrementErrorCount(VerifierError error)
             {
                 ErrorCount++;
+                if (error == VerifierError.TypeAccess || error == VerifierError.MethodAccess
+                    || error == VerifierError.FieldAccess || error == VerifierError.Unverifiable
+                    || error == VerifierError.UnmanagedPointer)
+                    NonBlockingErrorCount++;
             }
         };
 
@@ -204,7 +211,8 @@ namespace Internal.IL
 
             _ilBytes = _methodIL.GetILBytes();
             _locals = _methodIL.GetLocals();
-            if (IsSupportedSpan(_methodSignature.ReturnType))
+            _trackSpanReturns = IsSupportedSpan(_methodSignature.ReturnType);
+            if (_trackSpanReturns)
             {
                 for (int i = 0; i < _locals.Length; i++)
                 {
@@ -529,7 +537,7 @@ namespace Internal.IL
         void VerificationError(VerifierError error)
         {
             if (_currentBasicBlock != null)
-                _currentBasicBlock.IncrementErrorCount();
+                _currentBasicBlock.IncrementErrorCount(error);
 
             var args = new ErrorArgument[]
             {
@@ -541,7 +549,7 @@ namespace Internal.IL
         void VerificationError(VerifierError error, object found)
         {
             if (_currentBasicBlock != null)
-                _currentBasicBlock.IncrementErrorCount();
+                _currentBasicBlock.IncrementErrorCount(error);
 
             var args = new ErrorArgument[]
             {
@@ -554,7 +562,7 @@ namespace Internal.IL
         void VerificationError(VerifierError error, object found, object expected)
         {
             if (_currentBasicBlock != null)
-                _currentBasicBlock.IncrementErrorCount();
+                _currentBasicBlock.IncrementErrorCount(error);
 
             var args = new ErrorArgument[]
             {
@@ -1443,7 +1451,7 @@ namespace Internal.IL
                 _spanLocalsChanged = false;
                 foreach (BasicBlock visited in _basicBlocks)
                 {
-                    if (visited != null && visited.State == BasicBlock.ImportState.WasVerified && visited.ErrorCount == 0)
+                    if (visited != null && visited.State == BasicBlock.ImportState.WasVerified && CanContinueVerification(visited))
                     {
                         visited.State = BasicBlock.ImportState.Unmarked;
                         MarkBasicBlock(visited);
@@ -1451,6 +1459,13 @@ namespace Internal.IL
                 }
             }
         }
+
+        // Access and pointer findings are still reported. For span-return methods they must not
+        // stop dataflow: consumers can permit these findings, while lifetime errors must remain visible.
+        // Other errors and methods retain the existing stop-on-error behavior.
+        bool CanContinueVerification(BasicBlock block)
+            => block.ErrorCount == 0
+                || (_trackSpanReturns && block.ErrorCount == block.NonBlockingErrorCount);
 
         bool IsSupportedSpan(TypeDesc type)
         {
@@ -2054,7 +2069,7 @@ namespace Internal.IL
                 {
                     // Next block has 'this' initialized, but current state has not
                     // therefore next block must be reverified with 'this' uninitialized
-                    if (next.State == BasicBlock.ImportState.WasVerified && next.ErrorCount == 0)
+                    if (next.State == BasicBlock.ImportState.WasVerified && CanContinueVerification(next))
                         next.State = BasicBlock.ImportState.Unmarked;
                 }
 
@@ -2120,7 +2135,7 @@ namespace Internal.IL
 
         void PropagateControlFlow(BasicBlock next, bool isFallthrough)
         {
-            if (!IsValidBranchTarget(_currentBasicBlock, next, isFallthrough) || _currentBasicBlock.ErrorCount > 0)
+            if (!IsValidBranchTarget(_currentBasicBlock, next, isFallthrough) || !CanContinueVerification(_currentBasicBlock))
                 return;
 
             PropagateThisState(_currentBasicBlock, next);
@@ -2149,7 +2164,7 @@ namespace Internal.IL
                         && entryStack[i].IsPermanentHome && !_stack[i].IsPermanentHome)
                     {
                         entryStack[i].ClearIsPermanentHome();
-                        if (next.ErrorCount == 0 && next.State != BasicBlock.ImportState.IsPending)
+                        if (CanContinueVerification(next) && next.State != BasicBlock.ImportState.IsPending)
                             next.State = BasicBlock.ImportState.Unmarked;
                     }
 
@@ -2166,7 +2181,7 @@ namespace Internal.IL
                             {
                                 entryStack[i] = mergedValue;
 
-                                if (next.ErrorCount == 0 && next.State != BasicBlock.ImportState.IsPending)
+                                if (CanContinueVerification(next) && next.State != BasicBlock.ImportState.IsPending)
                                     next.State = BasicBlock.ImportState.Unmarked; // Make sure block is reverified
                             }
                         }
