@@ -18,6 +18,7 @@
         10.0.0 - The ILVerification package now targets .NET 10.0 and later.
         Accept proven array-backed and default Span&lt;T&gt;/ReadOnlySpan&lt;T&gt; returns while retaining escape checks for unknown or stack-backed storage.
         Preserve span return lifetime diagnostics across control-flow analysis even after access or pointer findings that consumers may filter.
+        Preserve proven heap and caller-owned references through managed-reference locals and protected-region returns; retain escape checks on unsafe writes and control-flow merges.
     </PackageReleaseNotes>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>

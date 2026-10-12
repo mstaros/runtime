@@ -478,6 +478,207 @@ namespace ILVerification.Tests
             private PEReader Resolve(string simpleName)
                 => _readers.TryGetValue(simpleName, out PEReader reader) ? reader : null;
         }
+        [Fact]
+        public static void Roslyn_protected_ref_return_preserves_heap_lifetime()
+        {
+            int[] values = { 7 };
+            ref int result = ref RoslynProtectedRefReturn(values);
+            Assert.Equal(8, result);
+            result = 19;
+            Assert.Equal(19, values[0]);
+
+            using var resolver = new ImageResolver(File.ReadAllBytes(typeof(PersistedAssemblyVerificationTests).Assembly.Location));
+            var verifier = new Verifier(resolver, new VerifierOptions { SanityChecks = true });
+            verifier.SetSystemModuleName(resolver.SystemModuleName);
+            VerificationResult[] findings = verifier.Verify(resolver.GeneratedAssembly,
+                FindMethod(resolver.GeneratedAssembly.GetMetadataReader(), nameof(RoslynProtectedRefReturn))).ToArray();
+            Assert.Empty(findings);
+        }
+        // This method is compiled by Roslyn as part of the test assembly.
+        private static ref int RoslynProtectedRefReturn(int[] values)
+        {
+            try
+            {
+                return ref values[0];
+            }
+            finally
+            {
+                values[0]++;
+            }
+        }
+        [Theory]
+        [InlineData("heap", true)]
+        [InlineData("copy", true)]
+        [InlineData("parameter", true)]
+        [InlineData("default", true)]
+        [InlineData("stack", false)]
+        [InlineData("argument-reassigned", false)]
+        [InlineData("mixed-stack", false)]
+        [InlineData("mixed-stack-reversed", false)]
+        [InlineData("handler-stack", false)]
+        [InlineData("loop-stack", false)]
+        [InlineData("argument-loop", false)]
+        [InlineData("access-then-stack", false)]
+        [InlineData("no-init", false)]
+        public static void Byref_returns_require_proven_surviving_storage(string scenario, bool accepted)
+        {
+            var assembly = new PersistedAssemblyBuilder(new AssemblyName($"ByrefReturns_{Guid.NewGuid():N}"), typeof(object).Assembly);
+            ModuleBuilder module = assembly.DefineDynamicModule("ByrefReturns");
+            TypeBuilder hidden = module.DefineType("HiddenStorage", TypeAttributes.Public);
+            FieldBuilder hiddenField = hidden.DefineField("Value", typeof(int), FieldAttributes.Private | FieldAttributes.Static);
+            hidden.CreateType();
+            TypeBuilder type = module.DefineType("ByrefReturnImage", TypeAttributes.Public);
+            MethodBuilder method = type.DefineMethod("ReturnRef", MethodAttributes.Public | MethodAttributes.Static,
+                typeof(int).MakeByRefType(), new[] { typeof(bool), typeof(int[]), typeof(int).MakeByRefType() });
+            method.InitLocals = scenario != "no-init";
+            ILGenerator il = method.GetILGenerator();
+            LocalBuilder reference = il.DeclareLocal(typeof(int).MakeByRefType());
+            LocalBuilder copy = il.DeclareLocal(typeof(int).MakeByRefType());
+            LocalBuilder stack = il.DeclareLocal(typeof(int));
+            void EmitHeapAddress()
+            {
+                il.Emit(OpCodes.Ldarg_1);
+                il.Emit(OpCodes.Ldc_I4_0);
+                il.Emit(OpCodes.Ldelema, typeof(int));
+            }
+            if (scenario != "default")
+            {
+                EmitHeapAddress();
+                il.Emit(OpCodes.Stloc, reference);
+            }
+            switch (scenario)
+            {
+                case "copy":
+                    il.Emit(OpCodes.Ldloc, reference);
+                    il.Emit(OpCodes.Stloc, copy);
+                    il.Emit(OpCodes.Ldloc, copy);
+                    il.Emit(OpCodes.Stloc, reference);
+                    break;
+                case "parameter":
+                    il.Emit(OpCodes.Ldarg_2);
+                    il.Emit(OpCodes.Stloc, reference);
+                    break;
+                case "stack":
+                case "access-then-stack":
+                    if (scenario == "access-then-stack")
+                    {
+                        il.Emit(OpCodes.Ldsfld, hiddenField);
+                        il.Emit(OpCodes.Pop);
+                    }
+                    il.Emit(OpCodes.Ldloca, stack);
+                    il.Emit(OpCodes.Stloc, reference);
+                    break;
+                case "argument-reassigned":
+                    il.Emit(OpCodes.Ldloca, stack);
+                    il.Emit(OpCodes.Starg_S, (byte)2);
+                    il.Emit(OpCodes.Ldarg_2);
+                    il.Emit(OpCodes.Stloc, reference);
+                    break;
+                case "mixed-stack":
+                case "mixed-stack-reversed":
+                    Label other = il.DefineLabel();
+                    Label merge = il.DefineLabel();
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Brtrue, other);
+                    if (scenario == "mixed-stack") EmitHeapAddress(); else il.Emit(OpCodes.Ldloca, stack);
+                    il.Emit(OpCodes.Br, merge);
+                    il.MarkLabel(other);
+                    if (scenario == "mixed-stack") il.Emit(OpCodes.Ldloca, stack); else EmitHeapAddress();
+                    il.MarkLabel(merge);
+                    il.Emit(OpCodes.Stloc, reference);
+                    break;
+                case "handler-stack":
+                    il.BeginExceptionBlock();
+                    EmitHeapAddress();
+                    il.Emit(OpCodes.Stloc, reference);
+                    il.BeginFinallyBlock();
+                    il.Emit(OpCodes.Ldloca, stack);
+                    il.Emit(OpCodes.Stloc, reference);
+                    il.EndExceptionBlock();
+                    break;
+                case "loop-stack":
+                case "argument-loop":
+                    Label head = il.DefineLabel();
+                    Label exit = il.DefineLabel();
+                    il.MarkLabel(head);
+                    if (scenario == "argument-loop") il.Emit(OpCodes.Ldarg_2); else il.Emit(OpCodes.Ldloc, reference);
+                    il.Emit(OpCodes.Stloc, copy);
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Brfalse, exit);
+                    il.Emit(OpCodes.Ldloca, stack);
+                    if (scenario == "argument-loop") il.Emit(OpCodes.Starg_S, (byte)2); else il.Emit(OpCodes.Stloc, reference);
+                    il.Emit(OpCodes.Ldc_I4_0);
+                    il.Emit(OpCodes.Starg_S, (byte)0);
+                    il.Emit(OpCodes.Br, head);
+                    il.MarkLabel(exit);
+                    il.Emit(OpCodes.Ldloc, copy);
+                    il.Emit(OpCodes.Stloc, reference);
+                    break;
+            }
+            il.Emit(OpCodes.Ldloc, reference);
+            il.Emit(OpCodes.Ret);
+
+            MethodBuilder run = type.DefineMethod("Run", MethodAttributes.Public | MethodAttributes.Static,
+                typeof(int), new[] { typeof(bool), typeof(int[]) });
+            ILGenerator runIl = run.GetILGenerator();
+            runIl.Emit(OpCodes.Ldarg_0);
+            runIl.Emit(OpCodes.Ldarg_1);
+            runIl.Emit(OpCodes.Ldarg_1);
+            runIl.Emit(OpCodes.Ldc_I4_0);
+            runIl.Emit(OpCodes.Ldelema, typeof(int));
+            runIl.Emit(OpCodes.Call, method);
+            runIl.Emit(OpCodes.Dup);
+            runIl.Emit(OpCodes.Ldc_I4, 21);
+            runIl.Emit(OpCodes.Stind_I4);
+            runIl.Emit(OpCodes.Ldind_I4);
+            runIl.Emit(OpCodes.Ret);
+            type.CreateType();
+            using var image = new MemoryStream();
+            assembly.Save(image);
+            using var resolver = new ImageResolver(image.ToArray());
+            var verifier = new Verifier(resolver, new VerifierOptions { SanityChecks = true });
+            verifier.SetSystemModuleName(resolver.SystemModuleName);
+            VerificationResult[] findings = verifier.Verify(resolver.GeneratedAssembly,
+                FindMethod(resolver.GeneratedAssembly.GetMetadataReader(), "ReturnRef")).ToArray();
+            if (accepted)
+            {
+                Assert.Empty(findings);
+                if (scenario != "default")
+                {
+                    var execute = (Func<bool, int[], int>)Assembly.Load(image.ToArray()).GetType("ByrefReturnImage")
+                        .GetMethod("Run").CreateDelegate(typeof(Func<bool, int[], int>));
+                    int[] values = { 7 };
+                    Assert.Equal(21, execute(false, values));
+                    Assert.Equal(21, values[0]);
+                }
+            }
+            else
+            {
+                Assert.Contains(findings, finding => finding.Code == VerifierError.ReturnPtrToStack);
+                if (scenario == "access-then-stack")
+                    Assert.Contains(findings, finding => finding.Code == VerifierError.FieldAccess);
+                // Invalid lifetime images are never loaded or executed.
+            }
+        }
+        [Fact]
+        public static void Roslyn_protected_parameter_return_preserves_caller_lifetime()
+        {
+            int value = 7;
+            ref int result = ref RoslynProtectedParameterReturn(ref value);
+            Assert.Equal(8, result);
+            result = 19;
+            Assert.Equal(19, value);
+            using var resolver = new ImageResolver(File.ReadAllBytes(typeof(PersistedAssemblyVerificationTests).Assembly.Location));
+            var verifier = new Verifier(resolver, new VerifierOptions { SanityChecks = true });
+            verifier.SetSystemModuleName(resolver.SystemModuleName);
+            Assert.Empty(verifier.Verify(resolver.GeneratedAssembly,
+                FindMethod(resolver.GeneratedAssembly.GetMetadataReader(), nameof(RoslynProtectedParameterReturn))));
+        }
+        private static ref int RoslynProtectedParameterReturn(ref int value)
+        {
+            try { return ref value; }
+            finally { value++; }
+        }
     }
 }
 

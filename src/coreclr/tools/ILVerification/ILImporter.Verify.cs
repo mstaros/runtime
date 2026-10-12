@@ -46,13 +46,13 @@ namespace Internal.IL
         readonly byte[] _ilBytes;
         readonly LocalVariableDefinition[] _locals;
 
-        // A span local is return-safe only when every reachable write is proven to
-        // contain heap/default storage and its address has not escaped. This deliberately
-        // conservative, method-wide invariant also covers writes in exception handlers.
+        // Return-safe locals contain heap/default storage; byref arguments start in caller-owned storage.
+        // Every reachable write must preserve that lifetime, including writes in handlers.
         // Facts only change from safe to unknown; affected blocks are then reimported.
-        readonly bool _trackSpanReturns;
-        bool[] _safeSpanLocals;
-        bool _spanLocalsChanged;
+        readonly bool _trackReturnLifetime;
+        bool[] _safeReturnLocals;
+        bool[] _safeReturnArguments;
+        bool _returnLifetimeChanged;
 
         readonly bool _initLocals;
         readonly int _maxStack;
@@ -157,7 +157,7 @@ namespace Internal.IL
             var stackValue = _stack[--_stackTop];
 
             if (!allowSpanLocalAddress)
-                InvalidateSpanLocal(stackValue);
+                InvalidateReturnLocal(stackValue);
 
             if (!allowUninitThis)
                 Check(!_trackObjCtorState || !stackValue.IsThisPtr || _isThisInitialized, VerifierError.UninitStack, stackValue);
@@ -211,15 +211,28 @@ namespace Internal.IL
 
             _ilBytes = _methodIL.GetILBytes();
             _locals = _methodIL.GetLocals();
-            _trackSpanReturns = IsSupportedSpan(_methodSignature.ReturnType);
-            if (_trackSpanReturns)
+            _trackReturnLifetime = _methodSignature.ReturnType.IsByRef || IsSupportedSpan(_methodSignature.ReturnType);
+            if (_trackReturnLifetime)
             {
                 for (int i = 0; i < _locals.Length; i++)
                 {
-                    if (IsSupportedSpan(_locals[i].Type))
+                    if (_locals[i].Type.IsByRef || IsSupportedSpan(_locals[i].Type))
                     {
-                        _safeSpanLocals ??= new bool[_locals.Length];
-                        _safeSpanLocals[i] = _initLocals;
+                        _safeReturnLocals ??= new bool[_locals.Length];
+                        _safeReturnLocals[i] = _initLocals;
+                    }
+                }
+            }
+
+            if (_methodSignature.ReturnType.IsByRef)
+            {
+                int argumentCount = _methodSignature.Length + (_thisType == null ? 0 : 1);
+                for (int i = 0; i < argumentCount; i++)
+                {
+                    if (GetVarType(i, argument: true).IsByRef)
+                    {
+                        _safeReturnArguments ??= new bool[argumentCount];
+                        _safeReturnArguments[i] = true;
                     }
                 }
             }
@@ -1446,9 +1459,9 @@ namespace Internal.IL
         void EndImportingBasicBlock(BasicBlock basicBlock)
         {
             basicBlock.State = BasicBlock.ImportState.WasVerified;
-            if (_spanLocalsChanged)
+            if (_returnLifetimeChanged)
             {
-                _spanLocalsChanged = false;
+                _returnLifetimeChanged = false;
                 foreach (BasicBlock visited in _basicBlocks)
                 {
                     if (visited != null && visited.State == BasicBlock.ImportState.WasVerified && CanContinueVerification(visited))
@@ -1460,12 +1473,11 @@ namespace Internal.IL
             }
         }
 
-        // Access and pointer findings are still reported. For span-return methods they must not
-        // stop dataflow: consumers can permit these findings, while lifetime errors must remain visible.
-        // Other errors and methods retain the existing stop-on-error behavior.
+        // Access and pointer findings remain visible while lifetime dataflow continues for
+        // span and byref returns. Other errors retain the existing stop-on-error behavior.
         bool CanContinueVerification(BasicBlock block)
             => block.ErrorCount == 0
-                || (_trackSpanReturns && block.ErrorCount == block.NonBlockingErrorCount);
+                || (_trackReturnLifetime && block.ErrorCount == block.NonBlockingErrorCount);
 
         bool IsSupportedSpan(TypeDesc type)
         {
@@ -1477,18 +1489,18 @@ namespace Internal.IL
                 || definition == _typeSystemContext.SystemModule.GetType("System"u8, "ReadOnlySpan`1"u8, false);
         }
 
-        void InvalidateSpanLocal(StackValue address)
+        void InvalidateReturnLocal(StackValue address)
         {
             if (address.SpanLocalIndex >= 0)
-                InvalidateSpanLocal(address.SpanLocalIndex);
+                InvalidateReturnLocal(address.SpanLocalIndex);
         }
 
-        void InvalidateSpanLocal(int index)
+        void InvalidateReturnLocal(int index)
         {
-            if (_safeSpanLocals != null && _safeSpanLocals[index])
+            if (_safeReturnLocals != null && _safeReturnLocals[index])
             {
-                _safeSpanLocals[index] = false;
-                _spanLocalsChanged = true;
+                _safeReturnLocals[index] = false;
+                _returnLifetimeChanged = true;
             }
         }
 
@@ -1549,7 +1561,7 @@ namespace Internal.IL
             CheckIsNotPointer(varType);
 
             var stackValue = StackValue.CreateFromType(varType);
-            if (!argument && _safeSpanLocals != null && _safeSpanLocals[index])
+            if (argument ? _safeReturnArguments != null && _safeReturnArguments[index] : _safeReturnLocals != null && _safeReturnLocals[index])
                 stackValue.SetIsPermanentHome();
             if (index == 0 && argument && _thisType != null)
             {
@@ -1570,8 +1582,18 @@ namespace Internal.IL
                 Check(index != 0 || !argument, VerifierError.ThisUninitStore);
 
             CheckIsAssignable(value, StackValue.CreateFromType(varType));
-            if (!argument && !value.IsPermanentHome)
-                InvalidateSpanLocal(index);
+            if (!value.IsPermanentHome)
+            {
+                if (!argument)
+                {
+                    InvalidateReturnLocal(index);
+                }
+                else if (_safeReturnArguments != null && _safeReturnArguments[index])
+                {
+                    _safeReturnArguments[index] = false;
+                    _returnLifetimeChanged = true;
+                }
+            }
         }
 
         void ImportAddressOfVar(int index, bool argument)
@@ -1584,7 +1606,7 @@ namespace Internal.IL
             Check(!varType.IsByRef, VerifierError.ByrefOfByref);
 
             var stackValue = StackValue.CreateByRef(varType);
-            if (!argument && _safeSpanLocals != null && IsSupportedSpan(varType))
+            if (!argument && _safeReturnLocals != null && IsSupportedSpan(varType))
                 stackValue.SetSpanLocalIndex(index);
             if (index == 0 && argument && _thisType != null)
             {
@@ -1742,7 +1764,7 @@ namespace Internal.IL
             {
                 var actualThis = Pop(allowUninitThis: true, allowSpanLocalAddress: true);
                 if (!safeSpanResult)
-                    InvalidateSpanLocal(actualThis);
+                    InvalidateReturnLocal(actualThis);
                 instance = actualThis.Type;
                 var declaredThis = methodType.IsValueType ?
                     StackValue.CreateByRef(methodType) : StackValue.CreateObjRef(methodType);
@@ -2144,7 +2166,7 @@ namespace Internal.IL
             // bounded span-return proof. Keep the corresponding local unknown.
             for (int i = 0; i < _stackTop; i++)
             {
-                InvalidateSpanLocal(_stack[i]);
+                InvalidateReturnLocal(_stack[i]);
                 _stack[i].ClearSpanLocalIndex();
             }
 
@@ -2160,7 +2182,7 @@ namespace Internal.IL
                     // TODO: Do we need to allow conversions?
                     FatalCheck(entryStack[i].Kind == _stack[i].Kind, VerifierError.PathStackUnexpected, entryStack[i], _stack[i]);
 
-                    if (entryStack[i].Type != null && entryStack[i].Type.IsByRefLike
+                    if (entryStack[i].Type != null && (entryStack[i].Kind == StackValueKind.ByRef || entryStack[i].Type.IsByRefLike)
                         && entryStack[i].IsPermanentHome && !_stack[i].IsPermanentHome)
                     {
                         entryStack[i].ClearIsPermanentHome();
@@ -2435,7 +2457,7 @@ namespace Internal.IL
                 CheckIsAssignable(address.Type.GetVerificationType(), type.GetVerificationType());
             }
             var value = StackValue.CreateFromType(type);
-            if (IsSupportedSpan(type) && address.SpanLocalIndex >= 0 && _safeSpanLocals[address.SpanLocalIndex])
+            if (IsSupportedSpan(type) && address.SpanLocalIndex >= 0 && _safeReturnLocals[address.SpanLocalIndex])
                 value.SetIsPermanentHome();
             Push(value);
         }
@@ -2453,7 +2475,7 @@ namespace Internal.IL
             var value = Pop();
             var address = Pop(allowSpanLocalAddress: true);
             if (!value.IsPermanentHome)
-                InvalidateSpanLocal(address);
+                InvalidateReturnLocal(address);
 
             Check(!address.IsReadOnly, VerifierError.ReadOnlyIllegalWrite);
 
