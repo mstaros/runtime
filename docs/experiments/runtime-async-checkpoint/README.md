@@ -65,7 +65,7 @@ The proof program is identified by its assembly MVID, fixed method-index mapping
 CoreLib MVID and exact runtime binary hashes. Real generated scripts need a retained
 program artifact and a stronger program manifest; that is separate work.
 
-## Deliberate limits
+## Original proof limits
 
 - Windows x64, exact runtime and proof assembly, tiering/OSR/R2R disabled.
 - A sequential chain of at most 16 runtime-async DynamicMethods returning Task<int>.
@@ -81,6 +81,70 @@ program artifact and a stronger program manifest; that is separate work.
 - No scheduler, persistence service, activity delivery, crash-consistent external effects,
   version migration, ApiCatalog storage or Merkle closure changes are included.
 
-The next step after this proof is a host-owned durable await boundary and snapshot
-contract. General graph serialization and the Merkle captured-data/method-binding split
-remain separate prerequisites for real scripts.
+
+## Guarded ScriptMcp host extension
+
+The optional host experiment uses a real Merkle script through ScriptMcp's ScriptRunner
+and CSharpScriptExecutionService. Build ScriptMcp.Server.Tests in Release, then run:
+
+```powershell
+docs\experiments\runtime-async-checkpoint\run-proof.cmd -RuntimeRoot D:\repos\runtime-async-dynamicmethod -ScriptTests <absolute-path-to-ScriptMcp.Server.Tests.dll> -AspNetRoot <absolute-path-to-matching-Microsoft.AspNetCore.App-directory>
+```
+
+The runner adds missing ASP.NET framework dependencies and the application's win-x64
+native assets to a freshly staged private Core_Root, exposes application DLLs in
+corerun's trusted assembly list, and
+selects the explicit Runtime_checkpoint_survives_host_restart test. The live MCP servers
+and their runtime directories are not changed.
+
+The host hook supports one guarded Task<object> script frame suspended on a controlled
+Task<int>. Its trusted codec encodes the live string, guard and pending-operation descriptors and replaces
+the captured ExecutionContext with a host-context descriptor. On restore, a fresh
+platform invocation recreates the guard and execution context. Guard aliases retain
+identity. Merkle's source awaiter lowering suspends directly in the script frame at a
+void helper call. Its optimized continuation retains the TaskAwaiter<int>'s task
+reference. Capture encodes that reference as the pending-operation token;
+restore supplies a completed task,
+then the script's ordinary GetResult reads 41. No task object graph is persisted.
+Unpromoted value types and configured/custom awaiter layouts remain outside this fixture.
+
+The opt-in checkpoint build also excludes native handle constants from CSE in async
+DynamicMethods. The initial host run exposed an Int32 method-table handle cached as
+an Int64 JIT temporary across the await, because both the prefix and result box an
+integer. Fresh code must rematerialize that handle, never restore the old address.
+General inlining and other CSE candidates remain enabled. Unsupported slots retain
+a diagnostic kind (100 plus the JIT type) and are rejected by the managed hook.
+Inactive exception-handling slots are accepted; active saved exceptions and
+scheduling contexts are rejected. The JIT's opt-in metadata now describes inactive EH
+frames; OSR remains excluded. The original four-field capture/restore interface retains
+its original restrictions; the host variant uses a separate five-field record.
+
+The test writes the source, exact runtime/application fingerprint, continuation and
+pending operation descriptor together, then returns a pending run ID through the normal
+ScriptRunner result path. The parent kills the producer only after that return. Fresh
+processes compile unrelated scripts before restoring, inject 41, and must return 84
+without running the prefix. The saved integer and string must both be present. Separate
+processes exercise guard cancellation and reject changed schema, unknown bindings and
+a changed fingerprint. Guard branch accounting must reach zero after completion and
+cancellation. The runner retains child logs and a receipt under the experiment's
+scriptmcp artifact directory, and includes that receipt in its main receipt.json.
+
+This extension is a trusted, exact-build test fixture. The internal hooks do not validate
+arbitrary reference types for an untrusted loader. The codec rejects unknown objects;
+there is no general graph serializer, closure support, resource adapter, second wait,
+parallel branch, production submission API, scheduler or persistent artifact store.
+The existing Merkle closure conversion work remains separate.
+
+For a diagnostic rerun after building, add -SkipBuild -Disassemble to retain the
+selected Merkle DynamicMethod disassembly as script-jit.log in the experiment artifacts.
+
+### Verified host result
+
+On 2026-10-17, Windows x64 Release, the complete runner passed in native operation
+06dfa578ee2c1d1b1f88f1dd4a14cc6f. ScriptMcp producer 648572 returned pending and was
+killed; process 625584 restored a 1,046-byte snapshot and returned 84 with zero
+prefix calls. Guard cancellation, changed schema, unknown binding and fingerprint
+rejections all passed in separate processes. The original two-frame proof and both
+continuation/GC stress modes also passed. The script snapshot contains only the
+guard/string/pending-task descriptors, live integer and host-context descriptor;
+no native type handle or task object graph is persisted.

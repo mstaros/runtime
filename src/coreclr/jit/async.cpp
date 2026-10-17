@@ -2250,9 +2250,9 @@ void AsyncTransformation::CreateSuspension(BasicBlock*                      call
         frame.KeepAliveOffset =
             layout.KeepAliveOffset == UINT_MAX ? UINT_MAX : rawDataOffset + layout.KeepAliveOffset;
         frame.ResultKind = call->gtReturnType == TYP_INT ? 1 : call->gtReturnType == TYP_VOID ? 3 : 0;
-        if ((layout.OSRAddressOffset != UINT_MAX) || (layout.ExceptionOffset != UINT_MAX))
+        if (layout.OSRAddressOffset != UINT_MAX)
         {
-            frame.ResultKind = 0; // OSR and exception state are outside this proof.
+            frame.ResultKind = 0; // OSR is outside this proof; managed capture rejects non-null exception state.
         }
 
         for (const LiveLocalInfo& inf : layout.Locals)
@@ -2276,7 +2276,7 @@ void AsyncTransformation::CreateSuspension(BasicBlock*                      call
             const LclVarDsc* dsc = m_compiler->lvaGetDesc(inf.LclNum);
             CORINFO_AsyncCheckpointSlot slot = {};
             slot.Offset = rawDataOffset + inf.Offset;
-            slot.Kind = dsc->TypeIs(TYP_INT) ? 1 : dsc->TypeIs(TYP_REF) ? 2 : 0;
+            slot.Kind = dsc->TypeIs(TYP_INT) ? 1 : dsc->TypeIs(TYP_REF) ? 2 : 100 + static_cast<unsigned>(dsc->TypeGet());
             slot.ILNumber = m_compiler->compMap2ILvarNum(inf.LclNum);
             append(&slot, sizeof(slot));
         }

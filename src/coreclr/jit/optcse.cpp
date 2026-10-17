@@ -1778,6 +1778,14 @@ bool CSE_HeuristicCommon::CanConsiderTree(GenTree* tree, bool isReturn)
     //
     if (tree->IsIntegralConst())
     {
+        // Checkpointed DynamicMethods must rematerialize process-local handle constants.
+        // CSE would otherwise spill a native type/method address as an ordinary integer.
+        if ((JitConfig.JitAsyncCheckpointProof() != 0) && m_compiler->compIsAsync() &&
+            ((m_compiler->info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0) && tree->IsIconHandle())
+        {
+            return false;
+        }
+
         if (!enableConstCSE &&
             // Unconditionally allow these constant handles to be CSE'd
             !tree->IsIconHandle(GTF_ICON_STATIC_HDL) && !tree->IsIconHandle(GTF_ICON_CLASS_HDL) &&

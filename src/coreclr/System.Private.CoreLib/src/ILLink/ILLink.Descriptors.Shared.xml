@@ -4,6 +4,8 @@
     <type fullname="System.Runtime.CompilerServices.AsyncHelpers">
       <method name="CaptureCheckpointForTesting" />
       <method name="RestoreCheckpointForTesting" />
+      <method name="CaptureHostCheckpointForTesting" />
+      <method name="RestoreHostCheckpointForTesting" />
     </type>
     <type fullname="System.GC">
       <!-- Methods are used to register and unregister frozen segments. They are private and experimental. -->

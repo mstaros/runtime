@@ -1,6 +1,9 @@
 param(
     [Parameter(Mandatory=$true)][string]$RuntimeRoot,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$ScriptTests,
+    [string]$AspNetRoot,
+    [switch]$Disassemble
 )
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -14,7 +17,9 @@ if (-not $SkipBuild) {
 }
 $baseline = Join-Path $runtime "artifacts\tests\coreclr\windows.x64.Release\Tests\Core_Root"
 $candidate = Join-Path $repo "artifacts\bin\coreclr\windows.x64.Release"
-$coreRoot = [IO.Directory]::CreateDirectory((Join-Path $output "Core_Root")).FullName
+$coreRootPath = Join-Path $output "Core_Root"
+if (Test-Path -LiteralPath $coreRootPath) { Remove-Item -LiteralPath $coreRootPath -Recurse -Force }
+$coreRoot = [IO.Directory]::CreateDirectory($coreRootPath).FullName
 foreach ($name in @("coreclr.dll", "clrjit.dll", "IL\System.Private.CoreLib.dll")) {
     if (-not (Test-Path -LiteralPath (Join-Path $candidate $name))) { throw "Missing candidate: $name" }
 }
@@ -111,7 +116,46 @@ foreach ($enabled in @("0", "1")) {
     & $corerun $regression
     if ($LASTEXITCODE -ne 100) { throw "Continuation/GC regression failed with metadata=$enabled : $LASTEXITCODE" }
 }
+
+$scriptReceipt = $null
+if ($ScriptTests) {
+    if (-not $AspNetRoot) { throw "-AspNetRoot is required with -ScriptTests." }
+    $scriptAssembly = (Resolve-Path -LiteralPath $ScriptTests).Path
+    $aspNet = (Resolve-Path -LiteralPath $AspNetRoot).Path
+    # Add the host's web framework dependencies without replacing the candidate runtime.
+    foreach ($file in Get-ChildItem -LiteralPath $aspNet -Filter "*.dll" -File) {
+        $destination = Join-Path $coreRoot $file.Name
+        if (-not (Test-Path -LiteralPath $destination)) { Copy-Item -LiteralPath $file.FullName -Destination $destination }
+    }
+    # corerun does not resolve native RID assets from the application deps.json.
+    $nativeAssets = Join-Path ([IO.Path]::GetDirectoryName($scriptAssembly)) "runtimes\win-x64\native"
+    if (Test-Path -LiteralPath $nativeAssets) {
+        foreach ($file in Get-ChildItem -LiteralPath $nativeAssets -Filter "*.dll" -File) {
+            $destination = Join-Path $coreRoot $file.Name
+            if (Test-Path -LiteralPath $destination) { throw "Native asset collides with staged runtime: $($file.Name)" }
+            Copy-Item -LiteralPath $file.FullName -Destination $destination
+        }
+    }
+    $scriptArtifacts = [IO.Directory]::CreateDirectory((Join-Path $output "scriptmcp")).FullName
+    Remove-Item -LiteralPath (Join-Path $scriptArtifacts "receipt.json") -Force -ErrorAction SilentlyContinue
+    # corerun must expose application dependencies through its trusted assembly list.
+    $env:CORE_LIBRARIES = [IO.Path]::GetDirectoryName($scriptAssembly)
+    $env:APP_ASSEMBLIES = "PROPERTY"
+    $env:SCRIPTMCP_CHECKPOINT_CORE_ROOT = $coreRoot
+    $env:SCRIPTMCP_CHECKPOINT_ARTIFACTS = $scriptArtifacts
+    $env:DOTNET_JitAsyncCheckpointProof = "1"
+    if ($Disassemble) {
+        $env:DOTNET_JitDisasm = "Merkle_A*"
+        $env:DOTNET_JitStdOutFile = Join-Path $output "script-jit.log"
+    }
+    & $corerun $scriptAssembly --treenode-filter "/*/*/ScriptExecutionTests/Runtime_checkpoint_survives_host_restart" --maximum-parallel-tests 1
+    if ($LASTEXITCODE -ne 0) { throw "ScriptMcp checkpoint proof failed: $LASTEXITCODE" }
+    $scriptReceipt = [IO.File]::ReadAllText((Join-Path $scriptArtifacts "receipt.json")) | ConvertFrom-Json
+    if (-not $scriptReceipt.succeeded) { throw "ScriptMcp checkpoint receipt is not successful." }
+    Write-Host ("ScriptMcp checkpoint receipt: " + ($scriptReceipt | ConvertTo-Json -Depth 4 -Compress))
+}
 $receipt = [ordered]@{
+    scriptMcp = $scriptReceipt
     succeeded = $true; producerPid = $producer.Id; producerKilled = $true
     snapshotBytes = (Get-Item -LiteralPath $snapshot).Length
     expectedResult = 84; expectedPreAwaitCallsOnRestore = 0
