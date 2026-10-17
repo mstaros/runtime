@@ -119,7 +119,7 @@ $receipt = [ordered]@{
         JitAsyncCheckpointProof = "1"; JitNoInline = "0"; TieredCompilation = "0"
         TC_OnStackReplacement = "0"; ReadyToRun = "0"
     }
-    runtime = $binaries; restoreOutput = (Get-Content -LiteralPath $restoreLog -Raw)
+    runtime = $binaries; restoreOutput = [IO.File]::ReadAllText($restoreLog)
     continuationGcRegression = @("metadata disabled: passed", "metadata enabled: passed")
     negativeCases = @("unsupported live object", "changed schema", "changed value type", "runtime fingerprint")
 }
