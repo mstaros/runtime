@@ -8,6 +8,13 @@
 #ifndef ASYNCCONTINUATIONS_H
 #define ASYNCCONTINUATIONS_H
 
+#include "qcall.h"
+
+extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
+    MethodDesc* method, INT32 state, QCall::ObjectHandleOnStack schema,
+    QCall::ObjectHandleOnStack keepAlive, intptr_t* continuationType, intptr_t* resumeInfo);
+
+
 struct ContinuationLayoutKeyData
 {
     unsigned DataSize;

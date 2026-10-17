@@ -1,5 +1,10 @@
 <linker>
   <assembly fullname="System.Private.CoreLib">
+    <!-- Internal opt-in checkpoint experiment, invoked by reflection from its test host. -->
+    <type fullname="System.Runtime.CompilerServices.AsyncHelpers">
+      <method name="CaptureCheckpointForTesting" />
+      <method name="RestoreCheckpointForTesting" />
+    </type>
     <type fullname="System.GC">
       <!-- Methods are used to register and unregister frozen segments. They are private and experimental. -->
       <method name="_RegisterFrozenSegment" />

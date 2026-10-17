@@ -1986,6 +1986,38 @@ struct CORINFO_AsyncResumeInfo
     TARGET_SIZE_T DiagnosticIP;
 };
 
+// Internal, opt-in checkpoint proof metadata. Not a persisted format or a public ABI.
+// Only runtime-async DynamicMethods on a pinned runtime use this metadata.
+struct CORINFO_AsyncCheckpointSlot
+{
+    uint32_t Offset;      // Byte offset from managed GetRawData, excluding the method table.
+    uint32_t Kind;        // 0: unsupported, 1: Int32, 2: managed reference.
+    uint32_t ILNumber;    // Diagnostic identity; includes unknown/compiler-generated locals.
+    uint32_t Reserved;
+};
+
+struct CORINFO_AsyncCheckpointFrame
+{
+    CORINFO_CLASS_HANDLE ContinuationClass;
+    uint32_t State;
+    uint32_t Flags;
+    uint32_t DataSize;
+    uint32_t KeepAliveOffset;
+    uint32_t ResultKind;  // 0: unsupported, 1: Int32, 3: void.
+    uint32_t NumSlots;
+};
+
+struct CORINFO_AsyncCheckpointInfo
+{
+    const void* CodeAddress;
+    const CORINFO_AsyncResumeInfo* ResumeInfos;
+    uint32_t Version;
+    uint32_t NumStates;
+    uint32_t LayoutBytes;
+    uint32_t Reserved;
+    // Followed by NumStates frame records, each followed by its slot records.
+};
+
 struct CORINFO_TYPE_LAYOUT_NODE
 {
     // Type handle if this is a SIMD type, i.e. for intrinsic types in

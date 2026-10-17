@@ -179,7 +179,14 @@ PhaseStatus Compiler::SaveAsyncContexts()
         CORINFO_CALL_INFO callInfo = {};
         callInfo.hMethod           = captureCall->gtCallMethHnd;
         callInfo.methodFlags       = info.compCompHnd->getMethodAttribs(callInfo.hMethod);
-        impMarkInlineCandidate(captureCall, MAKE_METHODCONTEXT(callInfo.hMethod), &callInfo, compInlineContext);
+        // Keep the context-capture boundary explicit for the bounded checkpoint proof.
+        // Inlining can copy its synchronous-only Thread local into an unclassified
+        // temporary that the continuation liveness analysis then retains.
+        if ((JitConfig.JitAsyncCheckpointProof() == 0) ||
+            ((info.compMethodInfo->options & CORINFO_LCG_METHOD) == 0))
+        {
+            impMarkInlineCandidate(captureCall, MAKE_METHODCONTEXT(callInfo.hMethod), &callInfo, compInlineContext);
+        }
 
         Statement* captureStmt = fgNewStmtFromTree(captureCall);
         fgInsertStmtAtBeg(fgFirstBB, captureStmt);
@@ -2221,6 +2228,59 @@ void AsyncTransformation::CreateSuspension(BasicBlock*                      call
     GenTree* flagsNode   = m_compiler->gtNewIconNode((ssize_t)continuationFlags, TYP_INT);
     GenTree* storeFlags  = StoreAtOffset(newContinuation, flagsOffset, flagsNode, TYP_INT);
     LIR::AsRange(suspendBB).InsertAtEnd(LIR::SeqTree(m_compiler, storeFlags));
+
+
+    if ((JitConfig.JitAsyncCheckpointProof() != 0) &&
+        ((m_compiler->info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0))
+    {
+        // Retain every live slot, including JIT temporaries omitted by debug information.
+        // The proof rejects unsupported kinds instead of silently dropping their state.
+        if (m_compiler->compAsyncCheckpointLayout == nullptr)
+        {
+            m_compiler->compAsyncCheckpointLayout =
+                new (m_compiler, CMK_Async) jitstd::vector<uint8_t>(m_compiler->getAllocator(CMK_Async));
+        }
+
+        constexpr unsigned rawDataOffset = OFFSETOF__CORINFO_Continuation__data - TARGET_POINTER_SIZE;
+        CORINFO_AsyncCheckpointFrame frame = {};
+        frame.ContinuationClass = layout.ClassHnd;
+        frame.State = stateNum;
+        frame.Flags = continuationFlags;
+        frame.DataSize = rawDataOffset + layout.Size;
+        frame.KeepAliveOffset =
+            layout.KeepAliveOffset == UINT_MAX ? UINT_MAX : rawDataOffset + layout.KeepAliveOffset;
+        frame.ResultKind = call->gtReturnType == TYP_INT ? 1 : call->gtReturnType == TYP_VOID ? 3 : 0;
+        if ((layout.OSRAddressOffset != UINT_MAX) || (layout.ExceptionOffset != UINT_MAX))
+        {
+            frame.ResultKind = 0; // OSR and exception state are outside this proof.
+        }
+
+        for (const LiveLocalInfo& inf : layout.Locals)
+        {
+            if (subLayout.ContainsLocal(inf.LclNum))
+                frame.NumSlots++;
+        }
+
+        auto append = [&](const void* value, size_t size) {
+            const uint8_t* bytes = static_cast<const uint8_t*>(value);
+            m_compiler->compAsyncCheckpointLayout->insert(
+                m_compiler->compAsyncCheckpointLayout->end(), bytes, bytes + size);
+        };
+        append(&frame, sizeof(frame));
+
+        for (const LiveLocalInfo& inf : layout.Locals)
+        {
+            if (!subLayout.ContainsLocal(inf.LclNum))
+                continue;
+
+            const LclVarDsc* dsc = m_compiler->lvaGetDesc(inf.LclNum);
+            CORINFO_AsyncCheckpointSlot slot = {};
+            slot.Offset = rawDataOffset + inf.Offset;
+            slot.Kind = dsc->TypeIs(TYP_INT) ? 1 : dsc->TypeIs(TYP_REF) ? 2 : 0;
+            slot.ILNumber = m_compiler->compMap2ILvarNum(inf.LclNum);
+            append(&slot, sizeof(slot));
+        }
+    }
 
     FillInDataOnSuspension(layout, subLayout, suspendBB, mutatedSinceResumption, tailSaveSet);
 

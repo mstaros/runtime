@@ -169,6 +169,13 @@ public:
     OBJECTREF GetManagedResolver();
     void SetManagedResolver(OBJECTHANDLE obj) { LIMITED_METHOD_CONTRACT; m_managedResolver = obj; }
     void** AllocateRecordCodePointer();
+    // Immutable proof metadata, published once and released with this resolver.
+    const BYTE* GetAsyncCheckpointInfo()
+    {
+        LIMITED_METHOD_CONTRACT;
+        return VolatileLoad(&m_asyncCheckpointInfo);
+    }
+    void SetAsyncCheckpointInfo(const void* data, size_t size);
 
 private:
     DynamicMethodDesc* GetNextFreeDynamicMethodDesc() { LIMITED_METHOD_CONTRACT; return m_next; }
@@ -228,6 +235,7 @@ private:
     // destruction.
     DynamicMethodDesc* m_next;
     ChunkAllocator m_jitMetaHeap;
+    BYTE* volatile m_asyncCheckpointInfo = nullptr;
     ChunkAllocator m_jitTempData;
     // m_DynamicCodePointers has its entries allocated in chunks (via m_jitTempData).
     // Having a field for the initial code pointer avoids the chunk allocation in the common

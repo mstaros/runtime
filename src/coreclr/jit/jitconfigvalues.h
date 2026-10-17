@@ -622,6 +622,9 @@ OPT_CONFIG_STRING(JitAsyncPreservedValueAnalysisRange, "JitAsyncPreservedValueAn
 
 // Enable continuation reuse based on method hash range
 OPT_CONFIG_STRING(JitAsyncReuseContinuationsRange, "JitAsyncReuseContinuationsRange")
+// Emit internal live-slot metadata for the bounded cross-process checkpoint experiment.
+RELEASE_CONFIG_INTEGER(JitAsyncCheckpointProof, "JitAsyncCheckpointProof", 0)
+
 // Save and reuse continuation instances in runtime async functions. Also
 // implies use of shared continuation layouts for all suspension points.
 RELEASE_CONFIG_INTEGER(JitAsyncReuseContinuations, "JitAsyncReuseContinuations", 1)

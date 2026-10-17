@@ -11528,6 +11528,13 @@ void CEECodeGenInfo::reportMetadata(
     } CONTRACTL_END;
 
     JIT_TO_EE_TRANSITION_LEAF();
+    if ((strcmp(key, "RuntimeAsyncCheckpointProofV1") == 0) &&
+        m_pMethodBeingCompiled->IsLCGMethod() && m_pMethodBeingCompiled->IsAsyncMethod() &&
+        (length >= sizeof(CORINFO_AsyncCheckpointInfo)))
+    {
+        m_pMethodBeingCompiled->AsDynamicMethodDesc()->GetLCGMethodResolver()->SetAsyncCheckpointInfo(value, length);
+    }
+
 
     EE_TO_JIT_TRANSITION_LEAF();
 }

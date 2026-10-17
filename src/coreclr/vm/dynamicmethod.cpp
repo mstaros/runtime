@@ -1113,12 +1113,26 @@ bool DynamicMethodDesc::TryDestroy()
     return true;
 }
 
-//
-// The resolver object is reused when the method is destroyed,
-// this will reset its state for the next use.
-//
+// Retain opt-in proof metadata independently of the JIT temporary allocator.
+void LCGMethodResolver::SetAsyncCheckpointInfo(const void* data, size_t size)
+{
+    LIMITED_METHOD_CONTRACT;
+    if (size < sizeof(CORINFO_AsyncCheckpointInfo) ||
+        static_cast<const CORINFO_AsyncCheckpointInfo*>(data)->LayoutBytes != size - sizeof(CORINFO_AsyncCheckpointInfo))
+        return;
+    BYTE* copy = new (nothrow) BYTE[size];
+    if (copy == nullptr)
+        return;
+    memcpy(copy, data, size);
+    if (InterlockedCompareExchangeT(&m_asyncCheckpointInfo, copy, static_cast<BYTE*>(nullptr)) != nullptr)
+        delete[] copy;
+}
+
+// The resolver is reused after method destruction; reset its state for the next use.
 void LCGMethodResolver::Reset()
 {
+    delete[] m_asyncCheckpointInfo;
+    m_asyncCheckpointInfo = nullptr;
     m_DynamicStringLiterals = NULL;
     m_initialCodePointer    = {};
     m_DynamicCodePointers   = &m_initialCodePointer;
@@ -1296,6 +1310,8 @@ void LCGMethodResolver::DestroyResolver()
     // Note that we need to do this before m_jitTempData is deleted
     RecycleIndCells();
 
+    delete[] m_asyncCheckpointInfo;
+    m_asyncCheckpointInfo = nullptr;
     m_jitMetaHeap.Delete();
     m_jitTempData.Delete();
 

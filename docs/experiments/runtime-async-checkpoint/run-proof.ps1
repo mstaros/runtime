@@ -1,0 +1,127 @@
+param(
+    [Parameter(Mandatory=$true)][string]$RuntimeRoot,
+    [switch]$SkipBuild
+)
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+$runtime = (Resolve-Path -LiteralPath $RuntimeRoot).Path
+$repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..\..")).Path
+$output = [IO.Directory]::CreateDirectory((Join-Path $repo "artifacts\experiments\runtime-async-checkpoint")).FullName
+Remove-Item -LiteralPath (Join-Path $output "receipt.json") -Force -ErrorAction SilentlyContinue
+if (-not $SkipBuild) {
+    & (Join-Path $PSScriptRoot "build-runtime.cmd") $runtime
+    if ($LASTEXITCODE -ne 0) { throw "Candidate runtime build failed: $LASTEXITCODE" }
+}
+$baseline = Join-Path $runtime "artifacts\tests\coreclr\windows.x64.Release\Tests\Core_Root"
+$candidate = Join-Path $repo "artifacts\bin\coreclr\windows.x64.Release"
+$coreRoot = [IO.Directory]::CreateDirectory((Join-Path $output "Core_Root")).FullName
+foreach ($name in @("coreclr.dll", "clrjit.dll", "IL\System.Private.CoreLib.dll")) {
+    if (-not (Test-Path -LiteralPath (Join-Path $candidate $name))) { throw "Missing candidate: $name" }
+}
+# Private staging only: never replace the runtime used by MCP servers.
+Copy-Item -Path (Join-Path $baseline "*") -Destination $coreRoot -Recurse -Force
+foreach ($name in @("coreclr.dll", "clrjit.dll")) {
+    Copy-Item -LiteralPath (Join-Path $candidate $name) -Destination (Join-Path $coreRoot $name) -Force
+}
+Copy-Item -LiteralPath (Join-Path $candidate "IL\System.Private.CoreLib.dll") -Destination (Join-Path $coreRoot "System.Private.CoreLib.dll") -Force
+if (Test-Path -LiteralPath (Join-Path $candidate "corerun.exe")) {
+    Copy-Item -LiteralPath (Join-Path $candidate "corerun.exe") -Destination (Join-Path $coreRoot "corerun.exe") -Force
+}
+$dotnet = Join-Path $runtime ".dotnet\dotnet.exe"
+$sdk = (Get-Content -LiteralPath (Join-Path $runtime "global.json") -Raw | ConvertFrom-Json).sdk.version
+$csc = Join-Path $runtime ".dotnet\sdk\$sdk\Roslyn\bincore\csc.dll"
+$worker = Join-Path $output "CheckpointProof.dll"
+$compile = @("/nostdlib+", "/target:exe", "/langversion:preview", "/nullable:enable", "/optimize+", ('/out:"' + $worker + '"'))
+foreach ($name in @("System.Private.CoreLib", "System.Runtime", "System.Console", "System.Linq",
+    "System.Reflection.Emit", "System.Reflection.Emit.Lightweight", "System.Reflection.Primitives",
+    "System.Threading", "System.Threading.Tasks", "System.Collections", "System.Runtime.Extensions", "System.IO.FileSystem")) {
+    $compile += '/reference:"' + (Join-Path $coreRoot ($name + ".dll")) + '"'
+}
+$compile += '"' + (Join-Path $PSScriptRoot "CheckpointProof.cs") + '"'
+$rsp = Join-Path $output "compile.rsp"
+[IO.File]::WriteAllLines($rsp, $compile)
+& $dotnet exec $csc /noconfig ("@" + $rsp)
+if ($LASTEXITCODE -ne 0) { throw "Proof compilation failed: $LASTEXITCODE" }
+
+$binaries = @("corerun.exe", "coreclr.dll", "clrjit.dll", "System.Private.CoreLib.dll") | ForEach-Object {
+    [ordered]@{ name = $_; sha256 = (Get-FileHash -LiteralPath (Join-Path $coreRoot $_) -Algorithm SHA256).Hash }
+}
+$fingerprint = ($binaries | ForEach-Object { $_.name + ":" + $_.sha256 }) -join ";"
+$env:CHECKPOINT_PROOF_RUNTIME_SHA256 = $fingerprint
+$env:CHECKPOINT_PROOF_CORE_ROOT = $coreRoot
+$env:CORE_ROOT = $coreRoot
+$env:CORE_LIBRARIES = $coreRoot
+$env:DOTNET_JitAsyncCheckpointProof = "1"
+$env:DOTNET_JitNoInline = "0"
+$env:COMPlus_JitNoInline = "0"
+$env:DOTNET_TieredCompilation = "0"
+$env:DOTNET_TC_OnStackReplacement = "0"
+$env:DOTNET_ReadyToRun = "0"
+$env:COMPlus_TieredCompilation = "0"
+$env:COMPlus_ReadyToRun = "0"
+$corerun = Join-Path $coreRoot "corerun.exe"
+$snapshot = Join-Path $output "checkpoint.bin"
+Remove-Item -LiteralPath $snapshot -Force -ErrorAction SilentlyContinue
+$producerOut = Join-Path $output "producer.stdout.log"
+$producerErr = Join-Path $output "producer.stderr.log"
+$producer = Start-Process -FilePath $corerun -ArgumentList @(('"' + $worker + '"'), "produce", ('"' + $snapshot + '"')) -PassThru -NoNewWindow -RedirectStandardOutput $producerOut -RedirectStandardError $producerErr
+try {
+    $deadline = [DateTime]::UtcNow.AddSeconds(45)
+    do {
+        if ($producer.HasExited) {
+            Get-Content -LiteralPath $producerOut
+            Get-Content -LiteralPath $producerErr
+            throw "Producer exited before its checkpoint: $($producer.ExitCode)"
+        }
+        if ([DateTime]::UtcNow -gt $deadline) { throw "Producer checkpoint timed out." }
+        Start-Sleep -Milliseconds 100
+    } while (-not (Test-Path -LiteralPath $snapshot) -or -not ((Get-Content -LiteralPath $producerOut -Raw) -match "READY producer="))
+    $producer.Kill()
+    $producer.WaitForExit()
+} finally {
+    if (-not $producer.HasExited) { $producer.Kill(); $producer.WaitForExit() }
+}
+Get-Content -LiteralPath $producerOut
+Get-Content -LiteralPath $producerErr
+Write-Host "Producer PID $($producer.Id) was killed; starting a fresh process."
+$restoreLog = Join-Path $output "restore.log"
+& $corerun $worker restore $snapshot 2>&1 | Tee-Object -FilePath $restoreLog
+if ($LASTEXITCODE -ne 0) { throw "Fresh-process restore failed: $LASTEXITCODE" }
+
+# Host rejects mismatched runtime identity before invoking the native restoration hook.
+$env:CHECKPOINT_PROOF_RUNTIME_SHA256 = "intentionally-mismatched"
+$negativeOut = Join-Path $output "wrong-runtime.stdout.log"
+$negativeErr = Join-Path $output "wrong-runtime.stderr.log"
+$negative = Start-Process -FilePath $corerun -ArgumentList @(('"' + $worker + '"'), "restore", ('"' + $snapshot + '"')) -PassThru -Wait -NoNewWindow -RedirectStandardOutput $negativeOut -RedirectStandardError $negativeErr
+if ($negative.ExitCode -eq 0 -or -not ((Get-Content -LiteralPath $negativeErr -Raw).Contains("fingerprint mismatch"))) {
+    throw "Mismatched runtime fingerprint was not rejected correctly."
+}
+$env:CHECKPOINT_PROOF_RUNTIME_SHA256 = $fingerprint
+# Existing process-isolated continuation/GC regression, with metadata off and on.
+$regression = Join-Path $output "DynamicMethodContinuationConcurrency.dll"
+$regressionArgs = @($compile[0..($compile.Count - 2)] | Where-Object { $_ -notlike '/out:*' })
+$regressionArgs += '/out:"' + $regression + '"'
+$regressionArgs += '"' + (Join-Path $repo "src\tests\async\reflection\dynamicmethod-continuation-concurrency.cs") + '"'
+$regressionRsp = Join-Path $output "regression.rsp"
+[IO.File]::WriteAllLines($regressionRsp, $regressionArgs)
+& $dotnet exec $csc /noconfig ("@" + $regressionRsp)
+if ($LASTEXITCODE -ne 0) { throw "Regression compilation failed: $LASTEXITCODE" }
+foreach ($enabled in @("0", "1")) {
+    $env:DOTNET_JitAsyncCheckpointProof = $enabled
+    & $corerun $regression
+    if ($LASTEXITCODE -ne 100) { throw "Continuation/GC regression failed with metadata=$enabled : $LASTEXITCODE" }
+}
+$receipt = [ordered]@{
+    succeeded = $true; producerPid = $producer.Id; producerKilled = $true
+    snapshotBytes = (Get-Item -LiteralPath $snapshot).Length
+    expectedResult = 84; expectedPreAwaitCallsOnRestore = 0
+    runtimeSettings = [ordered]@{
+        JitAsyncCheckpointProof = "1"; JitNoInline = "0"; TieredCompilation = "0"
+        TC_OnStackReplacement = "0"; ReadyToRun = "0"
+    }
+    runtime = $binaries; restoreOutput = (Get-Content -LiteralPath $restoreLog -Raw)
+    continuationGcRegression = @("metadata disabled: passed", "metadata enabled: passed")
+    negativeCases = @("unsupported live object", "changed schema", "changed value type", "runtime fingerprint")
+}
+$receipt | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output "receipt.json") -Encoding UTF8
+Write-Host "CHECKPOINT PROOF PASSED. Receipt: $(Join-Path $output 'receipt.json')"

@@ -11,8 +11,89 @@
 
 #include "common.h"
 #include "asynccontinuations.h"
+#include "dynamicmethod.h"
 
 #ifndef DACCESS_COMPILE
+
+extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
+    MethodDesc* method, INT32 state, QCall::ObjectHandleOnStack schema,
+    QCall::ObjectHandleOnStack keepAlive, intptr_t* continuationType, intptr_t* resumeInfo)
+{
+    QCALL_CONTRACT;
+    BEGIN_QCALL;
+#ifndef TARGET_AMD64
+    COMPlusThrow(kPlatformNotSupportedException);
+#else
+    if (method == nullptr || !method->IsLCGMethod())
+        COMPlusThrow(kNotSupportedException);
+
+    MethodDesc* body = method->IsAsyncMethod() ? method : method->GetAsyncVariantNoCreate();
+    if (body == nullptr || !body->IsLCGMethod())
+        COMPlusThrow(kNotSupportedException);
+
+    // Compile the recreated body, without invoking its original entry point.
+    body->PrepareInitialCode();
+    LCGMethodResolver* resolver = body->AsDynamicMethodDesc()->GetLCGMethodResolver();
+    const BYTE* bytes = resolver->GetAsyncCheckpointInfo();
+    if (bytes == nullptr)
+        COMPlusThrow(kNotSupportedException);
+
+    const auto* info = reinterpret_cast<const CORINFO_AsyncCheckpointInfo*>(bytes);
+    // In particular, do not use metadata from a losing concurrent JIT compilation.
+    if (info->Version != 1 || info->CodeAddress != reinterpret_cast<void*>(body->GetNativeCode()) ||
+        state < 0 || static_cast<uint32_t>(state) >= info->NumStates || info->LayoutBytes > 1024 * 1024)
+        COMPlusThrow(kNotSupportedException);
+
+    const BYTE* cursor = bytes + sizeof(*info);
+    const BYTE* end = cursor + info->LayoutBytes;
+    const CORINFO_AsyncCheckpointFrame* frame = nullptr;
+    while (static_cast<size_t>(end - cursor) >= sizeof(CORINFO_AsyncCheckpointFrame))
+    {
+        const auto* candidate = reinterpret_cast<const CORINFO_AsyncCheckpointFrame*>(cursor);
+        cursor += sizeof(*candidate);
+        if (candidate->NumSlots > static_cast<size_t>(end - cursor) / sizeof(CORINFO_AsyncCheckpointSlot))
+            COMPlusThrow(kNotSupportedException);
+        if (candidate->State == static_cast<uint32_t>(state))
+        {
+            frame = candidate;
+            break;
+        }
+        cursor += candidate->NumSlots * sizeof(CORINFO_AsyncCheckpointSlot);
+    }
+    if (frame == nullptr || info->ResumeInfos[state].Resume == 0 || info->ResumeInfos[state].DiagnosticIP == 0)
+        COMPlusThrow(kNotSupportedException);
+
+    {
+        GCX_COOP();
+        OBJECTREF resolverObject = resolver->GetManagedResolver();
+        if (resolverObject == NULL)
+            COMPlusThrow(kNotSupportedException);
+        keepAlive.Set(resolverObject);
+
+        // Pointer-free schema; slot order is part of the exact-build proof contract.
+        I4ARRAYREF array = (I4ARRAYREF)AllocatePrimitiveArray(ELEMENT_TYPE_I4, 7 + frame->NumSlots * 3);
+        INT32* values = array->GetDirectPointerToNonObjectElements();
+        values[0] = 1;
+        values[1] = frame->State;
+        values[2] = frame->Flags;
+        values[3] = frame->DataSize;
+        values[4] = frame->KeepAliveOffset;
+        values[5] = frame->ResultKind;
+        values[6] = frame->NumSlots;
+        const auto* slots = reinterpret_cast<const CORINFO_AsyncCheckpointSlot*>(frame + 1);
+        for (uint32_t i = 0; i < frame->NumSlots; i++)
+        {
+            values[7 + i * 3] = slots[i].Offset;
+            values[8 + i * 3] = slots[i].Kind;
+            values[9 + i * 3] = slots[i].ILNumber;
+        }
+        schema.Set(array);
+    }
+    *continuationType = reinterpret_cast<intptr_t>(frame->ContinuationClass);
+    *resumeInfo = reinterpret_cast<intptr_t>(&info->ResumeInfos[state]);
+#endif
+    END_QCALL;
+}
 
 AsyncContinuationsManager::AsyncContinuationsManager(LoaderAllocator* allocator)
     : m_allocator(allocator)

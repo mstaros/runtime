@@ -8523,6 +8523,22 @@ void emitter::emitOutputDataSec(dataSecDsc* sec, AllocMemChunk* chunks)
                 BYTE* target           = emitLoc->Valid() ? emitOffsetToPtr(emitLoc->CodeOffset(this)) : nullptr;
                 aDstRW[i].Resume       = (target_size_t)(uintptr_t)emitAsyncResumeStubEntryPoint;
                 aDstRW[i].DiagnosticIP = (target_size_t)(uintptr_t)target;
+                if (((i + 1) == numElems) && (m_compiler->compAsyncCheckpointLayout != nullptr))
+                {
+                    const auto& layouts = *m_compiler->compAsyncCheckpointLayout;
+                    size_t size = sizeof(CORINFO_AsyncCheckpointInfo) + layouts.size();
+                    uint8_t* bytes = new (m_compiler, CMK_Async) uint8_t[size];
+                    CORINFO_AsyncCheckpointInfo info = {};
+                    info.CodeAddress = emitCodeBlock;
+                    info.ResumeInfos = reinterpret_cast<CORINFO_AsyncResumeInfo*>(chunk->block);
+                    info.Version = 1;
+                    info.NumStates = static_cast<uint32_t>(numElems);
+                    info.LayoutBytes = static_cast<uint32_t>(layouts.size());
+                    memcpy(bytes, &info, sizeof(info));
+                    memcpy(bytes + sizeof(info), layouts.data(), layouts.size());
+                    m_compiler->info.compCompHnd->reportMetadata("RuntimeAsyncCheckpointProofV1", bytes, size);
+                }
+
 
                 if (m_compiler->opts.compReloc)
                 {

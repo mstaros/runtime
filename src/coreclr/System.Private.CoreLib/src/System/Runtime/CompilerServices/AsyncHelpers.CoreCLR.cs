@@ -756,7 +756,7 @@ namespace System.Runtime.CompilerServices
 
         // Represents execution of a chain of suspended and resuming runtime
         // async functions.
-        private sealed class RuntimeAsyncTask<T> : Task<T>
+        private sealed partial class RuntimeAsyncTask<T> : Task<T>
         {
             public RuntimeAsyncTask()
             {

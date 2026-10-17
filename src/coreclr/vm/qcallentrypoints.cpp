@@ -9,6 +9,7 @@
 //
 // Headers for all ECall entrypoints
 //
+#include "asynccontinuations.h"
 #include "arraynative.h"
 #include "dllimport.h"
 #include "comdelegate.h"
@@ -195,6 +196,7 @@ static const Entry s_QCall[] =
     DllImportEntry(UnsafeAccessors_ResolveGenericParamToTypeHandle)
     DllImportEntry(StackTrace_GetStackFramesInternal)
     DllImportEntry(AsyncHelpers_AddContinuationToExInternal)
+    DllImportEntry(AsyncHelpers_GetCheckpointInfoForTesting)
     DllImportEntry(StackFrame_GetMethodDescFromNativeIP)
     DllImportEntry(ModuleBuilder_GetStringConstant)
     DllImportEntry(ModuleBuilder_GetTypeRef)
