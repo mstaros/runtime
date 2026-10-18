@@ -94,22 +94,35 @@ $restoreLog = Join-Path $output "restore.log"
 & $corerun $worker restore $snapshot 2>&1 | Tee-Object -FilePath $restoreLog
 if ($LASTEXITCODE -ne 0) { throw "Fresh-process restore failed: $LASTEXITCODE" }
 
+# A wait bug in a new regression must fail promptly, not stall the whole build gate.
+function Invoke-CheckpointChild([string]$Mode, [string]$Path) {
+    $stdout = Join-Path $output ($Mode + ".stdout.log")
+    $stderr = Join-Path $output ($Mode + ".stderr.log")
+    $child = Start-Process -FilePath $corerun -ArgumentList @(('"' + $worker + '"'), $Mode, ('"' + $Path + '"')) -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    try {
+        if (-not $child.WaitForExit(30000)) { throw "Checkpoint child timed out: $Mode" }
+        $child.WaitForExit()
+        Get-Content -LiteralPath $stdout
+        Get-Content -LiteralPath $stderr
+        if ($child.ExitCode -ne 0) { throw "Checkpoint child failed: $Mode ($($child.ExitCode))" }
+    } finally {
+        if (-not $child.HasExited) { $child.Kill(); $child.WaitForExit() }
+        $child.Dispose()
+    }
+}
+
 # Reverse class-initialization histories in separate processes, retaining the same
 # method IL/config and distinct evaluation-stack temporaries.
 foreach ($direction in @(@("cold", "hot"), @("hot", "cold"))) {
     $staticSnapshot = Join-Path $output ("statics-" + $direction[0] + ".bin")
-    & $corerun $worker ("statics-produce-" + $direction[0]) $staticSnapshot
-    if ($LASTEXITCODE -ne 0) { throw "Class-state capture failed." }
-    & $corerun $worker ("statics-restore-" + $direction[1]) $staticSnapshot
-    if ($LASTEXITCODE -ne 0) { throw "Class-state restore failed." }
+    Invoke-CheckpointChild ("statics-produce-" + $direction[0]) $staticSnapshot
+    Invoke-CheckpointChild ("statics-restore-" + $direction[1]) $staticSnapshot
 }
 # Value 3 adds a bounded publication barrier; the reader must observe the gap.
 $env:DOTNET_JitAsyncCheckpointProof = "3"
-& $corerun $worker publication $snapshot
-if ($LASTEXITCODE -ne 0) { throw "Forced publication-gap regression failed." }
+Invoke-CheckpointChild "publication" $snapshot
 $env:DOTNET_JitAsyncCheckpointProof = "0"
-& $corerun $worker disabled $snapshot
-if ($LASTEXITCODE -ne 0) { throw "Metadata-disabled capture failed to return." }
+Invoke-CheckpointChild "disabled" $snapshot
 $env:DOTNET_JitAsyncCheckpointProof = "2"
 
 # The runtime itself must reject an effective-JIT-config mismatch, even when the host

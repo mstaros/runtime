@@ -2,6 +2,7 @@
   <assembly fullname="System.Private.CoreLib">
     <!-- Internal opt-in checkpoint experiment, invoked by reflection from its test host. -->
     <type fullname="System.Runtime.CompilerServices.AsyncHelpers">
+      <method name="CheckpointPublicationStateForTesting" />
       <method name="CaptureCheckpointForTesting" />
       <method name="RestoreCheckpointForTesting" />
       <method name="CaptureHostCheckpointForTesting" />

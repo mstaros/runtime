@@ -471,7 +471,8 @@ public static class CheckpointProof
             return;
         }
         var query = Helpers.GetMethod("CheckpointPublicationStateForTesting", BindingFlags.Static | BindingFlags.NonPublic)!;
-        int State() => (int)query.Invoke(null, new object[] { method })!;
+        Require(query != null, "CoreLib publication test hook is missing (check ILLink roots).");
+        int State() => (int)query!.Invoke(null, new object[] { method })!;
         var publisher = Task.Factory.StartNew(StartOne, CancellationToken.None,
             TaskCreationOptions.LongRunning, TaskScheduler.Default);
         Require(SpinWait.SpinUntil(() => State() != 0, TimeSpan.FromSeconds(8)),
