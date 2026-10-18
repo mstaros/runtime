@@ -281,10 +281,6 @@ namespace System.Runtime.CompilerServices
             out object keepAlive, out IntPtr type, out IntPtr resume, out Type?[] slotTypes,
             bool host = false, IntPtr expectedResume = default)
         {
-            if (host
-                ? !method.ReturnType.IsGenericType || method.ReturnType.GetGenericTypeDefinition() != typeof(Task<>)
-                : method.ReturnType != typeof(Task<int>))
-                throw new NotSupportedException("Checkpoint proof requires Task<Int32> methods.");
             int[] schema = null!;
             slotTypes = null!;
             keepAlive = null!;
@@ -292,8 +288,26 @@ namespace System.Runtime.CompilerServices
                 ObjectHandleOnStack.Create(ref schema), ObjectHandleOnStack.Create(ref keepAlive),
                 ObjectHandleOnStack.Create(ref slotTypes), out type, out resume);
             GC.KeepAlive(method);
+            // A capture probe must skip nonowners before enforcing the owner's signature.
+            if (schema != null)
+            {
+                if (host
+                    ? !method.ReturnType.IsGenericType || method.ReturnType.GetGenericTypeDefinition() != typeof(Task<>)
+                    : method.ReturnType != typeof(Task<int>))
+                    throw new NotSupportedException("Checkpoint proof requires Task<Int32> methods.");
+            }
             return schema;
         }
+
+        internal static int CheckpointPublicationStateForTesting(DynamicMethod method)
+        {
+            int state = GetCheckpointPublicationStateForTesting(method.GetMethodDescriptor().Value);
+            GC.KeepAlive(method);
+            return state;
+        }
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AsyncHelpers_GetCheckpointPublicationStateForTesting")]
+        private static partial int GetCheckpointPublicationStateForTesting(IntPtr method);
 
         private sealed partial class RuntimeAsyncTask<T>
         {

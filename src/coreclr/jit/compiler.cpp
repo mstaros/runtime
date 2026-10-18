@@ -302,6 +302,13 @@ Compiler::Compiler(ArenaAllocator*       arena,
     info.compCompHnd    = compHnd;
     info.compMethodHnd  = methodHnd;
     info.compMethodInfo = methodInfo;
+    // Establish the root compilation policy before import or any inlinee queries.
+    // Use the JIT's cached switch, not a second environment lookup in the VM.
+    if (!compIsForInlining() && ((methodInfo->options & CORINFO_LCG_METHOD) != 0))
+    {
+        uint32_t mode = static_cast<uint32_t>(JitConfig.JitAsyncCheckpointProof());
+        compHnd->reportMetadata("RuntimeAsyncCheckpointCompilationV1", &mode, sizeof(mode));
+    }
     info.compClassHnd   = compHnd->getMethodClass(methodHnd);
 
 #ifdef DEBUG

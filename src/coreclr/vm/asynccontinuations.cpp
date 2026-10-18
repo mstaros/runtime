@@ -15,6 +15,21 @@
 
 #ifndef DACCESS_COMPILE
 
+extern "C" INT32 QCALLTYPE AsyncHelpers_GetCheckpointPublicationStateForTesting(MethodDesc* method)
+{
+    QCALL_CONTRACT;
+    INT32 result = 0;
+    BEGIN_QCALL;
+    if (method == nullptr || !method->IsLCGMethod())
+        COMPlusThrow(kNotSupportedException);
+    MethodDesc* body = method->IsAsyncMethod() ? method : method->GetAsyncVariantNoCreate();
+    // Observe without preparing code: the test must enter during the publication gap.
+    if (body != nullptr && body->IsLCGMethod())
+        result = body->AsDynamicMethodDesc()->GetLCGMethodResolver()->GetCheckpointPublicationStateForTesting();
+    END_QCALL;
+    return result;
+}
+
 extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
     MethodDesc* method, INT32 state, intptr_t expectedResume, QCall::ObjectHandleOnStack schema,
     QCall::ObjectHandleOnStack keepAlive, QCall::ObjectHandleOnStack slotTypes,

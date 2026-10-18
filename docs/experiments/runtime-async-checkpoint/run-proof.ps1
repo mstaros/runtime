@@ -94,6 +94,24 @@ $restoreLog = Join-Path $output "restore.log"
 & $corerun $worker restore $snapshot 2>&1 | Tee-Object -FilePath $restoreLog
 if ($LASTEXITCODE -ne 0) { throw "Fresh-process restore failed: $LASTEXITCODE" }
 
+# Reverse class-initialization histories in separate processes, retaining the same
+# method IL/config and distinct evaluation-stack temporaries.
+foreach ($direction in @(@("cold", "hot"), @("hot", "cold"))) {
+    $staticSnapshot = Join-Path $output ("statics-" + $direction[0] + ".bin")
+    & $corerun $worker ("statics-produce-" + $direction[0]) $staticSnapshot
+    if ($LASTEXITCODE -ne 0) { throw "Class-state capture failed." }
+    & $corerun $worker ("statics-restore-" + $direction[1]) $staticSnapshot
+    if ($LASTEXITCODE -ne 0) { throw "Class-state restore failed." }
+}
+# Value 3 adds a bounded publication barrier; the reader must observe the gap.
+$env:DOTNET_JitAsyncCheckpointProof = "3"
+& $corerun $worker publication $snapshot
+if ($LASTEXITCODE -ne 0) { throw "Forced publication-gap regression failed." }
+$env:DOTNET_JitAsyncCheckpointProof = "0"
+& $corerun $worker disabled $snapshot
+if ($LASTEXITCODE -ne 0) { throw "Metadata-disabled capture failed to return." }
+$env:DOTNET_JitAsyncCheckpointProof = "2"
+
 # The runtime itself must reject an effective-JIT-config mismatch, even when the host
 # binary fingerprint is unchanged.
 $savedDisasm = [Environment]::GetEnvironmentVariable("DOTNET_JitDisasm")
@@ -177,6 +195,8 @@ $receipt = [ordered]@{
     negativeCases = @("unsupported live object", "changed schema", "changed value type", "swapped method index", "swapped method table", "changed method IL", "swapped await state", "effective JIT configuration", "runtime fingerprint")
     restoredNonzeroStateResuspended = $true; restoredContinuationReused = $true; jitRetryVerified = $true
     continueOnThreadPoolVerified = $true
+    classInitializationDirections = @("cold to hot", "hot to cold")
+    forcedPublicationGapVerified = $true; nonTaskDecoysSkipped = $true; disabledCaptureReturned = $true
 }
 $receipt | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output "receipt.json") -Encoding UTF8
 Write-Host "CHECKPOINT PROOF PASSED. Receipt: $(Join-Path $output 'receipt.json')"

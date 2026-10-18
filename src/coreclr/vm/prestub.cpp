@@ -1208,10 +1208,11 @@ BOOL PrepareCodeConfig::SetNativeCode(PCODE pCode, PCODE * ppAlternateCodeToUse)
     {
         // Only the installed winner may publish checkpoint metadata. Failed/retried
         // attempts and competing losers retain no metadata in the resolver.
-        if (m_asyncCheckpointInfo != nullptr)
+        if (m_pMethodDesc->IsLCGMethod())
         {
-            _ASSERTE(m_pMethodDesc->IsLCGMethod());
-            m_pMethodDesc->AsDynamicMethodDesc()->GetLCGMethodResolver()->SetAsyncCheckpointInfo(m_asyncCheckpointInfo);
+            // Complete publication even when the switch is off or no schema was emitted.
+            m_pMethodDesc->AsDynamicMethodDesc()->GetLCGMethodResolver()->SetAsyncCheckpointInfo(
+                m_asyncCheckpointInfo, m_checkpointPausePublication);
             m_asyncCheckpointInfo = nullptr;
         }
         return TRUE;

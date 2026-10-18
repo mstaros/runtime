@@ -169,13 +169,15 @@ public:
     OBJECTREF GetManagedResolver();
     void SetManagedResolver(OBJECTHANDLE obj) { LIMITED_METHOD_CONTRACT; m_managedResolver = obj; }
     void** AllocateRecordCodePointer();
-    // Immutable proof metadata, published once and released with this resolver.
-    const BYTE* GetAsyncCheckpointInfo()
+    // Called only after PrepareInitialCode has returned installed native code.
+    // Completion is separate from a null schema (disabled/unsupported compilation).
+    const BYTE* GetAsyncCheckpointInfo();
+    void SetAsyncCheckpointInfo(BYTE* data, bool pausePublicationForTesting);
+    LONG GetCheckpointPublicationStateForTesting()
     {
         LIMITED_METHOD_CONTRACT;
-        return VolatileLoad(&m_asyncCheckpointInfo);
+        return VolatileLoad(&m_checkpointPublicationTestState);
     }
-    void SetAsyncCheckpointInfo(BYTE* data);
 
 private:
     DynamicMethodDesc* GetNextFreeDynamicMethodDesc() { LIMITED_METHOD_CONTRACT; return m_next; }
@@ -236,6 +238,8 @@ private:
     DynamicMethodDesc* m_next;
     ChunkAllocator m_jitMetaHeap;
     BYTE* volatile m_asyncCheckpointInfo = nullptr;
+    bool volatile m_asyncCheckpointInfoPublished = false;
+    LONG volatile m_checkpointPublicationTestState = 0; // 0=off, 1=paused, 2=reader observed gap, 3=timeout.
     ChunkAllocator m_jitTempData;
     // m_DynamicCodePointers has its entries allocated in chunks (via m_jitTempData).
     // Having a field for the initial code pointer avoids the chunk allocation in the common

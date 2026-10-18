@@ -38,6 +38,10 @@ public static class CheckpointProof
                 Produce(args[1]);
             else if (args[0] is "restore" or "config")
                 Resume(args[1], args[0] == "config");
+            else if (args[0].StartsWith("statics-", StringComparison.Ordinal))
+                ClassInitializationProof(args[1], args[0].Contains("produce"), args[0].EndsWith("-hot", StringComparison.Ordinal));
+            else if (args[0] is "publication" or "disabled")
+                PublicationProof(args[0] == "disabled");
             else
                 throw new ArgumentException("Unknown proof mode.");
             return 0;
@@ -365,6 +369,124 @@ public static class CheckpointProof
             Console.WriteLine("PASS ContinueOnThreadPool under custom scheduler");
         }
         finally { schedulers.Complete(); }
+    }
+
+
+    private static int s_classInitializations;
+    public static class CheckpointStatics
+    {
+        public static readonly int A;
+        public static readonly int B;
+        public static readonly object Label;
+        static CheckpointStatics()
+        {
+            A = 17; B = 31; Label = new string("statics".ToCharArray());
+            Interlocked.Increment(ref s_classInitializations);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int InlineStaticRead() => CheckpointStatics.A * 100 + CheckpointStatics.B;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int CombineStaticTemps(int a, int b, int c, object label, int result) =>
+        a - b * (c - result) + ((string)label).Length * 7;
+
+    private static DynamicMethod CreateStaticProgram()
+    {
+        var method = CreateMethod("CheckpointClassInitialization");
+        var il = method.GetILGenerator();
+        // Deliberately leave distinct values on the IL evaluation stack over the await.
+        // These become JIT temporaries, not named IL locals.
+        il.Emit(OpCodes.Ldsfld, typeof(CheckpointStatics).GetField(nameof(CheckpointStatics.A))!);
+        il.Emit(OpCodes.Ldc_I4, 1000); il.Emit(OpCodes.Mul);
+        il.Emit(OpCodes.Ldsfld, typeof(CheckpointStatics).GetField(nameof(CheckpointStatics.B))!);
+        il.Emit(OpCodes.Ldc_I4, 10); il.Emit(OpCodes.Mul);
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(InlineStaticRead))!);
+        il.Emit(OpCodes.Ldsfld, typeof(CheckpointStatics).GetField(nameof(CheckpointStatics.Label))!);
+        il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Call, Await(typeof(ValueTask<>)));
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(CombineStaticTemps))!);
+        il.Emit(OpCodes.Ret);
+        return method;
+    }
+
+    private static void ClassInitializationProof(string path, bool produce, bool hot)
+    {
+        Require(s_classInitializations == 0, "Class-state fixture must start in a fresh process.");
+        if (hot) RuntimeHelpers.RunClassConstructor(typeof(CheckpointStatics).TypeHandle);
+        var method = CreateStaticProgram();
+        var methods = new[] { method };
+        if (produce)
+        {
+            var invoke = method.CreateDelegate<Func<ValueTask<int>, int, object, Task<int>>>();
+            Require(s_classInitializations == (hot ? 1 : 0), "Compilation executed the static constructor.");
+            var source = new PendingSource();
+            Task<int> pending = invoke(new ValueTask<int>(source, 0), 0, "unused");
+            Require(!pending.IsCompleted && s_classInitializations == 1, "Static fixture did not suspend.");
+            var records = (object[][])Capture.Invoke(null, new object[] { pending, methods })!;
+            var values = (object?[])records.Single()[3];
+            Require(new[] { 17000, 310, 1731 }.All(expected => values.Contains(expected)),
+                "Distinct evaluation-stack temporaries were not captured.");
+            Write(path, records);
+        }
+        else
+        {
+            var records = Read(path, out int producer);
+            Require(producer != Environment.ProcessId, "Static fixture must restore in a fresh process.");
+            int actual = RestoreFrames(records, methods, 41).GetAwaiter().GetResult();
+            Require(actual == -506851, "Static temporary meanings changed: " + actual);
+            Require(s_classInitializations == (hot ? 1 : 0), "Restore replayed static initialization.");
+        }
+        Console.WriteLine($"PASS class initialization {(produce ? "capture" : "restore")} {(hot ? "hot" : "cold")}");
+    }
+
+    private static DynamicMethod[] WithNonTaskDecoys(DynamicMethod owner)
+    {
+        var integer = new DynamicMethod("CheckpointIntDecoy", typeof(int), Type.EmptyTypes);
+        var il = integer.GetILGenerator(); il.Emit(OpCodes.Ldc_I4, 123); il.Emit(OpCodes.Ret);
+        var empty = new DynamicMethod("CheckpointVoidDecoy", typeof(void), Type.EmptyTypes);
+        empty.GetILGenerator().Emit(OpCodes.Ret);
+        Require(integer.CreateDelegate<Func<int>>()() == 123, "Invalid integer decoy.");
+        empty.CreateDelegate<Action>()();
+        var noAwait = CreateMethod("CheckpointNoSuspensionDecoy");
+        var noAwaitIl = noAwait.GetILGenerator(); noAwaitIl.Emit(OpCodes.Ldc_I4_0); noAwaitIl.Emit(OpCodes.Ret);
+        Require(noAwait.CreateDelegate<Func<ValueTask<int>, int, object, Task<int>>>()(
+            default, 0, "unused").GetAwaiter().GetResult() == 0, "Invalid no-suspension decoy.");
+        return new[] { integer, empty, noAwait, owner };
+    }
+
+    private static void PublicationProof(bool disabled)
+    {
+        var method = CreateMethod("CheckpointPublicationGap");
+        var il = method.GetILGenerator();
+        il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Call, Await(typeof(ValueTask<>)));
+        il.Emit(OpCodes.Ldarg_1); il.Emit(OpCodes.Add); il.Emit(OpCodes.Ret);
+        var methods = WithNonTaskDecoys(method);
+        Task<int> StartOne() => method.CreateDelegate<Func<ValueTask<int>, int, object, Task<int>>>()(
+            new ValueTask<int>(new PendingSource(), 0), 10, "unused");
+        if (disabled)
+        {
+            var pending = StartOne();
+            ExpectNotSupported(() => Capture.Invoke(null, new object[] { pending, methods }), "metadata disabled without publication wait");
+            return;
+        }
+        var query = Helpers.GetMethod("CheckpointPublicationStateForTesting", BindingFlags.Static | BindingFlags.NonPublic)!;
+        int State() => (int)query.Invoke(null, new object[] { method })!;
+        var publisher = Task.Factory.StartNew(StartOne, CancellationToken.None,
+            TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        Require(SpinWait.SpinUntil(() => State() != 0, TimeSpan.FromSeconds(8)),
+            "Publisher never reached the forced gap.");
+        Require(State() == 1, "Publisher did not wait for a checkpoint reader.");
+        // The second invocation sees installed native code while the winner is paused.
+        var waiting = StartOne();
+        var captured = (object[][])Capture.Invoke(null, new object[] { waiting, methods })!;
+        Require(State() == 2, "Capture did not enter the metadata publication gap.");
+        Require(publisher.Wait(TimeSpan.FromSeconds(5)), "Publisher failed to complete.");
+        Require(!publisher.Result.IsCompleted && (int)captured.Single()[0] == 3,
+            "Capture did not skip non-Task/no-schema decoys and select the owner.");
+        Require(RestoreFrames(captured, methods, 41).GetAwaiter().GetResult() == 51,
+            "Published checkpoint failed to resume.");
+        Console.WriteLine("PASS forced publication gap: reader waited; int/void/no-schema decoys skipped");
     }
 
     private static void ExpectNotSupported(Action action, string name, string? expectedMessage = null)

@@ -25,9 +25,13 @@ The ScriptMcp companion must understand checkpoint record version 2.
   discards it. A successful compilation transfers ownership to PrepareCodeConfig;
   only the successful native-code publication CAS transfers it to the LCG resolver.
   Competing losers and failed attempts release their copies. A code-address check
-  remains an additional check, not the lifetime guarantee.
+  remains an additional check, not the lifetime guarantee. A separate publication
+  completion flag is set by the winning thread even when no metadata was emitted.
+  After code preparation, checkpoint readers wait for completion before interpreting
+  a null schema; they cannot mistake the code/metadata publication gap for a nonowner.
 - Capture matches the continuation's resume-info address against a method's table
-  before looking up its state. An unrelated method with fewer states is skipped.
+  before looking up its state or enforcing the owner's return type. Unrelated
+  methods with fewer states or valid non-Task return types are skipped.
 - Each frame records the root IL offset of its logical await. Checkpoint builds do
   not merge different suspension points into one state. Ambiguous root offsets
   from multiple inlined awaits are rejected. Continuation-object reuse is enabled.
@@ -50,6 +54,13 @@ The ScriptMcp companion must understand checkpoint record version 2.
 - The JIT/EE interface GUID is updated for the new metadata contract. Old checkpoint
   records are rejected; there is no version migration.
 
+For checkpoint-enabled DynamicMethod roots, the JIT announces its cached proof mode
+to the VM before importing IL. This policy also covers inlinees. The VM does not
+fold current static readonly values or infer a reference's concrete class from a
+current static value. Class-init queries, field flags and static-helper selection
+retain runtime initialization checks instead of depending on the current initialized
+bit. Ordinary compilation with the switch off keeps its existing optimizations.
+
 The slot list still comes from the suspension's subLayout, exactly as the normal
 JIT saves live locals and temporaries. Unsupported slot kinds fail explicitly.
 Under the proof switch, native-handle CSE candidates are killed across awaits using
@@ -67,6 +78,20 @@ metadata without forced retries; the default is 0.
 The two nested methods use order-dependent arithmetic and must return 343 after
 injecting 41. Swapped method indices/tables, changed method IL, changed schemas and
 wrong value kinds must be rejected. Concurrent initial calls exercise publication.
+
+Mode 3 forces a bounded gap after native-code installation and before metadata
+publication. A second invocation captures while the winner is paused; the test
+requires that the checkpoint reader actually observed and waited in the gap.
+The barrier expires after ten seconds if the reader never arrives, causing the
+regression to fail without leaving publication permanently incomplete. A separate
+switch-off process verifies that absent metadata is rejected without waiting.
+Both native and host capture lists put valid int/void decoys before the owner.
+
+Two fresh-process pairs reverse class initialization: cold capture/hot restore and
+hot capture/cold restore. Distinct values on the IL evaluation stack (17000, 310,
+1731 and a reference) must survive as JIT temporaries and produce -506851. An
+aggressively inlined static read exercises the root policy. Cold restoration must
+not execute the static constructor or any pre-await instructions.
 
 A separate method has three awaits. Its producer saves a nonzero state; a fresh
 process restores it, reaches the third suspension, verifies that the actual restored
@@ -92,9 +117,14 @@ See ScriptMcp/docs/RuntimeCheckpointProof.md for the host flow and retained rece
 - Windows x64, exact runtime/application builds, tiering/OSR/R2R disabled. Exact DLL
   hashes and dependency manifests are enforced by the host; the runtime does not
   independently hash its own binaries.
-- Matching configuration does not make all process-dependent JIT decisions stable.
-  Method/await identity and layout/type checks fail closed when their assumptions
-  differ. Ambiguous suspension identities and unsupported signatures are rejected.
+- Class-initialization-dependent static folding and init-check elision are disabled
+  for checkpoint compilation. This closes the identified cold/hot compilation gap.
+  Ordinary JIT temporaries still have UNKNOWN_ILNUM and are compared by position:
+  matching method/await identity, configuration, types and layout is not a general
+  proof of temporary semantics across every process-dependent JIT optimization.
+  Detected identity/layout/type mismatches are rejected; do not interpret this as
+  a universal fail-closed guarantee. Ambiguous suspension identities (including
+  duplicated awaits after optimization) and unsupported signatures are rejected.
 - Merkle embeds artifact IDs in method names and guard IL. The host proof reproduces
   the same compilation order/IDs in each process and perturbs native allocations
   independently. Rebinding different IDs requires an explicit relocation contract;
