@@ -1114,18 +1114,13 @@ bool DynamicMethodDesc::TryDestroy()
 }
 
 // Retain opt-in proof metadata independently of the JIT temporary allocator.
-void LCGMethodResolver::SetAsyncCheckpointInfo(const void* data, size_t size)
+void LCGMethodResolver::SetAsyncCheckpointInfo(BYTE* data)
 {
     LIMITED_METHOD_CONTRACT;
-    if (size < sizeof(CORINFO_AsyncCheckpointInfo) ||
-        static_cast<const CORINFO_AsyncCheckpointInfo*>(data)->LayoutBytes != size - sizeof(CORINFO_AsyncCheckpointInfo))
-        return;
-    BYTE* copy = new (nothrow) BYTE[size];
-    if (copy == nullptr)
-        return;
-    memcpy(copy, data, size);
-    if (InterlockedCompareExchangeT(&m_asyncCheckpointInfo, copy, static_cast<BYTE*>(nullptr)) != nullptr)
-        delete[] copy;
+    // Called only after this method's native-code publication CAS succeeds.
+    _ASSERTE(m_asyncCheckpointInfo == nullptr);
+    if (InterlockedCompareExchangeT(&m_asyncCheckpointInfo, data, static_cast<BYTE*>(nullptr)) != nullptr)
+        delete[] data;
 }
 
 // The resolver is reused after method destruction; reset its state for the next use.

@@ -8531,7 +8531,9 @@ void emitter::emitOutputDataSec(dataSecDsc* sec, AllocMemChunk* chunks)
                     CORINFO_AsyncCheckpointInfo info = {};
                     info.CodeAddress = emitCodeBlock;
                     info.ResumeInfos = reinterpret_cast<CORINFO_AsyncResumeInfo*>(chunk->block);
-                    info.Version = 1;
+                    info.Version = 2;
+                    info.Reserved = JitConfig.JitAsyncCheckpointProof() > 1 ? 1 : 0;
+                    info.ConfigHash = JitConfig.CheckpointConfigHash();
                     info.NumStates = static_cast<uint32_t>(numElems);
                     info.LayoutBytes = static_cast<uint32_t>(layouts.size());
                     memcpy(bytes, &info, sizeof(info));

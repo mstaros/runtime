@@ -473,6 +473,8 @@ public:
     // ICorJitInfo stuff
     CEECodeGenInfo(PrepareCodeConfig* config, MethodDesc* fd, COR_ILMETHOD_DECODER* header, EECodeGenManager* jm);
 
+    void CompleteAsyncCheckpointInfo();
+
     ~CEECodeGenInfo()
     {
         CONTRACTL
@@ -481,6 +483,8 @@ public:
             GC_NOTRIGGER;
             MODE_ANY;
         } CONTRACTL_END;
+
+        delete[] m_asyncCheckpointInfo;
 
         if (m_CodeHeaderRW != m_CodeHeader)
             freeArrayInternal(m_CodeHeaderRW);
@@ -501,6 +505,10 @@ public:
 
         if (m_CodeHeaderRW != m_CodeHeader)
             freeArrayInternal(m_CodeHeaderRW);
+
+        delete[] m_asyncCheckpointInfo;
+        m_asyncCheckpointInfo = nullptr;
+        m_asyncCheckpointInfoSize = 0;
 
         m_CodeHeader = NULL;
         m_CodeHeaderRW = NULL;
@@ -607,6 +615,9 @@ protected:
                           const CORINFO_EH_CLAUSE* clause
                         );
 
+    PrepareCodeConfig*     m_prepareCodeConfig;
+    BYTE*                  m_asyncCheckpointInfo = nullptr;
+    size_t                 m_asyncCheckpointInfoSize = 0;
     EECodeGenManager*       m_jitManager;   // responsible for allocating memory
     void*                   m_CodeHeader;   // descriptor for JITTED code - read/execute address
     void*                   m_CodeHeaderRW; // descriptor for JITTED code - code write scratch buffer address
@@ -767,6 +778,20 @@ public:
     BOOL JitAgain() override
     {
         LIMITED_METHOD_CONTRACT;
+        if (m_asyncCheckpointInfo != nullptr)
+        {
+            auto* info = reinterpret_cast<CORINFO_AsyncCheckpointInfo*>(m_asyncCheckpointInfo);
+            if (info->Reserved == 1)
+            {
+                if (!m_checkpointRetried)
+                {
+                    m_checkpointRetried = true;
+                    m_fJumpStubOverflow = TRUE;
+                }
+                else
+                    info->Reserved = 2; // The runner verifies that the real retry path ran.
+            }
+        }
         return m_fJumpStubOverflow;
     }
 
@@ -923,6 +948,7 @@ protected :
     BOOL                    m_fAllowRel32;      // Use 32-bit PC relative address modes
 #endif
 #if defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_RISCV64)
+    bool                    m_checkpointRetried = false;
     BOOL                    m_fJumpStubOverflow;   // Overflow while trying to alocate jump stub slot within PC relative branch region
                                                    // The code will need to be regenerated (with m_fRel32Allowed == FALSE for AMD64).
     size_t                  m_reserveForJumpStubs; // Space to reserve for jump stubs when allocating code

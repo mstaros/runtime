@@ -1993,7 +1993,8 @@ struct CORINFO_AsyncCheckpointSlot
     uint32_t Offset;      // Byte offset from managed GetRawData, excluding the method table.
     uint32_t Kind;        // 0: unsupported, 1: Int32, 2: managed reference.
     uint32_t ILNumber;    // Diagnostic identity; includes unknown/compiler-generated locals.
-    uint32_t Reserved;
+    uint32_t IsExact;
+    CORINFO_CLASS_HANDLE ClassHandle; // Fresh-process reference-slot type; never persisted.
 };
 
 struct CORINFO_AsyncCheckpointFrame
@@ -2005,6 +2006,7 @@ struct CORINFO_AsyncCheckpointFrame
     uint32_t KeepAliveOffset;
     uint32_t ResultKind;  // 0: unsupported, 1: Int32, 3: void.
     uint32_t NumSlots;
+    uint32_t AwaitILOffset;
 };
 
 struct CORINFO_AsyncCheckpointInfo
@@ -2015,6 +2017,7 @@ struct CORINFO_AsyncCheckpointInfo
     uint32_t NumStates;
     uint32_t LayoutBytes;
     uint32_t Reserved;
+    uint64_t ConfigHash;
     // Followed by NumStates frame records, each followed by its slot records.
 };
 

@@ -1115,7 +1115,10 @@ void Compiler::optValnumCSE_SetUpAsyncByrefKills()
             isByRef             = layout->HasGCByRef();
         }
 
-        if (isByRef)
+        bool isCheckpointHandle = JitConfig.JitAsyncCheckpointProof() != 0 && compIsAsync() &&
+            ((info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0) &&
+            dsc->csdTreeList.tslTree->IsIntegralConst() && dsc->csdTreeList.tslTree->IsIconHandle();
+        if (isByRef || isCheckpointHandle)
         {
             // We generate a bit pattern like: 1111111100111100 where there
             // are 0s only for the byref CSEs.
@@ -1780,11 +1783,6 @@ bool CSE_HeuristicCommon::CanConsiderTree(GenTree* tree, bool isReturn)
     {
         // Checkpointed DynamicMethods must rematerialize process-local handle constants.
         // CSE would otherwise spill a native type/method address as an ordinary integer.
-        if ((JitConfig.JitAsyncCheckpointProof() != 0) && m_compiler->compIsAsync() &&
-            ((m_compiler->info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0) && tree->IsIconHandle())
-        {
-            return false;
-        }
 
         if (!enableConstCSE &&
             // Unconditionally allow these constant handles to be CSE'd

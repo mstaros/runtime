@@ -16,81 +16,129 @@
 #ifndef DACCESS_COMPILE
 
 extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
-    MethodDesc* method, INT32 state, QCall::ObjectHandleOnStack schema,
-    QCall::ObjectHandleOnStack keepAlive, intptr_t* continuationType, intptr_t* resumeInfo)
+    MethodDesc* method, INT32 state, intptr_t expectedResume, QCall::ObjectHandleOnStack schema,
+    QCall::ObjectHandleOnStack keepAlive, QCall::ObjectHandleOnStack slotTypes,
+    intptr_t* continuationType, intptr_t* resumeInfo)
 {
     QCALL_CONTRACT;
     BEGIN_QCALL;
 #ifndef TARGET_AMD64
     COMPlusThrow(kPlatformNotSupportedException);
 #else
-    if (method == nullptr || !method->IsLCGMethod())
-        COMPlusThrow(kNotSupportedException);
-
-    MethodDesc* body = method->IsAsyncMethod() ? method : method->GetAsyncVariantNoCreate();
-    if (body == nullptr || !body->IsLCGMethod())
-        COMPlusThrow(kNotSupportedException);
-
-    // Compile the recreated body, without invoking its original entry point.
-    body->PrepareInitialCode();
-    LCGMethodResolver* resolver = body->AsDynamicMethodDesc()->GetLCGMethodResolver();
-    const BYTE* bytes = resolver->GetAsyncCheckpointInfo();
-    if (bytes == nullptr)
-        COMPlusThrow(kNotSupportedException);
-
-    const auto* info = reinterpret_cast<const CORINFO_AsyncCheckpointInfo*>(bytes);
-    // In particular, do not use metadata from a losing concurrent JIT compilation.
-    if (info->Version != 1 || info->CodeAddress != reinterpret_cast<void*>(body->GetNativeCode()) ||
-        state < 0 || static_cast<uint32_t>(state) >= info->NumStates || info->LayoutBytes > 1024 * 1024)
-        COMPlusThrow(kNotSupportedException);
-
-    const BYTE* cursor = bytes + sizeof(*info);
-    const BYTE* end = cursor + info->LayoutBytes;
-    const CORINFO_AsyncCheckpointFrame* frame = nullptr;
-    while (static_cast<size_t>(end - cursor) >= sizeof(CORINFO_AsyncCheckpointFrame))
-    {
-        const auto* candidate = reinterpret_cast<const CORINFO_AsyncCheckpointFrame*>(cursor);
-        cursor += sizeof(*candidate);
-        if (candidate->NumSlots > static_cast<size_t>(end - cursor) / sizeof(CORINFO_AsyncCheckpointSlot))
+    // The lambda permits a non-owner probe to return without bypassing END_QCALL.
+    [&]() {
+        *continuationType = 0;
+        *resumeInfo = 0;
+        if (method == nullptr || !method->IsLCGMethod())
             COMPlusThrow(kNotSupportedException);
-        if (candidate->State == static_cast<uint32_t>(state))
+        MethodDesc* body = method->IsAsyncMethod() ? method : method->GetAsyncVariantNoCreate();
+        if (body == nullptr || !body->IsLCGMethod())
         {
-            frame = candidate;
-            break;
-        }
-        cursor += candidate->NumSlots * sizeof(CORINFO_AsyncCheckpointSlot);
-    }
-    if (frame == nullptr || info->ResumeInfos[state].Resume == 0 || info->ResumeInfos[state].DiagnosticIP == 0)
-        COMPlusThrow(kNotSupportedException);
-
-    {
-        GCX_COOP();
-        OBJECTREF resolverObject = resolver->GetManagedResolver();
-        if (resolverObject == NULL)
+            if (expectedResume != 0) return;
             COMPlusThrow(kNotSupportedException);
-        keepAlive.Set(resolverObject);
-
-        // Pointer-free schema; slot order is part of the exact-build proof contract.
-        I4ARRAYREF array = (I4ARRAYREF)AllocatePrimitiveArray(ELEMENT_TYPE_I4, 7 + frame->NumSlots * 3);
-        INT32* values = array->GetDirectPointerToNonObjectElements();
-        values[0] = 1;
-        values[1] = frame->State;
-        values[2] = frame->Flags;
-        values[3] = frame->DataSize;
-        values[4] = frame->KeepAliveOffset;
-        values[5] = frame->ResultKind;
-        values[6] = frame->NumSlots;
-        const auto* slots = reinterpret_cast<const CORINFO_AsyncCheckpointSlot*>(frame + 1);
-        for (uint32_t i = 0; i < frame->NumSlots; i++)
-        {
-            values[7 + i * 3] = slots[i].Offset;
-            values[8 + i * 3] = slots[i].Kind;
-            values[9 + i * 3] = slots[i].ILNumber;
         }
-        schema.Set(array);
-    }
-    *continuationType = reinterpret_cast<intptr_t>(frame->ContinuationClass);
-    *resumeInfo = reinterpret_cast<intptr_t>(&info->ResumeInfos[state]);
+
+        body->PrepareInitialCode();
+        LCGMethodResolver* resolver = body->AsDynamicMethodDesc()->GetLCGMethodResolver();
+        const BYTE* bytes = resolver->GetAsyncCheckpointInfo();
+        if (bytes == nullptr)
+        {
+            if (expectedResume != 0) return;
+            COMPlusThrow(kNotSupportedException);
+        }
+        const auto* info = reinterpret_cast<const CORINFO_AsyncCheckpointInfo*>(bytes);
+        if (info->Version != 2 || info->CodeAddress != reinterpret_cast<void*>(body->GetNativeCode()) ||
+            info->LayoutBytes > 1024 * 1024 || info->NumStates > 65536)
+            COMPlusThrow(kNotSupportedException);
+
+        // Establish ownership before interpreting the caller's state number.
+        if (expectedResume != 0)
+        {
+            uintptr_t begin = reinterpret_cast<uintptr_t>(info->ResumeInfos);
+            uintptr_t address = static_cast<uintptr_t>(expectedResume);
+            if (address < begin || (address - begin) / sizeof(CORINFO_AsyncResumeInfo) >= info->NumStates ||
+                (address - begin) % sizeof(CORINFO_AsyncResumeInfo) != 0)
+                return;
+        }
+        if (state < 0 || static_cast<uint32_t>(state) >= info->NumStates)
+            COMPlusThrow(kNotSupportedException);
+
+        const BYTE* cursor = bytes + sizeof(*info);
+        const BYTE* end = cursor + info->LayoutBytes;
+        const CORINFO_AsyncCheckpointFrame* frame = nullptr;
+        while (static_cast<size_t>(end - cursor) >= sizeof(CORINFO_AsyncCheckpointFrame))
+        {
+            const auto* candidate = reinterpret_cast<const CORINFO_AsyncCheckpointFrame*>(cursor);
+            cursor += sizeof(*candidate);
+            if (candidate->NumSlots > static_cast<size_t>(end - cursor) / sizeof(CORINFO_AsyncCheckpointSlot))
+                COMPlusThrow(kNotSupportedException);
+            if (candidate->State == static_cast<uint32_t>(state))
+            {
+                if (frame != nullptr) COMPlusThrow(kNotSupportedException);
+                frame = candidate;
+            }
+            cursor += candidate->NumSlots * sizeof(CORINFO_AsyncCheckpointSlot);
+        }
+        if (cursor != end || frame == nullptr || frame->AwaitILOffset == UINT32_MAX ||
+            info->ResumeInfos[state].Resume == 0 || info->ResumeInfos[state].DiagnosticIP == 0)
+            COMPlusThrow(kNotSupportedException);
+
+        // A root IL offset shared by several inlined awaits is ambiguous in this proof.
+        for (cursor = bytes + sizeof(*info); cursor < end;)
+        {
+            const auto* candidate = reinterpret_cast<const CORINFO_AsyncCheckpointFrame*>(cursor);
+            if (candidate != frame && candidate->AwaitILOffset == frame->AwaitILOffset)
+                COMPlusThrow(kNotSupportedException);
+            cursor += sizeof(*candidate) + candidate->NumSlots * sizeof(CORINFO_AsyncCheckpointSlot);
+        }
+
+        {
+            GCX_COOP();
+            OBJECTREF resolverObject = resolver->GetManagedResolver();
+            if (resolverObject == NULL) COMPlusThrow(kNotSupportedException);
+            keepAlive.Set(resolverObject);
+
+            I4ARRAYREF array = (I4ARRAYREF)AllocatePrimitiveArray(ELEMENT_TYPE_I4, 11 + frame->NumSlots * 4);
+            INT32* values = array->GetDirectPointerToNonObjectElements();
+            values[0] = 2;
+            values[1] = frame->State;
+            values[2] = frame->Flags;
+            values[3] = frame->DataSize;
+            values[4] = frame->KeepAliveOffset;
+            values[5] = frame->ResultKind;
+            values[6] = frame->NumSlots;
+            values[7] = frame->AwaitILOffset;
+            values[8] = static_cast<INT32>(info->ConfigHash);
+            values[9] = static_cast<INT32>(info->ConfigHash >> 32);
+            values[10] = info->Reserved == 2 ? 1 : 0;
+            const auto* slots = reinterpret_cast<const CORINFO_AsyncCheckpointSlot*>(frame + 1);
+            for (uint32_t i = 0; i < frame->NumSlots; i++)
+            {
+                values[11 + i * 4] = slots[i].Offset;
+                values[12 + i * 4] = slots[i].Kind;
+                values[13 + i * 4] = slots[i].ILNumber;
+                values[14 + i * 4] = slots[i].IsExact;
+            }
+            schema.Set(array);
+
+            PTRARRAYREF types = (PTRARRAYREF)AllocateObjectArray(frame->NumSlots, CoreLibBinder::GetClass(CLASS__TYPE));
+            GCPROTECT_BEGIN(types);
+            for (uint32_t i = 0; i < frame->NumSlots; i++)
+            {
+                if (slots[i].Kind == 2)
+                {
+                    TypeHandle handle = slots[i].ClassHandle == nullptr ? TypeHandle(g_pObjectClass)
+                        : TypeHandle::FromPtr(slots[i].ClassHandle);
+                    OBJECTREF type = handle.GetManagedClassObject();
+                    types->SetAt(i, type);
+                }
+            }
+            slotTypes.Set(types);
+            GCPROTECT_END();
+        }
+        *continuationType = reinterpret_cast<intptr_t>(frame->ContinuationClass);
+        *resumeInfo = reinterpret_cast<intptr_t>(&info->ResumeInfos[state]);
+    }();
 #endif
     END_QCALL;
 }

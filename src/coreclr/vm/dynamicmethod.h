@@ -175,7 +175,7 @@ public:
         LIMITED_METHOD_CONTRACT;
         return VolatileLoad(&m_asyncCheckpointInfo);
     }
-    void SetAsyncCheckpointInfo(const void* data, size_t size);
+    void SetAsyncCheckpointInfo(BYTE* data);
 
 private:
     DynamicMethodDesc* GetNextFreeDynamicMethodDesc() { LIMITED_METHOD_CONTRACT; return m_next; }

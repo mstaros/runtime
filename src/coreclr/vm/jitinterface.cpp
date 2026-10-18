@@ -11016,6 +11016,7 @@ static CORJIT_FLAGS GetCompileFlags(PrepareCodeConfig* prepareConfig, MethodDesc
 
 CEECodeGenInfo::CEECodeGenInfo(PrepareCodeConfig* config, MethodDesc* fd, COR_ILMETHOD_DECODER* header, EECodeGenManager* jm)
     : CEEInfo(fd)
+    , m_prepareCodeConfig(config)
     , m_jitManager(jm)
     , m_CodeHeader(NULL)
     , m_CodeHeaderRW(NULL)
@@ -11532,7 +11533,31 @@ void CEECodeGenInfo::reportMetadata(
         m_pMethodBeingCompiled->IsLCGMethod() && m_pMethodBeingCompiled->IsAsyncMethod() &&
         (length >= sizeof(CORINFO_AsyncCheckpointInfo)))
     {
-        m_pMethodBeingCompiled->AsDynamicMethodDesc()->GetLCGMethodResolver()->SetAsyncCheckpointInfo(value, length);
+        const auto* info = static_cast<const CORINFO_AsyncCheckpointInfo*>(value);
+        if (info->Version == 2 && info->LayoutBytes == length - sizeof(*info) && info->LayoutBytes <= 1024 * 1024)
+        {
+            BYTE* copy = new (nothrow) BYTE[length];
+            if (copy != nullptr)
+            {
+                memcpy(copy, value, length);
+                // Include VM-supplied compilation and instruction-set flags.
+                uint64_t hash = info->ConfigHash;
+                auto mix = [&](uint64_t flags) {
+                    for (unsigned i = 0; i < sizeof(flags); i++)
+                    {
+                        hash = (hash ^ static_cast<uint8_t>(flags)) * 1099511628211ULL;
+                        flags >>= 8;
+                    }
+                };
+                mix(m_jitFlags.GetFlagsRaw());
+                for (int i = 0; i < m_jitFlags.GetInstructionFlagsFieldCount(); i++)
+                    mix(m_jitFlags.GetInstructionSetFlagsRaw()[i]);
+                reinterpret_cast<CORINFO_AsyncCheckpointInfo*>(copy)->ConfigHash = hash;
+                delete[] m_asyncCheckpointInfo;
+                m_asyncCheckpointInfo = copy;
+                m_asyncCheckpointInfoSize = length;
+            }
+        }
     }
 
 
@@ -11817,6 +11842,14 @@ void CInterpreterJitInfo::SetDebugInfo(PTR_BYTE pDebugInfo)
     ((InterpreterCodeHeader*)m_CodeHeaderRW)->SetDebugInfo(pDebugInfo);
 }
 #endif // FEATURE_INTERPRETER
+
+void CEECodeGenInfo::CompleteAsyncCheckpointInfo()
+{
+    LIMITED_METHOD_CONTRACT;
+    m_prepareCodeConfig->SetAsyncCheckpointInfo(m_asyncCheckpointInfo);
+    m_asyncCheckpointInfo = nullptr;
+    m_asyncCheckpointInfoSize = 0;
+}
 
 void CEECodeGenInfo::CompressDebugInfo(PCODE nativeEntry, NativeCodeVersion nativeCodeVersion)
 {
@@ -13332,6 +13365,7 @@ static CorJitResult invokeCompileMethod(EECodeGenManager *jitMgr,
     if (SUCCEEDED(ret) && !comp->JitAgain())
     {
         comp->CompressDebugInfo((PCODE)*nativeEntry, nativeCodeVersion);
+        comp->CompleteAsyncCheckpointInfo();
         comp->MethodCompileComplete(methodInfo->ftn);
     }
 

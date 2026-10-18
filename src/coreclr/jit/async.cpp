@@ -1766,7 +1766,9 @@ const AsyncState* AsyncTransformation::FindReusableSuspension(BasicBlock*       
                                                               bool                       resumeReachable,
                                                               VARSET_VALARG_TP           mutatedSinceResumption)
 {
-    if (m_compiler->opts.OptimizationDisabled())
+    if (m_compiler->opts.OptimizationDisabled() ||
+        ((JitConfig.JitAsyncCheckpointProof() != 0) &&
+         ((m_compiler->info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0)))
     {
         // Tail merging breaks debugging.
         return nullptr;
@@ -2245,6 +2247,7 @@ void AsyncTransformation::CreateSuspension(BasicBlock*                      call
         CORINFO_AsyncCheckpointFrame frame = {};
         frame.ContinuationClass = layout.ClassHnd;
         frame.State = stateNum;
+        frame.AwaitILOffset = call->GetAsyncInfo().CallAsyncDebugInfo.GetRoot().GetLocation().GetOffset();
         frame.Flags = continuationFlags;
         frame.DataSize = rawDataOffset + layout.Size;
         frame.KeepAliveOffset =
@@ -2278,6 +2281,8 @@ void AsyncTransformation::CreateSuspension(BasicBlock*                      call
             slot.Offset = rawDataOffset + inf.Offset;
             slot.Kind = dsc->TypeIs(TYP_INT) ? 1 : dsc->TypeIs(TYP_REF) ? 2 : 100 + static_cast<unsigned>(dsc->TypeGet());
             slot.ILNumber = m_compiler->compMap2ILvarNum(inf.LclNum);
+            slot.ClassHandle = dsc->TypeIs(TYP_REF) ? dsc->lvClassHnd : NO_CLASS_HANDLE;
+            slot.IsExact = dsc->TypeIs(TYP_REF) && dsc->lvClassIsExact;
             append(&slot, sizeof(slot));
         }
     }

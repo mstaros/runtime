@@ -56,7 +56,8 @@ $env:CHECKPOINT_PROOF_RUNTIME_SHA256 = $fingerprint
 $env:CHECKPOINT_PROOF_CORE_ROOT = $coreRoot
 $env:CORE_ROOT = $coreRoot
 $env:CORE_LIBRARIES = $coreRoot
-$env:DOTNET_JitAsyncCheckpointProof = "1"
+# Value 2 forces one real JIT backout/retry after metadata emission.
+$env:DOTNET_JitAsyncCheckpointProof = "2"
 $env:DOTNET_JitNoInline = "0"
 $env:COMPlus_JitNoInline = "0"
 $env:DOTNET_TieredCompilation = "0"
@@ -92,6 +93,15 @@ Write-Host "Producer PID $($producer.Id) was killed; starting a fresh process."
 $restoreLog = Join-Path $output "restore.log"
 & $corerun $worker restore $snapshot 2>&1 | Tee-Object -FilePath $restoreLog
 if ($LASTEXITCODE -ne 0) { throw "Fresh-process restore failed: $LASTEXITCODE" }
+
+# The runtime itself must reject an effective-JIT-config mismatch, even when the host
+# binary fingerprint is unchanged.
+$env:DOTNET_JitNoInline = "1"
+$env:COMPlus_JitNoInline = "1"
+& $corerun $worker config $snapshot
+if ($LASTEXITCODE -ne 0) { throw "Changed JIT configuration was not rejected." }
+$env:DOTNET_JitNoInline = "0"
+$env:COMPlus_JitNoInline = "0"
 
 # Host rejects mismatched runtime identity before invoking the native restoration hook.
 $env:CHECKPOINT_PROOF_RUNTIME_SHA256 = "intentionally-mismatched"
@@ -158,14 +168,15 @@ $receipt = [ordered]@{
     scriptMcp = $scriptReceipt
     succeeded = $true; producerPid = $producer.Id; producerKilled = $true
     snapshotBytes = (Get-Item -LiteralPath $snapshot).Length
-    expectedResult = 84; expectedPreAwaitCallsOnRestore = 0
+    expectedResult = 343; expectedReuseResult = 30061; expectedPreAwaitCallsOnRestore = 0
     runtimeSettings = [ordered]@{
-        JitAsyncCheckpointProof = "1"; JitNoInline = "0"; TieredCompilation = "0"
+        JitAsyncCheckpointProof = "2 (forced retry)"; JitNoInline = "0"; TieredCompilation = "0"
         TC_OnStackReplacement = "0"; ReadyToRun = "0"
     }
     runtime = $binaries; restoreOutput = [IO.File]::ReadAllText($restoreLog)
     continuationGcRegression = @("metadata disabled: passed", "metadata enabled: passed")
-    negativeCases = @("unsupported live object", "changed schema", "changed value type", "runtime fingerprint")
+    negativeCases = @("unsupported live object", "changed schema", "changed value type", "swapped method index", "swapped method table", "changed method IL", "swapped await state", "effective JIT configuration", "runtime fingerprint")
+    restoredNonzeroStateResuspended = $true; restoredContinuationReused = $true; jitRetryVerified = $true
 }
 $receipt | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output "receipt.json") -Encoding UTF8
 Write-Host "CHECKPOINT PROOF PASSED. Receipt: $(Join-Path $output 'receipt.json')"
