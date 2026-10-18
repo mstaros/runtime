@@ -237,9 +237,9 @@ private:
     // destruction.
     DynamicMethodDesc* m_next;
     ChunkAllocator m_jitMetaHeap;
-    BYTE* volatile m_asyncCheckpointInfo = nullptr;
-    bool volatile m_asyncCheckpointInfoPublished = false;
-    LONG volatile m_checkpointPublicationTestState = 0; // 0=off, 1=paused, 2=reader observed gap, 3=timeout.
+    BYTE* m_asyncCheckpointInfo = nullptr;
+    bool m_asyncCheckpointInfoPublished = false;
+    LONG m_checkpointPublicationTestState = 0; // 0=off, 1=paused, 2=reader observed gap, 3=timeout.
     ChunkAllocator m_jitTempData;
     // m_DynamicCodePointers has its entries allocated in chunks (via m_jitTempData).
     // Having a field for the initial code pointer avoids the chunk allocation in the common
