@@ -861,12 +861,37 @@ namespace System.Reflection.Emit
         internal static string CheckpointTypeIdentity(Type type)
         {
             var text = new System.Text.StringBuilder();
+            void Part(string value) => text.Append(value.Length).Append(':').Append(value);
             void Add(Type value)
             {
-                string name = value.AssemblyQualifiedName ?? throw new NotSupportedException("Unnamed checkpoint type.");
-                text.Append(name.Length).Append(':').Append(name).Append(value.Module.ModuleVersionId);
-                if (value.HasElementType) Add(value.GetElementType()!);
-                else if (value.IsGenericType)
+                if (value.IsGenericParameter)
+                {
+                    Part(value.DeclaringMethod == null ? "type-parameter" : "method-parameter");
+                    Part(value.GenericParameterPosition.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    MemberInfo owner = (MemberInfo?)value.DeclaringMethod ?? value.DeclaringType!;
+                    Part(owner.Module.ModuleVersionId.ToString());
+                    Part(owner.MetadataToken.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    return;
+                }
+                if (value.HasElementType)
+                {
+                    Part(value.IsArray ? (value.IsSZArray ? "vector" : "array-" + value.GetArrayRank()) :
+                        value.IsByRef ? "byref" : "pointer");
+                    Add(value.GetElementType()!);
+                    return;
+                }
+                if (value.IsFunctionPointer)
+                {
+                    Part("function-pointer");
+                    foreach (Type convention in value.GetFunctionPointerCallingConventions()) Add(convention);
+                    Add(value.GetFunctionPointerReturnType());
+                    foreach (Type parameter in value.GetFunctionPointerParameterTypes()) Add(parameter);
+                    return;
+                }
+                Type definition = value.IsGenericType ? value.GetGenericTypeDefinition() : value;
+                Part(definition.AssemblyQualifiedName ?? throw new NotSupportedException("Unnamed checkpoint type."));
+                Part(definition.Module.ModuleVersionId.ToString());
+                if (value.IsGenericType)
                     foreach (Type argument in value.GetGenericArguments()) Add(argument);
             }
             Add(type);

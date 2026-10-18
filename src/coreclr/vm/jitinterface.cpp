@@ -11843,6 +11843,12 @@ void CInterpreterJitInfo::SetDebugInfo(PTR_BYTE pDebugInfo)
 }
 #endif // FEATURE_INTERPRETER
 
+bool CEECodeGenInfo::MarkCheckpointRetryForTesting()
+{
+    LIMITED_METHOD_CONTRACT;
+    return m_prepareCodeConfig->MarkCheckpointRetryForTesting();
+}
+
 void CEECodeGenInfo::CompleteAsyncCheckpointInfo()
 {
     LIMITED_METHOD_CONTRACT;

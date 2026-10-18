@@ -158,12 +158,12 @@ public static class CheckpointProof
             "unsupported live object");
 
         var concurrentMethods = CreateProgram();
-        Parallel.For(0, 16, _ =>
+        Task.WaitAll(Enumerable.Range(0, 16).Select(_ => Task.Run(() =>
         {
             var waiting = Start(concurrentMethods, new PendingSource(), "parallel");
             var captured = (object[][])Capture.Invoke(null, new object[] { waiting, concurrentMethods })!;
             Require(captured.Length == 2, "Concurrent publication lost checkpoint metadata.");
-        });
+        })).ToArray());
         ProduceReuse(path + ".reuse");
         ProduceScheduling(path + ".pool");
         if (Environment.GetEnvironmentVariable("DOTNET_JitAsyncCheckpointProof") == "2")
@@ -194,7 +194,7 @@ public static class CheckpointProof
         s_restoring = true;
         if (changedConfig)
         {
-            ExpectNotSupported(() => Restore.Invoke(null, new object?[] { records, methods, 41, null }), "effective JIT configuration");
+            ExpectNotSupported(() => Restore.Invoke(null, new object?[] { records, methods, 41, null }), "effective JIT configuration", "Checkpoint JIT configuration differs.");
             return;
         }
         var swapped = records.Select(r => (object[])r.Clone()).ToArray();
@@ -202,7 +202,7 @@ public static class CheckpointProof
         ExpectNotSupported(() => Restore.Invoke(null, new object?[] { swapped, methods, 41, null }), "swapped method index");
         ExpectNotSupported(() => Restore.Invoke(null, new object?[] { records, methods.Reverse().ToArray(), 41, null }), "swapped method table");
         var altered = CreateProgram();
-        altered[0] = CreateMethod("SameShapeDifferentIL");
+        altered[0] = CreateMethod("CheckpointInner");
         EmitBody(altered[0], null, 7, multiply: true);
         ExpectNotSupported(() => Restore.Invoke(null, new object?[] { records, altered, 41, null }), "changed method IL");
 
@@ -242,7 +242,8 @@ public static class CheckpointProof
         il.Emit(OpCodes.Ldstr, "reuse");
         il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(Prefix))!);
         il.Emit(OpCodes.Ldarg_1); il.Emit(OpCodes.Stloc, saved);
-        il.Emit(OpCodes.Ldc_I4, 17); il.Emit(OpCodes.Stloc, unchanged);
+        il.Emit(OpCodes.Ldarg_1); il.Emit(OpCodes.Ldc_I4, 7); il.Emit(OpCodes.Add);
+        il.Emit(OpCodes.Stloc, unchanged);
         for (int i = 0; i < 3; i++)
         {
             il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(NextWait))!);
@@ -276,6 +277,7 @@ public static class CheckpointProof
         Require(!second.IsCompleted, "Expected second suspension.");
         var records = (object[][])Capture.Invoke(null, new object[] { second, methods })!;
         Require((int)records[0][1] > 0, "Reuse fixture must checkpoint a nonzero state.");
+        Require(((object?[])records[0][3]).Any(value => value is int number && number == 17), "Unchanged local was not saved.");
         Write(path, records);
     }
 
@@ -317,25 +319,33 @@ public static class CheckpointProof
 
     private static DynamicMethod[] CreateSchedulingProgram()
     {
+        DynamicMethod inner = CreateMethod("CheckpointThreadPoolInner");
+        var body = inner.GetILGenerator();
+        body.Emit(OpCodes.Ldarg_0);
+        body.Emit(OpCodes.Call, Await(typeof(ValueTask<>)));
+        body.Emit(OpCodes.Ldc_I4_1); body.Emit(OpCodes.Add); body.Emit(OpCodes.Ret);
+
         DynamicMethod method = CreateMethod("CheckpointThreadPool");
         var il = method.GetILGenerator();
-        il.Emit(OpCodes.Ldarga_S, (byte)0);
+        il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldarg_1); il.Emit(OpCodes.Ldarg_2);
+        // Only a runtime-async call followed by configured Task await gets the
+        // compile-time ContinueOnThreadPool flag; an ordinary task wait does not.
+        il.Emit(OpCodes.Call, inner);
         il.Emit(OpCodes.Ldc_I4_0);
-        il.Emit(OpCodes.Call, typeof(ValueTask<int>).GetMethod("ConfigureAwait", new[] { typeof(bool) })!);
-        il.Emit(OpCodes.Call, Await(typeof(ConfiguredValueTaskAwaitable<>)));
+        il.Emit(OpCodes.Call, typeof(Task<int>).GetMethod("ConfigureAwait", new[] { typeof(bool) })!);
+        il.Emit(OpCodes.Call, Await(typeof(ConfiguredTaskAwaitable<>)));
         il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(AssertDefaultScheduler))!);
         il.Emit(OpCodes.Ret);
-        return new[] { method };
+        return new[] { inner, method };
     }
 
     private static void ProduceScheduling(string path)
     {
         var methods = CreateSchedulingProgram();
         var source = new PendingSource();
-        var invoke = methods[0].CreateDelegate<Func<ValueTask<int>, int, object, Task<int>>>();
-        Task<int> pending = invoke(new ValueTask<int>(source, 0), 0, "unused");
+        Task<int> pending = Start(methods, source, "unused");
         var records = (object[][])Capture.Invoke(null, new object[] { pending, methods })!;
-        Require((((int[])records[0][2])[2] & 1) != 0, "Fixture did not set ContinueOnThreadPool.");
+        Require(records.Any(record => (((int[])record[2])[2] & 1) != 0), "Fixture did not set ContinueOnThreadPool.");
         Write(path, records);
     }
 
@@ -351,17 +361,18 @@ public static class CheckpointProof
                 Require(TaskScheduler.Current != TaskScheduler.Default, "Scheduling fixture did not enter a custom scheduler.");
                 return RestoreFrames(records, methods, 41);
             }, CancellationToken.None, TaskCreationOptions.None, schedulers.ExclusiveScheduler).Unwrap().GetAwaiter().GetResult();
-            Require(result == 41, "Scheduled restore changed the result.");
+            Require(result == 42, "Scheduled restore changed the result.");
             Console.WriteLine("PASS ContinueOnThreadPool under custom scheduler");
         }
         finally { schedulers.Complete(); }
     }
 
-    private static void ExpectNotSupported(Action action, string name)
+    private static void ExpectNotSupported(Action action, string name, string? expectedMessage = null)
     {
         try { action(); }
         catch (TargetInvocationException ex) when (ex.InnerException is NotSupportedException)
         {
+            if (expectedMessage != null) Require(ex.InnerException.Message == expectedMessage, "Unexpected rejection: " + ex.InnerException.Message);
             Console.WriteLine("Rejected " + name);
             return;
         }

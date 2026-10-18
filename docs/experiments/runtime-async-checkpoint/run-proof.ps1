@@ -96,12 +96,11 @@ if ($LASTEXITCODE -ne 0) { throw "Fresh-process restore failed: $LASTEXITCODE" }
 
 # The runtime itself must reject an effective-JIT-config mismatch, even when the host
 # binary fingerprint is unchanged.
-$env:DOTNET_JitNoInline = "1"
-$env:COMPlus_JitNoInline = "1"
+$savedDisasm = [Environment]::GetEnvironmentVariable("DOTNET_JitDisasm")
+$env:DOTNET_JitDisasm = "__checkpoint_configuration_probe_no_matching_method__"
 & $corerun $worker config $snapshot
 if ($LASTEXITCODE -ne 0) { throw "Changed JIT configuration was not rejected." }
-$env:DOTNET_JitNoInline = "0"
-$env:COMPlus_JitNoInline = "0"
+$env:DOTNET_JitDisasm = $savedDisasm
 
 # Host rejects mismatched runtime identity before invoking the native restoration hook.
 $env:CHECKPOINT_PROOF_RUNTIME_SHA256 = "intentionally-mismatched"
@@ -177,6 +176,7 @@ $receipt = [ordered]@{
     continuationGcRegression = @("metadata disabled: passed", "metadata enabled: passed")
     negativeCases = @("unsupported live object", "changed schema", "changed value type", "swapped method index", "swapped method table", "changed method IL", "swapped await state", "effective JIT configuration", "runtime fingerprint")
     restoredNonzeroStateResuspended = $true; restoredContinuationReused = $true; jitRetryVerified = $true
+    continueOnThreadPoolVerified = $true
 }
 $receipt | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output "receipt.json") -Encoding UTF8
 Write-Host "CHECKPOINT PROOF PASSED. Receipt: $(Join-Path $output 'receipt.json')"

@@ -152,6 +152,8 @@ namespace System.Runtime.CompilerServices
                 if (identity != methods[index]._resolver!.GetCheckpointIdentity())
                     throw new NotSupportedException("Checkpoint method identity does not match the recreated method.");
                 ValidateCheckpointSchema(schema, host);
+                if (savedSchema.Length >= CheckpointHeaderSize && (schema[8] != savedSchema[8] || schema[9] != savedSchema[9]))
+                    throw new NotSupportedException("Checkpoint JIT configuration differs.");
                 if (!schema.AsSpan().SequenceEqual(savedSchema) || values.Length != schema[6] || referenceTypes.Length != values.Length)
                     throw new NotSupportedException("Checkpoint layout does not match the recreated method.");
                 var restoredValues = new object?[values.Length];

@@ -74,6 +74,9 @@ continuation object was reused, captures again, and finishes with 30061. Changed
 unchanged locals must survive. A one-state decoy precedes this method in the capture
 list. A changed await state must be rejected.
 
+A configured runtime-async task await also checks that ContinueOnThreadPool is set
+by the JIT and honored when restoration starts under a custom task scheduler.
+
 A separate process changes JIT configuration while retaining the binary fingerprint;
 the runtime must reject the snapshot. The host's mismatched-runtime check and the
 existing continuation/GC stress test (metadata off and on) also run.
@@ -92,6 +95,12 @@ See ScriptMcp/docs/RuntimeCheckpointProof.md for the host flow and retained rece
 - Matching configuration does not make all process-dependent JIT decisions stable.
   Method/await identity and layout/type checks fail closed when their assumptions
   differ. Ambiguous suspension identities and unsupported signatures are rejected.
+- Merkle embeds artifact IDs in method names and guard IL. The host proof reproduces
+  the same compilation order/IDs in each process and perturbs native allocations
+  independently. Rebinding different IDs requires an explicit relocation contract;
+  matching source text alone is insufficient.
+- Full canonical manifests are retained per frame for this bounded proof. The
+  MessagePack value codec is unchanged, but identity metadata increases snapshot size.
 - The original chain supports at most 16 Task<int> frames and Int32/null/string
   values. The host supports one guarded script frame with explicitly encoded
   bindings and List<int> identity. No arbitrary graph or closure serialization.

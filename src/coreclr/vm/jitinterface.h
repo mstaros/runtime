@@ -474,6 +474,7 @@ public:
     CEECodeGenInfo(PrepareCodeConfig* config, MethodDesc* fd, COR_ILMETHOD_DECODER* header, EECodeGenManager* jm);
 
     void CompleteAsyncCheckpointInfo();
+    bool MarkCheckpointRetryForTesting();
 
     ~CEECodeGenInfo()
     {
@@ -783,9 +784,8 @@ public:
             auto* info = reinterpret_cast<CORINFO_AsyncCheckpointInfo*>(m_asyncCheckpointInfo);
             if (info->Reserved == 1)
             {
-                if (!m_checkpointRetried)
+                if (!MarkCheckpointRetryForTesting())
                 {
-                    m_checkpointRetried = true;
                     m_fJumpStubOverflow = TRUE;
                 }
                 else
@@ -948,7 +948,6 @@ protected :
     BOOL                    m_fAllowRel32;      // Use 32-bit PC relative address modes
 #endif
 #if defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_RISCV64)
-    bool                    m_checkpointRetried = false;
     BOOL                    m_fJumpStubOverflow;   // Overflow while trying to alocate jump stub slot within PC relative branch region
                                                    // The code will need to be regenerated (with m_fRel32Allowed == FALSE for AMD64).
     size_t                  m_reserveForJumpStubs; // Space to reserve for jump stubs when allocating code

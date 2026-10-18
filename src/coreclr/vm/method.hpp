@@ -2401,6 +2401,13 @@ class PrepareCodeConfig
 public:
     PrepareCodeConfig();
     ~PrepareCodeConfig() { delete[] m_asyncCheckpointInfo; }
+    bool MarkCheckpointRetryForTesting()
+    {
+        LIMITED_METHOD_CONTRACT;
+        bool previous = m_checkpointRetried;
+        m_checkpointRetried = true;
+        return previous;
+    }
     void SetAsyncCheckpointInfo(BYTE* info)
     {
         LIMITED_METHOD_CONTRACT;
@@ -2576,6 +2583,7 @@ public:
     }
 
 protected:
+    bool m_checkpointRetried = false;
     BYTE* m_asyncCheckpointInfo = nullptr;
     MethodDesc* m_pMethodDesc;
     NativeCodeVersion m_nativeCodeVersion;

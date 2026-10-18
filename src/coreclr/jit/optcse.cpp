@@ -1115,13 +1115,14 @@ void Compiler::optValnumCSE_SetUpAsyncByrefKills()
             isByRef             = layout->HasGCByRef();
         }
 
+        // Rematerialize handles after awaits without disabling CSE within each segment.
         bool isCheckpointHandle = JitConfig.JitAsyncCheckpointProof() != 0 && compIsAsync() &&
             ((info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0) &&
             dsc->csdTreeList.tslTree->IsIntegralConst() && dsc->csdTreeList.tslTree->IsIconHandle();
         if (isByRef || isCheckpointHandle)
         {
             // We generate a bit pattern like: 1111111100111100 where there
-            // are 0s only for the byref CSEs.
+            // are 0s for byrefs and opt-in checkpoint handle CSEs.
             BitVecOps::RemoveElemD(cseLivenessTraits, cseAsyncKillsMask, getCSEAvailBit(inx));
             BitVecOps::RemoveElemD(cseLivenessTraits, cseAsyncKillsMask, getCSEAvailCrossCallBit(inx));
             anyAsyncKills = true;
@@ -1781,9 +1782,6 @@ bool CSE_HeuristicCommon::CanConsiderTree(GenTree* tree, bool isReturn)
     //
     if (tree->IsIntegralConst())
     {
-        // Checkpointed DynamicMethods must rematerialize process-local handle constants.
-        // CSE would otherwise spill a native type/method address as an ordinary integer.
-
         if (!enableConstCSE &&
             // Unconditionally allow these constant handles to be CSE'd
             !tree->IsIconHandle(GTF_ICON_STATIC_HDL) && !tree->IsIconHandle(GTF_ICON_CLASS_HDL) &&
