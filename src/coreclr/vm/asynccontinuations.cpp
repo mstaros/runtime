@@ -22,7 +22,9 @@ extern "C" INT32 QCALLTYPE AsyncHelpers_GetCheckpointPublicationStateForTesting(
     BEGIN_QCALL;
     if (method == nullptr || !method->IsLCGMethod())
         COMPlusThrow(kNotSupportedException);
-    MethodDesc* body = method->IsAsyncMethod() ? method : method->GetAsyncVariantNoCreate();
+    // Ordinary LCG methods have no async pair; variant lookup requires an async thunk.
+    MethodDesc* body = method->IsAsyncMethod() ? method :
+        method->IsAsyncThunkMethod() ? method->GetAsyncVariantNoCreate() : nullptr;
     // Observe without preparing code: the test must enter during the publication gap.
     if (body != nullptr && body->IsLCGMethod())
         result = body->AsDynamicMethodDesc()->GetLCGMethodResolver()->GetCheckpointPublicationStateForTesting();
@@ -46,7 +48,9 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
         *resumeInfo = 0;
         if (method == nullptr || !method->IsLCGMethod())
             COMPlusThrow(kNotSupportedException);
-        MethodDesc* body = method->IsAsyncMethod() ? method : method->GetAsyncVariantNoCreate();
+        // Ordinary LCG methods have no async pair; variant lookup requires an async thunk.
+        MethodDesc* body = method->IsAsyncMethod() ? method :
+            method->IsAsyncThunkMethod() ? method->GetAsyncVariantNoCreate() : nullptr;
         if (body == nullptr || !body->IsLCGMethod())
         {
             if (expectedResume != 0) return;

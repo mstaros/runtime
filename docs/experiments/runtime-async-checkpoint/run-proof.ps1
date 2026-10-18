@@ -99,6 +99,9 @@ function Invoke-CheckpointChild([string]$Mode, [string]$Path) {
     $stdout = Join-Path $output ($Mode + ".stdout.log")
     $stderr = Join-Path $output ($Mode + ".stderr.log")
     $child = Start-Process -FilePath $corerun -ArgumentList @(('"' + $worker + '"'), $Mode, ('"' + $Path + '"')) -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    # Windows PowerShell needs the process handle retained before timed waiting
+    # so ExitCode is available after a fast child exits.
+    $null = $child.Handle
     try {
         if (-not $child.WaitForExit(30000)) { throw "Checkpoint child timed out: $Mode" }
         $child.WaitForExit()
