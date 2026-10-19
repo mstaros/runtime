@@ -2281,6 +2281,28 @@ void AsyncTransformation::CreateSuspension(BasicBlock*                      call
             slot.Offset = rawDataOffset + inf.Offset;
             slot.Kind = dsc->TypeIs(TYP_INT) ? 1 : dsc->TypeIs(TYP_REF) ? 2 : 100 + static_cast<unsigned>(dsc->TypeGet());
             slot.ILNumber = m_compiler->compMap2ILvarNum(inf.LclNum);
+            slot.Origin = static_cast<int32_t>(slot.ILNumber) >= 0 ? 1 : 0;
+            if (dsc->lvIsStructField)
+            {
+                unsigned parent = m_compiler->compMap2ILvarNum(dsc->lvParentLcl);
+                if (static_cast<int32_t>(parent) >= 0)
+                {
+                    slot.ILNumber = parent;
+                    slot.Origin = 2;
+                    slot.FieldOffset = dsc->lvFldOffset;
+                }
+            }
+            // These roles come from the await's context operands, never from a
+            // value's type, nullness, or its position in the continuation.
+            auto isContextLocal = [&](WellKnownArg kind) {
+                CallArg* arg = call->gtArgs.FindWellKnownArg(kind);
+                return (arg != nullptr) && arg->GetNode()->OperIs(GT_LCL_VAR) &&
+                       (arg->GetNode()->AsLclVar()->GetLclNum() == inf.LclNum);
+            };
+            if (isContextLocal(WellKnownArg::AsyncExecutionContext))
+                slot.Origin = 3;
+            else if (isContextLocal(WellKnownArg::AsyncSynchronizationContext))
+                slot.Origin = 4;
             slot.ClassHandle = dsc->TypeIs(TYP_REF) ? dsc->lvClassHnd : NO_CLASS_HANDLE;
             slot.IsExact = dsc->TypeIs(TYP_REF) && dsc->lvClassIsExact;
             append(&slot, sizeof(slot));

@@ -1994,6 +1994,8 @@ struct CORINFO_AsyncCheckpointSlot
     uint32_t Kind;        // 0: unsupported, 1: Int32, 2: managed reference.
     uint32_t ILNumber;    // Diagnostic identity; includes unknown/compiler-generated locals.
     uint32_t IsExact;
+    uint32_t Origin;      // 0: unknown, 1: IL variable, 2: promoted IL field, 3/4: saved execution/sync context.
+    uint32_t FieldOffset; // Byte offset within the parent IL variable for origin 2; otherwise zero.
     CORINFO_CLASS_HANDLE ClassHandle; // Fresh-process reference-slot type; never persisted.
 };
 

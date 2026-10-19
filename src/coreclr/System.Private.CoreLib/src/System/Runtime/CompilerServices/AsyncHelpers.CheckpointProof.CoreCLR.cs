@@ -12,7 +12,7 @@ namespace System.Runtime.CompilerServices
     public static partial class AsyncHelpers
     {
         private const int CheckpointHeaderSize = 11;
-        private const int CheckpointSlotSize = 4;
+        private const int CheckpointSlotSize = 6;
         // Deliberately internal and opt-in. The caller must own a quiescent, never-completing
         // IValueTaskSource<int>. This is an exact-build experiment, not a persistence API.
         // Records also contain a canonical method identity and captured reference types.
@@ -22,14 +22,14 @@ namespace System.Runtime.CompilerServices
         // A single guarded script frame. The trusted test host owns the stopped await and
         // encodes only its known runtime bindings; this is not a general object serializer.
         internal static object[][] CaptureHostCheckpointForTesting<T>(
-            Task<T> task, DynamicMethod[] methods, Func<object, object> encodeBinding)
+            Task<T> task, DynamicMethod[] methods, Func<object, object> encodeBinding, Action<int[]>? validateSlots = null)
         {
             ArgumentNullException.ThrowIfNull(encodeBinding);
-            return CaptureCheckpointCore(task, methods, encodeBinding);
+            return CaptureCheckpointCore(task, methods, encodeBinding, validateSlots);
         }
 
         private static unsafe object[][] CaptureCheckpointCore<T>(
-            Task<T> task, DynamicMethod[] methods, Func<object, object>? encodeBinding)
+            Task<T> task, DynamicMethod[] methods, Func<object, object>? encodeBinding, Action<int[]>? validateSlots = null)
         {
             bool host = encodeBinding != null;
             if (task is not RuntimeAsyncTask<T> runtimeTask || task.IsCompleted ||
@@ -71,6 +71,8 @@ namespace System.Runtime.CompilerServices
                     throw new NotSupportedException("Continuation does not belong to the supplied methods.");
 
                 ValidateCheckpointSchema(schema, host);
+                // Validate the complete layout before walking any user-owned object.
+                validateSlots?.Invoke((int[])schema.Clone());
                 if (((uint)current.Flags & ~7u) != ((uint)schema[2] & ~7u) ||
                     (current.Flags & (ContinuationFlags.ContinueOnCapturedSynchronizationContext |
                                       ContinuationFlags.ContinueOnCapturedTaskScheduler)) != 0 ||
@@ -120,16 +122,16 @@ namespace System.Runtime.CompilerServices
             => RestoreCheckpointCore<int>(records, methods, awaitedResult, null, observeFrame);
 
         internal static Task<T> RestoreHostCheckpointForTesting<T>(
-            object[][] records, DynamicMethod[] methods, int awaitedResult, Func<object, object> decodeBinding)
+            object[][] records, DynamicMethod[] methods, int awaitedResult, Func<object, object> decodeBinding, Action<int[]>? validateSlots = null)
         {
             ArgumentNullException.ThrowIfNull(decodeBinding);
             if (records.Length != 1)
                 throw new NotSupportedException("Host checkpoint proof requires exactly one script frame.");
-            return RestoreCheckpointCore<T>(records, methods, awaitedResult, decodeBinding);
+            return RestoreCheckpointCore<T>(records, methods, awaitedResult, decodeBinding, validateSlots: validateSlots);
         }
 
         private static unsafe Task<T> RestoreCheckpointCore<T>(
-            object[][] records, DynamicMethod[] methods, int awaitedResult, Func<object, object>? decodeBinding, Action<object>? observeFrame = null)
+            object[][] records, DynamicMethod[] methods, int awaitedResult, Func<object, object>? decodeBinding, Action<object>? observeFrame = null, Action<int[]>? validateSlots = null)
         {
             bool host = decodeBinding != null;
             if (records.Length == 0 || records.Length > 16)
@@ -156,6 +158,7 @@ namespace System.Runtime.CompilerServices
                     throw new NotSupportedException("Checkpoint JIT configuration differs.");
                 if (!schema.AsSpan().SequenceEqual(savedSchema) || values.Length != schema[6] || referenceTypes.Length != values.Length)
                     throw new NotSupportedException("Checkpoint layout does not match the recreated method.");
+                validateSlots?.Invoke((int[])schema.Clone());
                 var restoredValues = new object?[values.Length];
                 for (int i = 0; i < values.Length; i++)
                 {
@@ -243,7 +246,7 @@ namespace System.Runtime.CompilerServices
 
         private static void ValidateCheckpointSchema(int[] schema, bool host = false)
         {
-            if (IntPtr.Size != 8 || schema.Length < CheckpointHeaderSize || schema[0] != 2 || schema[7] < 0 ||
+            if (IntPtr.Size != 8 || schema.Length < CheckpointHeaderSize || schema[0] != 3 || schema[7] < 0 ||
                 schema[3] < 24 || schema[3] > 1024 * 1024 || (schema[5] != 1 && (!host || schema[5] != 3)) ||
                 schema[6] < 0 || schema[6] > 1024 || schema.Length != CheckpointHeaderSize + schema[6] * CheckpointSlotSize ||
                 schema[4] < 24 || schema[4] > schema[3] - 8 || schema[4] % 8 != 0 ||
@@ -260,6 +263,12 @@ namespace System.Runtime.CompilerServices
             {
                 int offset = schema[CheckpointHeaderSize + i * CheckpointSlotSize];
                 int kind = schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize];
+                int origin = schema[CheckpointHeaderSize + 4 + i * CheckpointSlotSize];
+                int fieldOffset = schema[CheckpointHeaderSize + 5 + i * CheckpointSlotSize];
+                if ((uint)origin > 4 || fieldOffset < 0 || (origin != 2 && fieldOffset != 0) ||
+                    ((origin == 1 || origin == 2) && schema[CheckpointHeaderSize + 2 + i * CheckpointSlotSize] < 0) ||
+                    (origin >= 3 && kind != 2))
+                    throw new NotSupportedException("Invalid checkpoint slot origin.");
                 if ((kind != 1 && kind != 2) || offset < 24 ||
                     offset > schema[3] - (kind == 1 ? 4 : 8) || (kind != 1 && offset % 8 != 0))
                     throw new NotSupportedException("Unsupported live slot in checkpoint: kind " + kind + ", IL variable " + schema[CheckpointHeaderSize + 2 + i * CheckpointSlotSize] + ".");

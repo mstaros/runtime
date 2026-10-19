@@ -66,7 +66,7 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
             COMPlusThrow(kNotSupportedException);
         }
         const auto* info = reinterpret_cast<const CORINFO_AsyncCheckpointInfo*>(bytes);
-        if (info->Version != 2 || info->CodeAddress != reinterpret_cast<void*>(body->GetNativeCode()) ||
+        if (info->Version != 3 || info->CodeAddress != reinterpret_cast<void*>(body->GetNativeCode()) ||
             info->LayoutBytes > 1024 * 1024 || info->NumStates > 65536)
             COMPlusThrow(kNotSupportedException);
 
@@ -117,9 +117,9 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
             if (resolverObject == NULL) COMPlusThrow(kNotSupportedException);
             keepAlive.Set(resolverObject);
 
-            I4ARRAYREF array = (I4ARRAYREF)AllocatePrimitiveArray(ELEMENT_TYPE_I4, 11 + frame->NumSlots * 4);
+            I4ARRAYREF array = (I4ARRAYREF)AllocatePrimitiveArray(ELEMENT_TYPE_I4, 11 + frame->NumSlots * 6);
             INT32* values = array->GetDirectPointerToNonObjectElements();
-            values[0] = 2;
+            values[0] = 3;
             values[1] = frame->State;
             values[2] = frame->Flags;
             values[3] = frame->DataSize;
@@ -133,10 +133,12 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
             const auto* slots = reinterpret_cast<const CORINFO_AsyncCheckpointSlot*>(frame + 1);
             for (uint32_t i = 0; i < frame->NumSlots; i++)
             {
-                values[11 + i * 4] = slots[i].Offset;
-                values[12 + i * 4] = slots[i].Kind;
-                values[13 + i * 4] = slots[i].ILNumber;
-                values[14 + i * 4] = slots[i].IsExact;
+                values[11 + i * 6] = slots[i].Offset;
+                values[12 + i * 6] = slots[i].Kind;
+                values[13 + i * 6] = slots[i].ILNumber;
+                values[14 + i * 6] = slots[i].IsExact;
+                values[15 + i * 6] = slots[i].Origin;
+                values[16 + i * 6] = slots[i].FieldOffset;
             }
             schema.Set(array);
 

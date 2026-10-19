@@ -17,9 +17,9 @@ replaced. Use -SkipBuild only after building this exact candidate.
 
 To include the guarded Merkle/ScriptMcp proof, build ScriptMcp.Server.Tests in Release
 and add -ScriptTests <absolute-test-assembly> -AspNetRoot <matching-framework-directory>.
-The ScriptMcp companion must understand checkpoint record version 2.
+The ScriptMcp companion must understand checkpoint record version 3.
 
-## Restore contract (version 2)
+## Restore contract (version 3)
 
 - JIT checkpoint metadata is owned by its compilation attempt. ResetForJitRetry
   discards it. A successful compilation transfers ownership to PrepareCodeConfig;
@@ -67,6 +67,25 @@ Under the proof switch, native-handle CSE candidates are killed across awaits us
 the existing async CSE kill mask. CSE within a segment remains available. This
 improves supported coverage; rejecting unsupported native-int slots is the safety
 boundary. The context-capture helper remains out of line for the bounded proof.
+
+## Controlled host slot contract
+
+Version 3 adds a slot origin and parent-field byte offset. Direct IL variables
+have origin 1. Promoted fields have origin 2 and the original IL variable number;
+the offset identifies the field rather than its position in the saved slot list.
+Origins 3 and 4 identify saved execution/synchronization-context operands of the
+await. Unknown JIT temporaries retain origin 0 and are not silently reclassified
+by their runtime value or type. Separate continuation context storage remains
+identified by the frame flags and the host context binding.
+
+The host capture/restore hooks accept an optional layout validator. Capture invokes
+it before encoding any live object; restore invokes it before decoding or installing
+values. The validator receives a copy of the schema. A controlled host must require
+an explicit allowed set of IL variables/fields and context roles, reject every
+unknown slot, and validate reference bindings separately. Existing exploratory
+fixtures may omit the validator; their success does not establish this stricter
+contract. Quiescence and ownership are separate host obligations, not consequences
+of correct slot metadata.
 
 ## Regression coverage
 
@@ -148,4 +167,4 @@ See ScriptMcp/docs/RuntimeCheckpointProof.md for the host flow and retained rece
 
 Receipts, snapshots and child logs are retained under
 artifacts/experiments/runtime-async-checkpoint. Earlier version-1 results established
-feasibility; version-2 validation must use freshly captured snapshots.
+feasibility; version-3 validation must use freshly captured snapshots.
