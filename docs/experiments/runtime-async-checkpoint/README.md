@@ -63,10 +63,15 @@ bit. Ordinary compilation with the switch off keeps its existing optimizations.
 
 The slot list still comes from the suspension's subLayout, exactly as the normal
 JIT saves live locals and temporaries. Unsupported slot kinds fail explicitly.
-Under the proof switch, native-handle CSE candidates are killed across awaits using
-the existing async CSE kill mask. CSE within a segment remains available. This
-improves supported coverage; rejecting unsupported native-int slots is the safety
-boundary. The context-capture helper remains out of line for the bounded proof.
+Under the proof switch in runtime-async DynamicMethods, CSE candidates are killed
+across awaits using the existing async CSE kill mask. Values are recomputed within
+the resumed segment; CSE within a segment and general inlining remain enabled.
+Forward substitution, SSA copy propagation and local copy-assertion propagation
+preserve IL variable and promoted-field storage identities. These conservative
+optimization restrictions are part of the checkpoint experiment, not a claim
+that arbitrary JIT temporaries have stable identities. Unsupported slot kinds
+and unidentified slots still fail the strict host policy. The context-capture
+helper remains out of line for the bounded proof.
 
 ## Controlled host slot contract
 
