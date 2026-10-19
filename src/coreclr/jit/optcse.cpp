@@ -1115,14 +1115,15 @@ void Compiler::optValnumCSE_SetUpAsyncByrefKills()
             isByRef             = layout->HasGCByRef();
         }
 
-        // Rematerialize handles after awaits without disabling CSE within each segment.
-        bool isCheckpointHandle = JitConfig.JitAsyncCheckpointProof() != 0 && compIsAsync() &&
-            ((info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0) &&
-            dsc->csdTreeList.tslTree->IsIntegralConst() && dsc->csdTreeList.tslTree->IsIconHandle();
-        if (isByRef || isCheckpointHandle)
+        // CSE temporaries have no stable IL storage identity. In checkpoint
+        // proof mode, rematerialize them after awaits; CSE within each segment
+        // remains enabled, as does inlining.
+        bool isCheckpointTemporary = JitConfig.JitAsyncCheckpointProof() != 0 && compIsAsync() &&
+            ((info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0);
+        if (isByRef || isCheckpointTemporary)
         {
             // We generate a bit pattern like: 1111111100111100 where there
-            // are 0s for byrefs and opt-in checkpoint handle CSEs.
+            // are 0s for byrefs and opt-in checkpoint CSEs.
             BitVecOps::RemoveElemD(cseLivenessTraits, cseAsyncKillsMask, getCSEAvailBit(inx));
             BitVecOps::RemoveElemD(cseLivenessTraits, cseAsyncKillsMask, getCSEAvailCrossCallBit(inx));
             anyAsyncKills = true;

@@ -690,6 +690,17 @@ bool Compiler::fgForwardSubStatement(Statement* stmt)
     unsigned const   lclNum = defNode->AsLclVarCommon()->GetLclNum();
     LclVarDsc* const varDsc = lvaGetDesc(lclNum);
 
+    // Preserve IL storage identities for checkpoint slots. Substituting the
+    // definition can otherwise leave only an importer/inlining temporary live.
+    unsigned checkpointLocal = varDsc->lvIsStructField ? varDsc->lvParentLcl : lclNum;
+    if ((JitConfig.JitAsyncCheckpointProof() != 0) && compIsAsync() &&
+        ((info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0) &&
+        (static_cast<int32_t>(compMap2ILvarNum(checkpointLocal)) >= 0))
+    {
+        return false;
+    }
+
+
     // Leave pinned locals alone.
     // This is just a perf opt -- we shouldn't find any uses.
     //
