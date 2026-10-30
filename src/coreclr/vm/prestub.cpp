@@ -45,6 +45,8 @@
 
 #ifndef DACCESS_COMPILE
 
+#include "asynccontinuations.h"
+
 EXTERN_C void STDCALL ThePreStubPatch();
 
 #if defined(HAVE_GCCOVER)
@@ -1203,6 +1205,14 @@ void PrepareCodeConfig::SetCallerGCMode(CallerGCMode mode)
 BOOL PrepareCodeConfig::SetNativeCode(PCODE pCode, PCODE * ppAlternateCodeToUse)
 {
     LIMITED_METHOD_CONTRACT;
+
+    if (m_asyncCheckpointInfo != nullptr && !m_pMethodDesc->IsLCGMethod())
+    {
+        AsyncContinuationsManager* manager =
+            m_pMethodDesc->GetLoaderAllocator()->GetAsyncContinuationsManagerIfExists();
+        if (manager != nullptr)
+            manager->RecordCheckpointInfoForTesting(m_pMethodDesc, pCode, m_asyncCheckpointInfo);
+    }
 
     if (m_nativeCodeVersion.SetNativeCodeInterlocked(pCode, (PCODE)NULL))
     {

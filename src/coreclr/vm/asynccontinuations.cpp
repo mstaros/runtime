@@ -46,20 +46,26 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
     [&]() {
         *continuationType = 0;
         *resumeInfo = 0;
-        if (method == nullptr || !method->IsLCGMethod())
+        if (method == nullptr)
             COMPlusThrow(kNotSupportedException);
-        // Ordinary LCG methods have no async pair; variant lookup requires an async thunk.
+        // A metadata method's async body may not exist in a fresh process.
+        // Creating and preparing it must not invoke its pre-await instructions.
         MethodDesc* body = method->IsAsyncMethod() ? method :
-            method->IsAsyncThunkMethod() ? method->GetAsyncVariantNoCreate() : nullptr;
-        if (body == nullptr || !body->IsLCGMethod())
+            method->IsAsyncThunkMethod()
+                ? (method->IsLCGMethod() ? method->GetAsyncVariantNoCreate() : method->GetAsyncVariant())
+                : nullptr;
+        if (body == nullptr)
         {
             if (expectedResume != 0) return;
             COMPlusThrow(kNotSupportedException);
         }
 
         body->PrepareInitialCode();
-        LCGMethodResolver* resolver = body->AsDynamicMethodDesc()->GetLCGMethodResolver();
-        const BYTE* bytes = resolver->GetAsyncCheckpointInfo();
+        LCGMethodResolver* resolver = body->IsLCGMethod()
+            ? body->AsDynamicMethodDesc()->GetLCGMethodResolver() : nullptr;
+        AsyncContinuationsManager* manager = body->GetLoaderAllocator()->GetAsyncContinuationsManagerIfExists();
+        const BYTE* bytes = resolver != nullptr ? resolver->GetAsyncCheckpointInfo()
+            : manager != nullptr ? manager->LookupCheckpointInfoForTesting(body, body->GetNativeCode()) : nullptr;
         if (bytes == nullptr)
         {
             if (expectedResume != 0) return;
@@ -113,7 +119,8 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
 
         {
             GCX_COOP();
-            OBJECTREF resolverObject = resolver->GetManagedResolver();
+            OBJECTREF resolverObject = resolver != nullptr
+                ? resolver->GetManagedResolver() : body->GetMethodTable()->GetManagedClassObject();
             if (resolverObject == NULL) COMPlusThrow(kNotSupportedException);
             keepAlive.Set(resolverObject);
 
@@ -172,6 +179,42 @@ AsyncContinuationsManager::AsyncContinuationsManager(LoaderAllocator* allocator)
     m_layoutsLock.Init(CrstAsyncContinuations);
     LockOwner lock = {&m_layoutsLock, IsOwnerOfCrst};
     m_layouts.Init(16, &lock, m_allocator->GetLowFrequencyHeap());
+}
+
+// Publish immutable metadata before installing native code. Readers select only the
+// entry whose code address is installed on this MethodDesc, so a losing compilation
+// cannot supply another compilation's frame layout. Entries live with the allocator.
+void AsyncContinuationsManager::RecordCheckpointInfoForTesting(MethodDesc* method, PCODE code, const BYTE* bytes)
+{
+    LIMITED_METHOD_CONTRACT;
+    const auto* info = reinterpret_cast<const CORINFO_AsyncCheckpointInfo*>(bytes);
+    if (info->Version != 3 || info->LayoutBytes > 1024 * 1024 ||
+        info->CodeAddress != reinterpret_cast<void*>(code))
+        return;
+
+    size_t size = sizeof(*info) + info->LayoutBytes;
+    CheckpointInfoEntry* entry = m_allocator->GetLowFrequencyHeap()->AllocMem_NoThrow(
+        S_SIZE_T(sizeof(CheckpointInfoEntry)) + S_SIZE_T(size)).cast<CheckpointInfoEntry*>();
+    if (entry == nullptr)
+        return; // An unavailable proof schema is rejected; normal execution still works.
+    entry->Method = method;
+    entry->CodeAddress = code;
+    memcpy(entry + 1, bytes, size);
+    CrstHolder lock(&m_layoutsLock);
+    entry->Next = m_checkpointInfos;
+    m_checkpointInfos = entry;
+}
+
+const BYTE* AsyncContinuationsManager::LookupCheckpointInfoForTesting(MethodDesc* method, PCODE code)
+{
+    LIMITED_METHOD_CONTRACT;
+    CrstHolder lock(&m_layoutsLock);
+    for (CheckpointInfoEntry* entry = m_checkpointInfos; entry != nullptr; entry = entry->Next)
+    {
+        if (entry->Method == method && entry->CodeAddress == code)
+            return reinterpret_cast<const BYTE*>(entry + 1);
+    }
+    return nullptr;
 }
 
 void AsyncContinuationsManager::NotifyUnloadingClasses()

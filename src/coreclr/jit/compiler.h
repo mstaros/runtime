@@ -11906,6 +11906,13 @@ public:
     }
 
     // Is this the async version of a non-async method? IL belongs to non-async method.
+    // Mode 4 extends the bounded checkpoint experiment to metadata methods.
+    bool compIsAsyncCheckpointProof() const
+    {
+        int mode = JitConfig.JitAsyncCheckpointProof();
+        return mode != 0 && (((info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0) || mode == 4);
+    }
+
     bool compIsAsyncVersion() const
     {
         return (info.compMethodInfo->options & CORINFO_ASYNC_VERSION) != 0;

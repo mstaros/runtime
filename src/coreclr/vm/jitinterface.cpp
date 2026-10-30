@@ -11530,12 +11530,14 @@ void CEECodeGenInfo::reportMetadata(
 
     JIT_TO_EE_TRANSITION_LEAF();
     if ((strcmp(key, "RuntimeAsyncCheckpointCompilationV1") == 0) &&
-        m_pMethodBeingCompiled->IsLCGMethod() && length == sizeof(uint32_t))
+        length == sizeof(uint32_t) &&
+        (m_pMethodBeingCompiled->IsLCGMethod() || *static_cast<const uint32_t*>(value) == 4))
     {
         m_checkpointCompilationMode = *static_cast<const uint32_t*>(value);
     }
     if ((strcmp(key, "RuntimeAsyncCheckpointProofV1") == 0) &&
-        m_pMethodBeingCompiled->IsLCGMethod() && m_pMethodBeingCompiled->IsAsyncMethod() &&
+        (m_pMethodBeingCompiled->IsLCGMethod() || m_checkpointCompilationMode == 4) &&
+        m_pMethodBeingCompiled->IsAsyncMethod() &&
         (length >= sizeof(CORINFO_AsyncCheckpointInfo)))
     {
         const auto* info = static_cast<const CORINFO_AsyncCheckpointInfo*>(value);

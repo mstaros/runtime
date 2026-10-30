@@ -136,6 +136,49 @@ restarts. It adds wrong/null decoded reference, method identity, await identity 
 JIT-environment rejection cases to its existing cancellation and corruption checks.
 See ScriptMcp/docs/RuntimeCheckpointProof.md for the host flow and retained receipts.
 
+## External DLL experiment (mode 4)
+
+The Merkle integration fixture also covers a script calling methods defined in a
+separately emitted C# DLL. Build the existing
+MpsAgent.Merkle.Compiler.Bridge.Integration.Tests project in Release, then run:
+
+```powershell
+docs\experiments\runtime-async-checkpoint\run-ordinary-proof.cmd -RuntimeRoot D:\repos\runtime-async-dynamicmethod -ScriptTests <absolute-integration-test-assembly>
+```
+
+Mode 4 extends checkpoint layout emission and the conservative IL-local policy to
+metadata runtime-async methods. Modes 1 through 3 retain their DynamicMethod scope.
+The extended internal host hooks accept MethodInfo arrays and multiple frames per
+task. Metadata methods are restricted to nongeneric methods on nongeneric,
+noncollectible types. Fresh lookup creates and JITs a missing metadata async body
+without invoking the method. Frames without a runtime keep-alive slot are admitted;
+collectible and generic method lifetimes are outside this proof.
+
+Ordinary-method metadata is copied into its loader allocator before native-code
+publication and indexed by MethodDesc plus code address. Lookup selects the entry
+for installed code, so a losing compilation cannot provide the winner's layout.
+These proof-only entries remain until allocator teardown. DynamicMethods retain
+their existing winner-owned resolver publication. Metadata method identity uses
+module MVID, token, declaring type and signature, and the fixture separately pins
+the complete DLL bytes by SHA-256. It reloads the saved DLL; it does not rebuild
+the DLL in restoring processes or persist native code and pointers.
+
+The external fixture has two nested DLL async methods, a live integer local, one
+shared receiver and receiver-bound call/validation delegates. The restart test
+checks two rejected values with fresh snapshots, followed by acceptance and the
+script's continuation. It checks that constructors and pre-await prefixes are not
+replayed. The DLL is compiled with the C# runtime-async feature; a conventional
+compiler-state-machine DLL is a required negative control. The codec admits only
+this known object/delegate/task graph. DLL bodies are not given Merkle execution
+guards by ordinary C# compilation; only the script guard is restored.
+
+The runner re-executes the original DynamicMethod proof, then stages the candidate
+under RuntimeRoot/artifacts/experiments/runtime-async-ordinary-checkpoint. The
+external receipt is published only after the process-isolated assertions pass.
+This extends the experiment, not the production durability API or DLL admission
+policy. Arbitrary existing DLLs, arbitrary serialization and general optimized-JIT
+portability remain unproved.
+
 ## Limits
 
 - Windows x64, exact runtime/application builds, tiering/OSR/R2R disabled. Exact DLL
@@ -156,8 +199,8 @@ See ScriptMcp/docs/RuntimeCheckpointProof.md for the host flow and retained rece
 - Full canonical manifests are retained per frame for this bounded proof. The
   MessagePack value codec is unchanged, but identity metadata increases snapshot size.
 - The original chain supports at most 16 Task<int> frames and Int32/null/string
-  values. The host supports one guarded script frame with explicitly encoded
-  bindings and List<int> identity. No arbitrary graph or closure serialization.
+  values. The original DynamicMethod host hook supports one guarded script frame
+  with explicitly encoded bindings and List<int> identity. No arbitrary graph or closure serialization.
 - A serializable Int32 can still encode process-local meaning: identity or randomized
   string hashes, thread IDs and similar values are not portable merely because
   their bits fit the schema. The script/host must avoid persisting such values as

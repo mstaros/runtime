@@ -55,6 +55,14 @@ class AsyncContinuationsManager
     LoaderAllocator* m_allocator;
     CrstExplicitInit m_layoutsLock;
     ContinuationLayoutHashTable m_layouts;
+    struct CheckpointInfoEntry
+    {
+        CheckpointInfoEntry* Next;
+        MethodDesc* Method;
+        PCODE CodeAddress;
+        // The immutable CORINFO_AsyncCheckpointInfo and layout follow this entry.
+    };
+    CheckpointInfoEntry* m_checkpointInfos = nullptr;
 
     static MethodTable* CreateNewContinuationMethodTable(unsigned dataSize, const bool* objRefs, EEClass* eeClass, LoaderAllocator* allocator, Module* loaderModule, AllocMemTracker* pamTracker);
     static PTR_EEClass GetOrCreateSingletonSubContinuationEEClass();
@@ -63,6 +71,8 @@ public:
     AsyncContinuationsManager(LoaderAllocator* allocator);
     MethodTable* LookupOrCreateContinuationMethodTable(unsigned dataSize, const bool* objRefs, Module* loaderModule);
     void NotifyUnloadingClasses();
+    void RecordCheckpointInfoForTesting(MethodDesc* method, PCODE code, const BYTE* info);
+    const BYTE* LookupCheckpointInfoForTesting(MethodDesc* method, PCODE code);
 
     template<typename AppendString, typename AppendNum>
     static void PrintContinuationName(MethodTable* pMT, AppendString append, AppendNum appendNum);

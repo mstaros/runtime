@@ -182,8 +182,7 @@ PhaseStatus Compiler::SaveAsyncContexts()
         // Keep the context-capture boundary explicit for the bounded checkpoint proof.
         // Inlining can copy its synchronous-only Thread local into an unclassified
         // temporary that the continuation liveness analysis then retains.
-        if ((JitConfig.JitAsyncCheckpointProof() == 0) ||
-            ((info.compMethodInfo->options & CORINFO_LCG_METHOD) == 0))
+        if (!compIsAsyncCheckpointProof())
         {
             impMarkInlineCandidate(captureCall, MAKE_METHODCONTEXT(callInfo.hMethod), &callInfo, compInlineContext);
         }
@@ -1766,9 +1765,7 @@ const AsyncState* AsyncTransformation::FindReusableSuspension(BasicBlock*       
                                                               bool                       resumeReachable,
                                                               VARSET_VALARG_TP           mutatedSinceResumption)
 {
-    if (m_compiler->opts.OptimizationDisabled() ||
-        ((JitConfig.JitAsyncCheckpointProof() != 0) &&
-         ((m_compiler->info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0)))
+    if (m_compiler->opts.OptimizationDisabled() || m_compiler->compIsAsyncCheckpointProof())
     {
         // Tail merging breaks debugging.
         return nullptr;
@@ -2232,8 +2229,7 @@ void AsyncTransformation::CreateSuspension(BasicBlock*                      call
     LIR::AsRange(suspendBB).InsertAtEnd(LIR::SeqTree(m_compiler, storeFlags));
 
 
-    if ((JitConfig.JitAsyncCheckpointProof() != 0) &&
-        ((m_compiler->info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0))
+    if (m_compiler->compIsAsyncCheckpointProof())
     {
         // Retain every live slot, including JIT temporaries omitted by debug information.
         // The proof rejects unsupported kinds instead of silently dropping their state.

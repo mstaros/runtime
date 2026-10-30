@@ -175,8 +175,7 @@ bool Compiler::optCopyProp(
     // optimizer temporary that happens to have an equivalent value in this JIT.
     // Keep these uses attached to their original storage identity in proof mode.
     unsigned checkpointLocal = varDsc->lvIsStructField ? varDsc->lvParentLcl : lclNum;
-    if ((JitConfig.JitAsyncCheckpointProof() != 0) && compIsAsync() &&
-        ((info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0) &&
+    if (compIsAsyncCheckpointProof() && compIsAsync() &&
         (static_cast<int32_t>(compMap2ILvarNum(checkpointLocal)) >= 0))
     {
         return false;

@@ -693,8 +693,7 @@ bool Compiler::fgForwardSubStatement(Statement* stmt)
     // Preserve IL storage identities for checkpoint slots. Substituting the
     // definition can otherwise leave only an importer/inlining temporary live.
     unsigned checkpointLocal = varDsc->lvIsStructField ? varDsc->lvParentLcl : lclNum;
-    if ((JitConfig.JitAsyncCheckpointProof() != 0) && compIsAsync() &&
-        ((info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0) &&
+    if (compIsAsyncCheckpointProof() && compIsAsync() &&
         (static_cast<int32_t>(compMap2ILvarNum(checkpointLocal)) >= 0))
     {
         return false;

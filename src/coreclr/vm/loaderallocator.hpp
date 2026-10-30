@@ -921,6 +921,11 @@ public:
 #endif // FEATURE_ON_STACK_REPLACEMENT
 
     PTR_AsyncContinuationsManager GetAsyncContinuationsManager();
+    PTR_AsyncContinuationsManager GetAsyncContinuationsManagerIfExists()
+    {
+        LIMITED_METHOD_CONTRACT;
+        return m_asyncContinuationsManager;
+    }
 
 #ifdef FEATURE_PORTABLE_ENTRYPOINTS
     // Add a MethodDesc to the pending list of methods waiting for an R2R-to-interpreter thunk.

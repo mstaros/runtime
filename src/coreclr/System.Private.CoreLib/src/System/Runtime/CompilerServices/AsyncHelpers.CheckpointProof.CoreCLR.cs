@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
+using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -28,8 +29,18 @@ namespace System.Runtime.CompilerServices
             return CaptureCheckpointCore(task, methods, encodeBinding, validateSlots);
         }
 
+        // Extended host proof for a mixed script/DLL continuation chain. Metadata
+        // methods must be nongeneric and noncollectible; exact DLL bytes are host-pinned.
+        internal static object[][] CaptureMethodCheckpointForTesting<T>(
+            Task<T> task, MethodInfo[] methods, Func<object, object> encodeBinding, Action<int[]>? validateSlots = null)
+        {
+            ArgumentNullException.ThrowIfNull(encodeBinding);
+            return CaptureCheckpointCore(task, methods, encodeBinding, validateSlots, allowMultipleFrames: true);
+        }
+
         private static unsafe object[][] CaptureCheckpointCore<T>(
-            Task<T> task, DynamicMethod[] methods, Func<object, object>? encodeBinding, Action<int[]>? validateSlots = null)
+            Task<T> task, MethodInfo[] methods, Func<object, object>? encodeBinding, Action<int[]>? validateSlots = null,
+            bool allowMultipleFrames = false)
         {
             bool host = encodeBinding != null;
             if (task is not RuntimeAsyncTask<T> runtimeTask || task.IsCompleted ||
@@ -104,13 +115,13 @@ namespace System.Runtime.CompilerServices
                         ? encodeBinding!(value) : value;
                 }
 
-                string identity = methods[methodIndex]._resolver!.GetCheckpointIdentity();
+                string identity = CheckpointMethodIdentity(methods[methodIndex]);
                 frames.Add(host
                     ? new object[] { methodIndex, current.State, schema, values, context == null ? null! : encodeBinding!(context), identity, referenceTypes }
                     : new object[] { methodIndex, current.State, schema, values, identity, referenceTypes });
                 current = current.Next;
             }
-            if (host && frames.Count != 1)
+            if (host && !allowMultipleFrames && frames.Count != 1)
                 throw new NotSupportedException("Host checkpoint proof requires exactly one script frame.");
             GC.KeepAlive(methods);
             GC.KeepAlive(task);
@@ -130,8 +141,15 @@ namespace System.Runtime.CompilerServices
             return RestoreCheckpointCore<T>(records, methods, awaitedResult, decodeBinding, validateSlots: validateSlots);
         }
 
+        internal static Task<T> RestoreMethodCheckpointForTesting<T>(
+            object[][] records, MethodInfo[] methods, int awaitedResult, Func<object, object> decodeBinding, Action<int[]>? validateSlots = null)
+        {
+            ArgumentNullException.ThrowIfNull(decodeBinding);
+            return RestoreCheckpointCore<T>(records, methods, awaitedResult, decodeBinding, validateSlots: validateSlots);
+        }
+
         private static unsafe Task<T> RestoreCheckpointCore<T>(
-            object[][] records, DynamicMethod[] methods, int awaitedResult, Func<object, object>? decodeBinding, Action<object>? observeFrame = null, Action<int[]>? validateSlots = null)
+            object[][] records, MethodInfo[] methods, int awaitedResult, Func<object, object>? decodeBinding, Action<object>? observeFrame = null, Action<int[]>? validateSlots = null)
         {
             bool host = decodeBinding != null;
             if (records.Length == 0 || records.Length > 16)
@@ -151,7 +169,7 @@ namespace System.Runtime.CompilerServices
                     throw new NotSupportedException("Checkpoint task result type does not match the script.");
                 int[] schema = GetCheckpointInfo(methods[index], state,
                     out object keepAlive, out IntPtr type, out IntPtr resume, out Type?[] slotTypes, host)!;
-                if (identity != methods[index]._resolver!.GetCheckpointIdentity())
+                if (identity != CheckpointMethodIdentity(methods[index]))
                     throw new NotSupportedException("Checkpoint method identity does not match the recreated method.");
                 ValidateCheckpointSchema(schema, host);
                 if (savedSchema.Length >= CheckpointHeaderSize && (schema[8] != savedSchema[8] || schema[9] != savedSchema[9]))
@@ -183,7 +201,8 @@ namespace System.Runtime.CompilerServices
                 current.Flags = (ContinuationFlags)((uint)schema[2] & ~6u);
                 current.ResumeInfo = (ResumeInfo*)resume;
                 ref byte data = ref RuntimeHelpers.GetRawData(current);
-                Unsafe.As<byte, object?>(ref Unsafe.Add(ref data, schema[4])) = keepAlive;
+                if (schema[4] != -1)
+                    Unsafe.As<byte, object?>(ref Unsafe.Add(ref data, schema[4])) = keepAlive;
                 int contextOffset = CheckpointFlagOffset(schema, ContinuationFlags.ExecutionContextIndexFirstBit, ContinuationFlags.ExecutionContextIndexNumBits);
                 if (contextOffset != 0)
                     Unsafe.As<byte, ExecutionContext?>(ref Unsafe.Add(ref data, contextOffset)) = context;
@@ -249,7 +268,7 @@ namespace System.Runtime.CompilerServices
             if (IntPtr.Size != 8 || schema.Length < CheckpointHeaderSize || schema[0] != 3 || schema[7] < 0 ||
                 schema[3] < 24 || schema[3] > 1024 * 1024 || (schema[5] != 1 && (!host || schema[5] != 3)) ||
                 schema[6] < 0 || schema[6] > 1024 || schema.Length != CheckpointHeaderSize + schema[6] * CheckpointSlotSize ||
-                schema[4] < 24 || schema[4] > schema[3] - 8 || schema[4] % 8 != 0 ||
+                (schema[4] != -1 && (schema[4] < 24 || schema[4] > schema[3] - 8 || schema[4] % 8 != 0)) ||
                 (!host && (((uint)schema[2] >> 8) & 7) != 0))
                 throw new NotSupportedException("Unsupported checkpoint frame layout.");
 
@@ -286,14 +305,39 @@ namespace System.Runtime.CompilerServices
             return (int)offset;
         }
 
-        private static int[]? GetCheckpointInfo(DynamicMethod method, int state,
+        private static string CheckpointMethodIdentity(MethodInfo method)
+        {
+            if (method is DynamicMethod dynamicMethod)
+                return dynamicMethod._resolver!.GetCheckpointIdentity();
+            ValidateCheckpointMethod(method);
+            return "metadata:" + method.Module.ModuleVersionId.ToString("D") + ":" +
+                method.MetadataToken.ToString("X8") + ":" +
+                DynamicResolver.CheckpointTypeIdentity(method.DeclaringType!) + ":" + method.ToString();
+        }
+
+        private static void ValidateCheckpointMethod(MethodInfo method)
+        {
+            if (method.IsGenericMethod || method.DeclaringType == null || method.DeclaringType.IsGenericType ||
+                method.Module.Assembly.IsCollectible)
+                throw new NotSupportedException("Metadata checkpoint proof requires a nongeneric, noncollectible method.");
+        }
+
+        private static int[]? GetCheckpointInfo(MethodInfo method, int state,
             out object keepAlive, out IntPtr type, out IntPtr resume, out Type?[] slotTypes,
             bool host = false, IntPtr expectedResume = default)
         {
             int[] schema = null!;
             slotTypes = null!;
             keepAlive = null!;
-            GetCheckpointInfoForTesting(method.GetMethodDescriptor().Value, state, expectedResume,
+            IntPtr handle;
+            if (method is DynamicMethod dynamicMethod)
+                handle = dynamicMethod.GetMethodDescriptor().Value;
+            else
+            {
+                ValidateCheckpointMethod(method);
+                handle = method.MethodHandle.Value;
+            }
+            GetCheckpointInfoForTesting(handle, state, expectedResume,
                 ObjectHandleOnStack.Create(ref schema), ObjectHandleOnStack.Create(ref keepAlive),
                 ObjectHandleOnStack.Create(ref slotTypes), out type, out resume);
             GC.KeepAlive(method);

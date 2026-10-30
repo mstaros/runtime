@@ -3650,8 +3650,7 @@ GenTree* Compiler::optCopyAssertionProp(const AssertionDsc&  curAssertion,
     // Local assertion propagation also substitutes storage identities, before
     // SSA copy propagation. Preserve checkpoint IL locals and promoted fields.
     unsigned checkpointLocal = lclVarDsc->lvIsStructField ? lclVarDsc->lvParentLcl : lclNum;
-    if ((JitConfig.JitAsyncCheckpointProof() != 0) && compIsAsync() &&
-        ((info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0) &&
+    if (compIsAsyncCheckpointProof() && compIsAsync() &&
         (static_cast<int32_t>(compMap2ILvarNum(checkpointLocal)) >= 0))
     {
         return nullptr;

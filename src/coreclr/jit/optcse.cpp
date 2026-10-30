@@ -1118,8 +1118,7 @@ void Compiler::optValnumCSE_SetUpAsyncByrefKills()
         // CSE temporaries have no stable IL storage identity. In checkpoint
         // proof mode, rematerialize them after awaits; CSE within each segment
         // remains enabled, as does inlining.
-        bool isCheckpointTemporary = JitConfig.JitAsyncCheckpointProof() != 0 && compIsAsync() &&
-            ((info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0);
+        bool isCheckpointTemporary = compIsAsyncCheckpointProof() && compIsAsync();
         if (isByRef || isCheckpointTemporary)
         {
             // We generate a bit pattern like: 1111111100111100 where there
