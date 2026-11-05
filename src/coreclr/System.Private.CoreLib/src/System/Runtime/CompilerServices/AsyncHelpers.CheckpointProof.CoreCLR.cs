@@ -472,7 +472,12 @@ namespace System.Runtime.CompilerServices
                     contextKind = 2;
                     return true;
                 }
-                mismatch = "The saved generic context 0x" + saved.ToString("X") + " names neither 0x" + expected.ToString("X") +
+                // Name what the frame received, so a refusal shows which instantiation handle it was.
+                string received = contextOrigin == 5
+                    ? RuntimeType.GetMethodBase(null, new RuntimeMethodHandleInternal(saved))?.ToString() ?? "?"
+                    : "?";
+                mismatch = (mismatch == null ? "" : mismatch + " ") + "For " + method + " the saved generic context 0x" +
+                    saved.ToString("X") + " (" + received + ") names neither 0x" + expected.ToString("X") +
                     (contextOrigin == 5 ? " nor 0x" + primary.ToString("X") : "") + ".";
                 return false;
             }
