@@ -2007,9 +2007,11 @@ struct CORINFO_AsyncCheckpointFrame
     uint32_t Flags;
     uint32_t DataSize;
     uint32_t KeepAliveOffset;
-    uint32_t ResultKind;  // 0: unsupported, 1: Int32, 3: void.
+    uint32_t ResultKind;  // 0: unsupported, 1: Int32, 2: described by ResultType and ResultClass, 3: void.
     uint32_t NumSlots;
     uint32_t AwaitILOffset;
+    uint32_t ResultType;  // CorInfoType of the awaited call's result, as its signature states it.
+    CORINFO_CLASS_HANDLE ResultClass; // The result's class or value type, enums unnormalized; null for primitives.
 };
 
 struct CORINFO_AsyncCheckpointInfo

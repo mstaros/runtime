@@ -14,7 +14,7 @@ extern "C" INT32 QCALLTYPE AsyncHelpers_GetCheckpointPublicationStateForTesting(
 
 extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
     MethodDesc* method, INT32 state, intptr_t expectedResume, QCall::ObjectHandleOnStack schema,
-    QCall::ObjectHandleOnStack keepAlive, QCall::ObjectHandleOnStack slotTypes,
+    QCall::ObjectHandleOnStack keepAlive, QCall::ObjectHandleOnStack slotTypes, QCall::ObjectHandleOnStack awaitedType,
     intptr_t* continuationType, intptr_t* resumeInfo, intptr_t* methodContext, intptr_t* classContext);
 
 

@@ -17,9 +17,9 @@ replaced. Use -SkipBuild only after building this exact candidate.
 
 To include the guarded Merkle/ScriptMcp proof, build ScriptMcp.Server.Tests in Release
 and add -ScriptTests <absolute-test-assembly> -AspNetRoot <matching-framework-directory>.
-The ScriptMcp companion must understand checkpoint record version 4.
+The ScriptMcp companion must understand checkpoint record version 5.
 
-## Restore contract (version 4)
+## Restore contract (version 5)
 
 - JIT checkpoint metadata is owned by its compilation attempt. ResetForJitRetry
   discards it. A successful compilation transfers ownership to PrepareCodeConfig;
@@ -94,6 +94,21 @@ would store. A shared slot that reports a canonical (__Canon) class is checked a
 its declared type from the IL signature, substituted with the closed instantiation;
 an unidentified shared slot is rejected. A generic method's identity includes its
 type arguments. The JIT/EE interface GUID changed with this contract.
+
+Version 5 records what each await produces. Result kind 1 remains a plain Int32 await
+and kind 3 a void await; kind 2 is any other awaited type, which the JIT reads from
+the await call's signature (its primitive kind, or its class with enums unnormalized)
+and the VM returns to CoreLib as a type. Shared generic code may report __Canon.
+Restore checks that each caller awaits exactly what its callee returns (Task<X> gives
+X, Task gives void; a __Canon awaited type matches by shape) and that the task's type
+is the outermost frame's. Frames may return Task or Task<X>. The outcome hook seeds
+the first frame with a completed task: a result must be a Task<X> of exactly the
+type that frame awaits, and a shared generic first frame awaiting a type parameter
+is refused because that type is not known exactly. A fault or cancellation is thrown
+at the restored await by the ordinary dispatcher, which routes it to the nearest
+frame with a handler. The Int32 hooks keep their behavior, including no injected
+result for a void awaiter suspension. The JIT/EE interface GUID changed with this
+contract.
 
 The host capture/restore hooks accept an optional layout validator. Capture invokes
 it before encoding any live object; restore invokes it before decoding or installing
@@ -187,6 +202,14 @@ type) into fresh collectible contexts. They check that the restored chains alone
 their contexts alive while suspended and that the contexts are collected after the
 runs complete.
 
+A result-types fixture chains a frame that awaits a long and returns a string, a
+frame that awaits that string and returns nothing, and a frame that awaits that,
+returns an int and handles InvalidOperationException. A fresh process restores it
+three times: with a value, with a fault the handler catches, and with a cancellation
+that cancels the DLL frames' task and then the script's. An outcome of another type
+and frames reordered so that a caller no longer awaits what its callee returns are
+refused before any frame runs.
+
 Ordinary-method metadata is copied into its loader allocator before native-code
 publication and indexed by MethodDesc plus code address. Lookup selects the entry
 for installed code, so a losing compilation cannot provide the winner's layout.
@@ -234,6 +257,9 @@ portability remain unproved.
 - The original chain supports at most 16 Task<int> frames and Int32/null/string
   values. The original DynamicMethod host hook supports one guarded script frame
   with explicitly encoded bindings and List<int> identity. No arbitrary graph or closure serialization.
+- Host chains admit Task and Task<X> frames with any awaited result type. ValueTask
+  frames and custom awaitables remain unsupported, and live slots are still Int32 or
+  references.
 - A serializable Int32 can still encode process-local meaning: identity or randomized
   string hashes, thread IDs and similar values are not portable merely because
   their bits fit the schema. The script/host must avoid persisting such values as
@@ -248,4 +274,4 @@ portability remain unproved.
 
 Receipts, snapshots and child logs are retained under
 artifacts/experiments/runtime-async-checkpoint. Earlier version-1 results established
-feasibility; version-3 validation must use freshly captured snapshots.
+feasibility; each new schema version's validation must use freshly captured snapshots.

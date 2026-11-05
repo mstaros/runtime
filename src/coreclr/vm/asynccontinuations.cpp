@@ -32,9 +32,36 @@ extern "C" INT32 QCALLTYPE AsyncHelpers_GetCheckpointPublicationStateForTesting(
     return result;
 }
 
+#ifdef TARGET_AMD64
+// The primitive type a signature's CorInfoType names; null for any other type.
+static TypeHandle CheckpointPrimitiveType(CorInfoType type)
+{
+    CorElementType element;
+    switch (type)
+    {
+        case CORINFO_TYPE_BOOL:       element = ELEMENT_TYPE_BOOLEAN; break;
+        case CORINFO_TYPE_CHAR:       element = ELEMENT_TYPE_CHAR; break;
+        case CORINFO_TYPE_BYTE:       element = ELEMENT_TYPE_I1; break;
+        case CORINFO_TYPE_UBYTE:      element = ELEMENT_TYPE_U1; break;
+        case CORINFO_TYPE_SHORT:      element = ELEMENT_TYPE_I2; break;
+        case CORINFO_TYPE_USHORT:     element = ELEMENT_TYPE_U2; break;
+        case CORINFO_TYPE_INT:        element = ELEMENT_TYPE_I4; break;
+        case CORINFO_TYPE_UINT:       element = ELEMENT_TYPE_U4; break;
+        case CORINFO_TYPE_LONG:       element = ELEMENT_TYPE_I8; break;
+        case CORINFO_TYPE_ULONG:      element = ELEMENT_TYPE_U8; break;
+        case CORINFO_TYPE_NATIVEINT:  element = ELEMENT_TYPE_I; break;
+        case CORINFO_TYPE_NATIVEUINT: element = ELEMENT_TYPE_U; break;
+        case CORINFO_TYPE_FLOAT:      element = ELEMENT_TYPE_R4; break;
+        case CORINFO_TYPE_DOUBLE:     element = ELEMENT_TYPE_R8; break;
+        default:                      return TypeHandle();
+    }
+    return TypeHandle(CoreLibBinder::GetElementType(element));
+}
+#endif
+
 extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
     MethodDesc* method, INT32 state, intptr_t expectedResume, QCall::ObjectHandleOnStack schema,
-    QCall::ObjectHandleOnStack keepAlive, QCall::ObjectHandleOnStack slotTypes,
+    QCall::ObjectHandleOnStack keepAlive, QCall::ObjectHandleOnStack slotTypes, QCall::ObjectHandleOnStack awaitedType,
     intptr_t* continuationType, intptr_t* resumeInfo, intptr_t* methodContext, intptr_t* classContext)
 {
     QCALL_CONTRACT;
@@ -81,7 +108,7 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
             COMPlusThrow(kNotSupportedException);
         }
         const auto* info = reinterpret_cast<const CORINFO_AsyncCheckpointInfo*>(bytes);
-        if (info->Version != 4 || info->CodeAddress != reinterpret_cast<void*>(body->GetNativeCode()) ||
+        if (info->Version != 5 || info->CodeAddress != reinterpret_cast<void*>(body->GetNativeCode()) ||
             info->LayoutBytes > 1024 * 1024 || info->NumStates > 65536)
             COMPlusThrow(kNotSupportedException);
 
@@ -135,7 +162,7 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
 
             I4ARRAYREF array = (I4ARRAYREF)AllocatePrimitiveArray(ELEMENT_TYPE_I4, 11 + frame->NumSlots * 6);
             INT32* values = array->GetDirectPointerToNonObjectElements();
-            values[0] = 4;
+            values[0] = 5;
             values[1] = frame->State;
             values[2] = frame->Flags;
             values[3] = frame->DataSize;
@@ -172,6 +199,16 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
             }
             slotTypes.Set(types);
             GCPROTECT_END();
+
+            // The exact type a kind-2 await produces, as the JIT read it from the call's signature.
+            // Shared generic code may report __Canon; managed restore decides where that is acceptable.
+            if (frame->ResultKind == 2)
+            {
+                TypeHandle result = frame->ResultClass != nullptr ? TypeHandle::FromPtr(frame->ResultClass)
+                    : CheckpointPrimitiveType(static_cast<CorInfoType>(frame->ResultType));
+                if (result.IsNull()) COMPlusThrow(kNotSupportedException);
+                awaitedType.Set(result.GetManagedClassObject());
+            }
         }
         *continuationType = reinterpret_cast<intptr_t>(frame->ContinuationClass);
         *resumeInfo = reinterpret_cast<intptr_t>(&info->ResumeInfos[state]);
@@ -199,7 +236,7 @@ void AsyncContinuationsManager::RecordCheckpointInfoForTesting(MethodDesc* metho
 {
     LIMITED_METHOD_CONTRACT;
     const auto* info = reinterpret_cast<const CORINFO_AsyncCheckpointInfo*>(bytes);
-    if (info->Version != 4 || info->LayoutBytes > 1024 * 1024 ||
+    if (info->Version != 5 || info->LayoutBytes > 1024 * 1024 ||
         info->CodeAddress != reinterpret_cast<void*>(code))
         return;
 

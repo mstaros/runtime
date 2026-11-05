@@ -5239,7 +5239,12 @@ protected:
                                 unsigned                clsFlags,
                                 bool                    isReadonlyCall);
 
-    void impSetupAsyncCall(GenTreeCall* call, CORINFO_METHOD_HANDLE methHnd, OPCODE opcode, unsigned prefixFlags, const DebugInfo& callDI);
+    void impSetupAsyncCall(GenTreeCall*            call,
+                           CORINFO_METHOD_HANDLE   methHnd,
+                           const CORINFO_SIG_INFO* sig,
+                           OPCODE                  opcode,
+                           unsigned                prefixFlags,
+                           const DebugInfo&        callDI);
 
     void impInsertAsyncArgsForLdvirtftnCall(GenTreeCall* call);
     void impInheritAsyncContextsFromInliner(GenTreeCall* call);

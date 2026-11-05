@@ -72,7 +72,7 @@ namespace System.Runtime.CompilerServices
                 for (int i = 0; i < methods.Length; i++)
                 {
                     int[]? candidate = GetCheckpointInfo(methods[i], current.State,
-                        out _, out IntPtr type, out IntPtr resume, out Type?[] candidateTypes,
+                        out _, out IntPtr type, out IntPtr resume, out Type?[] candidateTypes, out _,
                         out IntPtr candidateMethodContext, out IntPtr candidateClassContext, host, (IntPtr)current.ResumeInfo);
                     if (candidate == null || resume != (IntPtr)current.ResumeInfo ||
                         type != (IntPtr)RuntimeHelpers.GetMethodTable(current))
@@ -161,7 +161,7 @@ namespace System.Runtime.CompilerServices
 
         internal static Task<int> RestoreCheckpointForTesting(
             object[][] records, DynamicMethod[] methods, int awaitedResult, Action<object>? observeFrame = null)
-            => RestoreCheckpointCore<int>(records, methods, awaitedResult, null, observeFrame);
+            => RestoreCheckpointCore<int>(records, methods, Task.FromResult(awaitedResult), null, observeFrame);
 
         internal static Task<T> RestoreHostCheckpointForTesting<T>(
             object[][] records, DynamicMethod[] methods, int awaitedResult, Func<object, object> decodeBinding, Action<int[]>? validateSlots = null)
@@ -169,41 +169,56 @@ namespace System.Runtime.CompilerServices
             ArgumentNullException.ThrowIfNull(decodeBinding);
             if (records.Length != 1)
                 throw new NotSupportedException("Host checkpoint proof requires exactly one script frame.");
-            return RestoreCheckpointCore<T>(records, methods, awaitedResult, decodeBinding, validateSlots: validateSlots);
+            return RestoreCheckpointCore<T>(records, methods, Task.FromResult(awaitedResult), decodeBinding, validateSlots: validateSlots);
         }
 
         internal static Task<T> RestoreMethodCheckpointForTesting<T>(
             object[][] records, MethodInfo[] methods, int awaitedResult, Func<object, object> decodeBinding, Action<int[]>? validateSlots = null)
         {
             ArgumentNullException.ThrowIfNull(decodeBinding);
-            return RestoreCheckpointCore<T>(records, methods, awaitedResult, decodeBinding, validateSlots: validateSlots);
+            return RestoreCheckpointCore<T>(records, methods, Task.FromResult(awaitedResult), decodeBinding, validateSlots: validateSlots);
+        }
+
+        // Restores a node whose first frame resumes from a completed awaited outcome: a result, a fault or a
+        // cancellation, as that task carries it. Frames may return Task or Task<X>; each caller must await
+        // exactly what its callee returns, and the node's task produces what its outermost frame returns.
+        internal static Task<T> RestoreMethodCheckpointWithOutcomeForTesting<T>(
+            object[][] records, MethodInfo[] methods, Task awaited, Func<object, object> decodeBinding, Action<int[]>? validateSlots = null)
+        {
+            ArgumentNullException.ThrowIfNull(awaited);
+            ArgumentNullException.ThrowIfNull(decodeBinding);
+            return RestoreCheckpointCore<T>(records, methods, awaited, decodeBinding, validateSlots: validateSlots, deliverVoidOutcome: true);
         }
 
         private static unsafe Task<T> RestoreCheckpointCore<T>(
-            object[][] records, MethodInfo[] methods, int awaitedResult, Func<object, object>? decodeBinding, Action<object>? observeFrame = null, Action<int[]>? validateSlots = null)
+            object[][] records, MethodInfo[] methods, Task awaited, Func<object, object>? decodeBinding, Action<object>? observeFrame = null, Action<int[]>? validateSlots = null,
+            bool deliverVoidOutcome = false)
         {
             bool host = decodeBinding != null;
             if (records.Length == 0 || records.Length > 16)
                 throw new NotSupportedException("Invalid checkpoint frame count.");
 
+            // What each frame runs and awaits, for the checks across frames below.
+            var frameMethods = new MethodInfo[records.Length];
+            var frameKinds = new int[records.Length];
+            var frameAwaited = new Type?[records.Length];
             Continuation? first = null;
             Continuation? last = null;
-            foreach (object[] record in records)
+            for (int f = 0; f < records.Length; f++)
             {
+                object[] record = records[f];
                 if (record.Length != (host ? 7 : 6) || record[0] is not int index ||
                     (uint)index >= (uint)methods.Length || record[1] is not int state ||
                     record[2] is not int[] savedSchema || record[3] is not object?[] values ||
                     record[host ? 5 : 4] is not string identity || record[host ? 6 : 5] is not string?[] referenceTypes)
                     throw new NotSupportedException("Malformed checkpoint record.");
 
-                if (host && methods[index].ReturnType != typeof(Task<T>))
-                    throw new NotSupportedException("Checkpoint task result type does not match the script.");
                 // A host binds frames only through instances it holds. A method of a context already told to
                 // unload is a stale binding: restoring it would run a retiring instance's code.
                 if (methods[index] is not DynamicMethod)
                     ValidateCheckpointDestination(methods[index]);
                 int[] schema = GetCheckpointInfo(methods[index], state,
-                    out object keepAlive, out IntPtr type, out IntPtr resume, out Type?[] slotTypes,
+                    out object keepAlive, out IntPtr type, out IntPtr resume, out Type?[] slotTypes, out Type? awaitedType,
                     out IntPtr methodContext, out IntPtr classContext, host)!;
                 if (identity != CheckpointMethodIdentity(methods[index]))
                     throw new NotSupportedException("Checkpoint method identity does not match the recreated method.");
@@ -213,6 +228,9 @@ namespace System.Runtime.CompilerServices
                 if (!schema.AsSpan().SequenceEqual(savedSchema) || values.Length != schema[6] || referenceTypes.Length != values.Length)
                     throw new NotSupportedException("Checkpoint layout does not match the recreated method.");
                 validateSlots?.Invoke((int[])schema.Clone());
+                frameMethods[f] = methods[index];
+                frameKinds[f] = schema[5];
+                frameAwaited[f] = awaitedType;
                 slotTypes = CheckpointSlotTypes(schema, slotTypes, methods[index], out bool[] declared);
                 var restoredValues = new object?[values.Length];
                 for (int i = 0; i < values.Length; i++)
@@ -275,17 +293,29 @@ namespace System.Runtime.CompilerServices
                 last = current;
             }
 
-            // Recreate the pending await as a typed completed result. The ordinary dispatcher
-            // injects it into the first frame and then resumes all callers.
+            // Each caller resumes with what its callee returns, written into the caller's typed result slot, so
+            // the callee's result type must be exactly what the caller awaits. The task produces the outermost
+            // frame's result.
+            if (host)
+            {
+                for (int f = 1; f < records.Length; f++)
+                    ValidateCheckpointAwait(frameKinds[f], frameAwaited[f], CheckpointReturnType(frameMethods[f - 1]));
+                if (frameMethods[^1].ReturnType != typeof(Task<T>))
+                    throw new NotSupportedException("Checkpoint task result type does not match the outermost frame.");
+            }
+
+            // Recreate the pending await as a completed task. The ordinary dispatcher delivers its result into
+            // the first frame, or throws its fault or cancellation at that await and routes it to the nearest
+            // frame with a handler, then resumes all callers. Without an outcome to deliver, a void await is a
+            // script frame's awaiter suspension, which reads its result from a host-rebound awaiter slot.
             observeFrame?.Invoke(first!);
             Continuation root = first!;
-            if (((int[])records[0][2])[5] == 1)
+            if (frameKinds[0] != 3 || deliverVoidOutcome)
             {
                 var head = new RuntimeAsyncTaskContinuation { Next = first };
-                head.Initialize(Task.FromResult(awaitedResult));
+                InitializeCheckpointOutcome(head, frameKinds[0], frameAwaited[0], awaited);
                 root = head;
             }
-            // A void awaiter suspension reads its result from a host-rebound awaiter slot.
             var task = new RuntimeAsyncTask<T>();
             task.CheckpointProofState = root;
             // A direct script-frame restore also has to honor its scheduling constraint.
@@ -317,10 +347,80 @@ namespace System.Runtime.CompilerServices
             throw new NotSupportedException("Checkpoint proof supports only Int32 and null/string live values.");
         }
 
+        // What a frame's method produces for its caller: the X of its Task<X>, or void for Task.
+        private static Type CheckpointReturnType(MethodInfo method)
+        {
+            Type returnType = method.ReturnType;
+            if (returnType == typeof(Task))
+                return typeof(void);
+            if (returnType.IsGenericType && returnType.GetGenericTypeDefinition() == typeof(Task<>))
+                return returnType.GetGenericArguments()[0];
+            throw new NotSupportedException("Checkpoint proof requires Task or Task<T> methods.");
+        }
+
+        // A frame awaiting a callee frame must await exactly what that callee returns. Shared generic code
+        // reports __Canon for a type parameter; the callee's closed result must then have that shape.
+        private static void ValidateCheckpointAwait(int kind, Type? awaitedType, Type calleeResult)
+        {
+            bool matches = kind switch
+            {
+                1 => calleeResult == typeof(int),
+                2 => awaitedType != null && (awaitedType == calleeResult ||
+                    (ContainsCanon(awaitedType) && MatchesCanonicalShape(awaitedType, calleeResult))),
+                3 => calleeResult == typeof(void),
+                _ => false,
+            };
+            if (!matches)
+                throw new NotSupportedException("A checkpoint frame awaits a different type than its callee returns.");
+        }
+
+        // Seeds the first frame's await with a completed task. A result is copied into the frame's typed result
+        // slot, so the task must be a Task<X> of exactly the awaited type; a void await takes any task.
+        private static void InitializeCheckpointOutcome(RuntimeAsyncTaskContinuation head, int kind, Type? awaitedType, Task awaited)
+        {
+            if (!awaited.IsCompleted)
+                throw new NotSupportedException("The awaited outcome must be a completed task.");
+            if (kind == 3)
+            {
+                head.Initialize(awaited);
+                return;
+            }
+            Type expected = kind == 1 ? typeof(int) : kind == 2 && awaitedType != null ? awaitedType
+                : throw new NotSupportedException("The first checkpoint frame's await has no known result type.");
+            // A shared generic first frame reports __Canon for a type parameter: its exact result type is unknown.
+            if (ContainsCanon(expected))
+                throw new NotSupportedException("A shared generic first frame awaits a type parameter; its outcome type is not known exactly.");
+            if (CheckpointTaskResultType(awaited.GetType()) != expected)
+                throw new NotSupportedException("The awaited outcome's type differs from what the first frame awaits.");
+            InitializeCheckpointOutcome(expected, head, awaited);
+        }
+
+        [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL2060:MakeGenericMethod",
+            Justification = "Opt-in checkpoint proof: the result type is the frame's own awaited type, rooted by the frame's code.")]
+        [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("AotAnalysis", "IL3050:RequiresDynamicCode",
+            Justification = "Opt-in checkpoint proof on CoreCLR; not used with native AOT.")]
+        private static void InitializeCheckpointOutcome(Type resultType, RuntimeAsyncTaskContinuation head, Task awaited) =>
+            typeof(AsyncHelpers).GetMethod(nameof(InitializeCheckpointTypedOutcome), BindingFlags.NonPublic | BindingFlags.Static)!
+                .MakeGenericMethod(resultType).Invoke(null, new object[] { head, awaited });
+
+        private static void InitializeCheckpointTypedOutcome<TResult>(RuntimeAsyncTaskContinuation head, Task awaited) =>
+            head.Initialize((Task<TResult>)awaited);
+
+        // The X of the Task<X> a task's type derives from; null for a plain Task.
+        private static Type? CheckpointTaskResultType(Type type)
+        {
+            for (Type? current = type; current != null; current = current.BaseType)
+            {
+                if (current.IsGenericType && current.GetGenericTypeDefinition() == typeof(Task<>))
+                    return current.GetGenericArguments()[0];
+            }
+            return null;
+        }
+
         private static void ValidateCheckpointSchema(int[] schema, bool host = false)
         {
-            if (IntPtr.Size != 8 || schema.Length < CheckpointHeaderSize || schema[0] != 4 || schema[7] < 0 ||
-                schema[3] < 24 || schema[3] > 1024 * 1024 || (schema[5] != 1 && (!host || schema[5] != 3)) ||
+            if (IntPtr.Size != 8 || schema.Length < CheckpointHeaderSize || schema[0] != 5 || schema[7] < 0 ||
+                schema[3] < 24 || schema[3] > 1024 * 1024 || (schema[5] != 1 && (!host || (schema[5] != 2 && schema[5] != 3))) ||
                 schema[6] < 0 || schema[6] > 1024 || schema.Length != CheckpointHeaderSize + schema[6] * CheckpointSlotSize ||
                 (schema[4] != -1 && (schema[4] < 24 || schema[4] > schema[3] - 8 || schema[4] % 8 != 0)) ||
                 (!host && (((uint)schema[2] >> 8) & 7) != 0))
@@ -330,8 +430,8 @@ namespace System.Runtime.CompilerServices
             CheckpointFlagOffset(schema, ContinuationFlags.ContinuationContextIndexFirstBit, ContinuationFlags.ContinuationContextIndexNumBits);
             CheckpointFlagOffset(schema, ContinuationFlags.ExceptionIndexFirstBit, ContinuationFlags.ExceptionIndexNumBits);
             uint resultIndex = (uint)schema[2] >> 11;
-            if (schema[5] == 1 && (resultIndex == 0 || 24L + (resultIndex - 1L) * 8 > schema[3] - 4))
-                throw new NotSupportedException("Missing Int32 result slot.");
+            if ((schema[5] == 1 || schema[5] == 2) && (resultIndex == 0 || 24L + (resultIndex - 1L) * 8 > schema[3] - (schema[5] == 1 ? 4 : 1)))
+                throw new NotSupportedException("Missing result slot.");
             int contexts = 0;
             for (int i = 0; i < schema[6]; i++)
             {
@@ -423,13 +523,16 @@ namespace System.Runtime.CompilerServices
                 throw new NotSupportedException("Checkpoint restore binds a method whose load context is unloading.");
         }
 
+        // awaitedType is the exact type a kind-2 await produces (possibly __Canon in shared generic code);
+        // null for an Int32 (kind 1) or void (kind 3) await.
         private static int[]? GetCheckpointInfo(MethodInfo method, int state,
-            out object keepAlive, out IntPtr type, out IntPtr resume, out Type?[] slotTypes,
+            out object keepAlive, out IntPtr type, out IntPtr resume, out Type?[] slotTypes, out Type? awaitedType,
             out IntPtr methodContext, out IntPtr classContext, bool host = false, IntPtr expectedResume = default)
         {
             int[] schema = null!;
             slotTypes = null!;
             keepAlive = null!;
+            awaitedType = null;
             IntPtr handle;
             if (method is DynamicMethod dynamicMethod)
                 handle = dynamicMethod.GetMethodDescriptor().Value;
@@ -440,15 +543,16 @@ namespace System.Runtime.CompilerServices
             }
             GetCheckpointInfoForTesting(handle, state, expectedResume,
                 ObjectHandleOnStack.Create(ref schema), ObjectHandleOnStack.Create(ref keepAlive),
-                ObjectHandleOnStack.Create(ref slotTypes), out type, out resume, out methodContext, out classContext);
+                ObjectHandleOnStack.Create(ref slotTypes), ObjectHandleOnStack.Create(ref awaitedType),
+                out type, out resume, out methodContext, out classContext);
             GC.KeepAlive(method);
             // A capture probe must skip nonowners before enforcing the owner's signature.
             if (schema != null)
             {
-                if (host
-                    ? !method.ReturnType.IsGenericType || method.ReturnType.GetGenericTypeDefinition() != typeof(Task<>)
-                    : method.ReturnType != typeof(Task<int>))
+                if (!host && method.ReturnType != typeof(Task<int>))
                     throw new NotSupportedException("Checkpoint proof requires Task<Int32> methods.");
+                if (host)
+                    CheckpointReturnType(method);
             }
             return schema;
         }
@@ -540,6 +644,32 @@ namespace System.Runtime.CompilerServices
                 declared[i] = true;
             }
             return exact ?? slotTypes;
+        }
+
+        // Whether a closed type has a shared generic shape, where __Canon stands for any reference type.
+        private static bool MatchesCanonicalShape(Type canonical, Type exact)
+        {
+            if (canonical == exact)
+                return true;
+            if (canonical.Assembly == typeof(object).Assembly && canonical.FullName == "System.__Canon")
+                return !exact.IsValueType && !exact.IsByRef && !exact.IsPointer;
+            if (canonical.HasElementType)
+            {
+                return exact.HasElementType && canonical.IsSZArray == exact.IsSZArray && canonical.IsArray == exact.IsArray &&
+                    (!canonical.IsArray || canonical.GetArrayRank() == exact.GetArrayRank()) &&
+                    canonical.IsByRef == exact.IsByRef && canonical.IsPointer == exact.IsPointer &&
+                    MatchesCanonicalShape(canonical.GetElementType()!, exact.GetElementType()!);
+            }
+            if (!canonical.IsGenericType || !exact.IsGenericType || canonical.GetGenericTypeDefinition() != exact.GetGenericTypeDefinition())
+                return false;
+            Type[] canonicalArguments = canonical.GetGenericArguments();
+            Type[] exactArguments = exact.GetGenericArguments();
+            for (int i = 0; i < canonicalArguments.Length; i++)
+            {
+                if (!MatchesCanonicalShape(canonicalArguments[i], exactArguments[i]))
+                    return false;
+            }
+            return true;
         }
 
         private static bool ContainsCanon(Type type)
@@ -648,7 +778,7 @@ namespace System.Runtime.CompilerServices
 
         [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AsyncHelpers_GetCheckpointInfoForTesting")]
         private static partial void GetCheckpointInfoForTesting(IntPtr method, int state, IntPtr expectedResume,
-            ObjectHandleOnStack schema, ObjectHandleOnStack keepAlive, ObjectHandleOnStack slotTypes,
+            ObjectHandleOnStack schema, ObjectHandleOnStack keepAlive, ObjectHandleOnStack slotTypes, ObjectHandleOnStack awaitedType,
             out IntPtr continuationType, out IntPtr resumeInfo, out IntPtr methodContext, out IntPtr classContext);
     }
 }

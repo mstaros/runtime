@@ -4547,6 +4547,11 @@ struct AsyncCallInfo
     // directly returns the callee's continuation to the caller.
     bool IsTailAwait = false;
 
+    // The awaited result as the call's signature states it: its CorInfoType and, for classes and
+    // value types, its class handle (enums unnormalized). Recorded only in checkpoint proof metadata.
+    CorInfoType          ResultType  = CORINFO_TYPE_UNDEF;
+    CORINFO_CLASS_HANDLE ResultClass = NO_CLASS_HANDLE;
+
     bool NeedsToSaveAndRestoreExecutionContext() const
     {
         return true;

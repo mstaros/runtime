@@ -2248,7 +2248,16 @@ void AsyncTransformation::CreateSuspension(BasicBlock*                      call
         frame.DataSize = rawDataOffset + layout.Size;
         frame.KeepAliveOffset =
             layout.KeepAliveOffset == UINT_MAX ? UINT_MAX : rawDataOffset + layout.KeepAliveOffset;
-        frame.ResultKind = call->gtReturnType == TYP_INT ? 1 : call->gtReturnType == TYP_VOID ? 3 : 0;
+        // Int32 keeps its own kind; any other awaited result is described by its signature type.
+        bool plainInt     = (call->gtReturnType == TYP_INT) &&
+                            ((callInfo.ResultType == CORINFO_TYPE_UNDEF) ||
+                             ((callInfo.ResultType == CORINFO_TYPE_INT) && (callInfo.ResultClass == NO_CLASS_HANDLE)));
+        frame.ResultKind  = (call->gtReturnType == TYP_VOID)              ? 3
+                            : plainInt                                    ? 1
+                            : (callInfo.ResultType != CORINFO_TYPE_UNDEF) ? 2
+                                                                          : 0;
+        frame.ResultType  = static_cast<uint32_t>(callInfo.ResultType);
+        frame.ResultClass = callInfo.ResultClass;
         if (layout.OSRAddressOffset != UINT_MAX)
         {
             frame.ResultKind = 0; // OSR is outside this proof; managed capture rejects non-null exception state.

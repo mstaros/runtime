@@ -11988,6 +11988,8 @@ bool Compiler::impWrapTopOfStackInAwait()
     }
 
     AsyncCallInfo* asyncInfo = new (this, CMK_Async) AsyncCallInfo;
+    asyncInfo->ResultType    = awaitSig.retType;
+    asyncInfo->ResultClass   = awaitSig.retTypeSigClass;
 
     if (impInlineRoot()->compIsAsyncVersion())
     {

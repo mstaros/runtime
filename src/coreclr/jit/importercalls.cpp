@@ -521,7 +521,7 @@ var_types Compiler::impImportCall(OPCODE                  opcode,
 
                 if (sig->isAsyncCall())
                 {
-                    impSetupAsyncCall(call->AsCall(), methHnd, opcode, prefixFlags, di);
+                    impSetupAsyncCall(call->AsCall(), methHnd, sig, opcode, prefixFlags, di);
 
                     if (compDonotInline())
                     {
@@ -843,7 +843,7 @@ var_types Compiler::impImportCall(OPCODE                  opcode,
 
     if (sig->isAsyncCall())
     {
-        impSetupAsyncCall(call->AsCall(), methHnd, opcode, prefixFlags, di);
+        impSetupAsyncCall(call->AsCall(), methHnd, sig, opcode, prefixFlags, di);
 
         if (compDonotInline())
         {
@@ -7270,14 +7270,21 @@ void Compiler::impCheckForPInvokeCall(
 // Arguments:
 //    call        - The call
 //    methHnd     - Method handle being called
+//    sig         - Signature of the async call; its return type is the awaited result
 //    opcode      - The IL opcode for the call
 //    prefixFlags - Flags containing context handling information from IL
 //    callDI      - Debug info for the async call
 //
-void Compiler::impSetupAsyncCall(
-    GenTreeCall* call, CORINFO_METHOD_HANDLE methHnd, OPCODE opcode, unsigned prefixFlags, const DebugInfo& callDI)
+void Compiler::impSetupAsyncCall(GenTreeCall*            call,
+                                 CORINFO_METHOD_HANDLE   methHnd,
+                                 const CORINFO_SIG_INFO* sig,
+                                 OPCODE                  opcode,
+                                 unsigned                prefixFlags,
+                                 const DebugInfo&        callDI)
 {
     AsyncCallInfo asyncInfo;
+    asyncInfo.ResultType  = sig->retType;
+    asyncInfo.ResultClass = sig->retTypeSigClass;
 
     if (compIsForInlining())
     {

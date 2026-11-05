@@ -9,6 +9,8 @@
       <method name="RestoreHostCheckpointForTesting" />
       <method name="CaptureMethodCheckpointForTesting" />
       <method name="RestoreMethodCheckpointForTesting" />
+      <method name="RestoreMethodCheckpointWithOutcomeForTesting" />
+      <method name="InitializeCheckpointTypedOutcome" />
     </type>
     <type fullname="System.GC">
       <!-- Methods are used to register and unregister frozen segments. They are private and experimental. -->
