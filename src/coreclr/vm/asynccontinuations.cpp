@@ -146,7 +146,13 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
         if (frame == nullptr)
             COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint state has no frame record."));
         if (frame->AwaitILOffset == UINT32_MAX)
-            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint frame has no await IL offset."));
+        {
+            SString message(SString::Literal, W("Checkpoint frame has no await IL offset: "));
+            message.AppendUTF8(body->GetName());
+            message.AppendPrintf(" state %d of %u, result kind %u, result type %u.",
+                state, info->NumStates, frame->ResultKind, frame->ResultType);
+            COMPlusThrowNonLocalized(kNotSupportedException, message.GetUnicode());
+        }
         if (info->ResumeInfos[state].Resume == 0 || info->ResumeInfos[state].DiagnosticIP == 0)
             COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint state has no resume or diagnostic address."));
 

@@ -99,6 +99,10 @@ Version 5 records what each await produces. Result kind 1 remains a plain Int32 
 and kind 3 a void await; kind 2 is any other awaited type, which the JIT reads from
 the await call's signature (its primitive kind, or its class with enums unnormalized)
 and the VM returns to CoreLib as a type. Shared generic code may report __Canon.
+Awaiting a non-async Task-returning call (`await source.Task`) calls its async
+version, which wraps the returned task in a transparent await; when the JIT inlines
+that version, the wrapper's await is the call site's own and takes its IL position
+and result type, so the frame is identified like any other await.
 Restore checks that each caller awaits exactly what its callee returns (Task<X> gives
 X, Task gives void; a __Canon awaited type matches by shape) and that the task's type
 is the outermost frame's. Frames may return Task or Task<X>. The outcome hook seeds
