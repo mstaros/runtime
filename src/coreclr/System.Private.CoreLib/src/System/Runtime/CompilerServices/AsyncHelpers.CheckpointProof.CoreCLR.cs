@@ -490,7 +490,8 @@ namespace System.Runtime.CompilerServices
 
         private static bool ContainsCanon(Type type)
         {
-            if (type == typeof(__Canon))
+            // __Canon cannot be named in IL (ldtoken of it is an invalid program), so match its identity.
+            if (type.Assembly == typeof(object).Assembly && type.FullName == "System.__Canon")
                 return true;
             if (type.HasElementType)
                 return ContainsCanon(type.GetElementType()!);
