@@ -779,6 +779,21 @@ bool AsyncAnalysis::IsLive(unsigned lclNum)
 
     LclVarDsc* dsc = m_compiler->lvaGetDesc(lclNum);
 
+    // In checkpoint mode shared generic code saves its instantiation context at every suspension, so a
+    // restored frame can be matched to its exact instantiation: the hidden generic context, or the
+    // reference receiver that supplies it.
+    if (m_compiler->compIsAsyncCheckpointProof())
+    {
+        const unsigned options = m_compiler->info.compMethodInfo->options;
+        if ((((options & (CORINFO_GENERICS_CTXT_FROM_METHODDESC | CORINFO_GENERICS_CTXT_FROM_METHODTABLE)) != 0) &&
+             (lclNum == m_compiler->info.compTypeCtxtArg)) ||
+            (((options & CORINFO_GENERICS_CTXT_FROM_THIS) != 0) && (lclNum == m_compiler->info.compThisArg) &&
+             dsc->TypeIs(TYP_REF)))
+        {
+            return true;
+        }
+    }
+
     if (dsc->TypeIs(TYP_BYREF) && !dsc->IsImplicitByRef())
     {
         // Even if these are address exposed we expect them to be dead at
