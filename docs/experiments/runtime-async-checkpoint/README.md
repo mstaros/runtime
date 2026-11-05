@@ -119,21 +119,25 @@ contract.
 Version 6 restores live values without references. Each slot record carries its
 size, and the JIT reports kind 4 for a value without GC references (a primitive, a
 struct, a vector) and kind 5 for a struct with GC references, with the struct's type.
-A value is admitted by its variable's declared type, never by its JIT type: bool, char,
-the 8- to 64-bit integers, float, double, enums over them, and structs whose fields all
-qualify (decimal, DateTime, Guid, Nullable<T> and the like). Native-sized integers and
+A value is admitted by its variable's declared type: bool, char, the 8- to 64-bit
+integers, float, double, enums over them, and structs whose fields all qualify
+(decimal, DateTime, Guid, Nullable<T> and the like). Native-sized integers and
 pointers are refused, since they may be handles, and so is anything with references.
 The declared size must equal the slot's size, and a struct slot's type must equal the
 declared type. A promoted field is admitted only when its variable is admitted whole, so
-admission does not depend on whether the JIT promotes. Capture boxes a value as its
-declared type (an empty Nullable<T> as null) for the host to bind; restore requires a
-box of exactly that type and copies its bytes. CancellationToken is the one struct with
-a reference that is admitted: saved whole or with its single field promoted, it reaches
-the host as a CancellationToken, and the host supplies the token the restored frame
-observes. In checkpoint mode the JIT skips physical promotion in async methods, whose
-replacement locals would be saved as unidentified temporaries. Only metadata frames
-take values; script frames keep Int32 and reference slots. The JIT/EE interface GUID
-changed with this contract.
+admission does not depend on whether the JIT promotes. A JIT temporary has no variable:
+one that holds a struct of plain data is admitted by the struct type the JIT reports,
+and any other unidentified value is refused. The JIT saves every address-exposed local
+at every await, so such temporaries include the copy it makes of a struct argument the
+calling convention passes by reference, and an inlined method's struct whose address is
+taken, live or not. Capture boxes a value as its type (an empty Nullable<T> as null) for
+the host to bind; restore requires a box of exactly that type and copies its bytes.
+CancellationToken is the one struct with a reference that is admitted: saved whole or
+with its single field promoted, it reaches the host as a CancellationToken, and the host
+supplies the token the restored frame observes. In checkpoint mode the JIT skips
+physical promotion in async methods, whose replacement locals would be saved as
+unidentified temporaries. Only metadata frames take values; script frames keep Int32
+and reference slots. The JIT/EE interface GUID changed with this contract.
 
 The host capture/restore hooks accept an optional layout validator. Capture invokes
 it before encoding any live object; restore invokes it before decoding or installing
@@ -240,7 +244,8 @@ Int32 lacks that shape.
 
 A value-slots fixture keeps primitives, enums, decimal, DateTime, Guid, a nullable, a
 padded struct, a nested struct and a struct parameter live in two frames, promoted and
-whole, together with a CancellationToken. A fresh process restores them bit-exact and
+whole, together with a CancellationToken, and the JIT's copies of struct arguments. A
+fresh process restores them bit-exact and
 binds the token to one the restoring host owns. A live native-sized integer and a live
 struct with a string are refused at capture, and a decoded value of another type at
 restore.
@@ -296,7 +301,8 @@ portability remain unproved.
   frames and custom awaitables remain unsupported. Live slots are Int32, references,
   values without references and CancellationToken; other structs with references are
   refused, and a value is restored from its bytes, which are portable only between
-  identical builds.
+  identical builds. Address-exposed locals are saved at every await whether or not they
+  are still live, so a snapshot can hold dead copies.
 - A serializable Int32 can still encode process-local meaning: identity or randomized
   string hashes, thread IDs and similar values are not portable merely because
   their bits fit the schema. The script/host must avoid persisting such values as

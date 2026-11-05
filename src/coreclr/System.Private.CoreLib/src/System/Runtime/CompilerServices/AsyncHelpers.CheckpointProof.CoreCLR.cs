@@ -377,7 +377,8 @@ namespace System.Runtime.CompilerServices
         // What a value slot of a metadata frame restores as: its declared type, restored from its bytes, or
         // CancellationToken, bound by the host whether the JIT saves it whole (kind 5) or promotes its single field.
         // Null for an Int32, reference or generic-context slot. Admission follows the variable's declared type, not
-        // the JIT's choice to promote it: a promoted field is admitted only as part of a variable admitted whole.
+        // the JIT's choice to promote it: a promoted field is admitted only as part of a variable admitted whole. A
+        // temporary the JIT keeps live has no variable, only the type the JIT reports for it.
         private static Type? CheckpointValueSlotType(int[] schema, int index, MethodInfo method, Type? jitType)
         {
             int kind = schema[CheckpointHeaderSize + 1 + index * CheckpointSlotSize];
@@ -390,6 +391,17 @@ namespace System.Runtime.CompilerServices
                 if (kind >= 4)
                     throw new NotSupportedException("A script frame's value slot is outside this checkpoint proof.");
                 return null;
+            }
+            // A struct of plain data is restored from its bytes as the reported type. An unidentified primitive
+            // could be a native-sized integer, and an unidentified struct with references is not restored.
+            if (origin == 0)
+            {
+                int size = schema[CheckpointHeaderSize + 6 + index * CheckpointSlotSize];
+                if (kind == 4 && jitType != null && IsCheckpointValueType(jitType) && RuntimeHelpers.SizeOf(jitType.TypeHandle) == size)
+                    return jitType;
+                throw new NotSupportedException("An unidentified live value is outside this checkpoint proof: " +
+                    (jitType?.ToString() ?? "no reported type") + ", " + size +
+                    " bytes. Only a JIT temporary holding a struct of plain data is restored by its type.");
             }
             if (origin == 2)
             {
@@ -562,9 +574,6 @@ namespace System.Runtime.CompilerServices
                     throw new NotSupportedException("Invalid checkpoint slot origin.");
                 if (kind == 3 && ++contexts > 1)
                     throw new NotSupportedException("A checkpoint frame has more than one generic context slot.");
-                // A value or struct is admitted by its declared type, so it needs an identified variable.
-                if ((kind == 4 || kind == 5) && origin != 1 && origin != 2)
-                    throw new NotSupportedException("A live value in checkpoint has no identified variable: kind " + kind + ", " + size + " bytes.");
                 if (kind < 1 || kind > 5 || offset < 24 || size <= 0 || offset > schema[3] - size ||
                     (kind == 1 && size != 4) || ((kind == 2 || kind == 3) && size != 8) || (kind != 1 && kind != 4 && offset % 8 != 0))
                     throw new NotSupportedException("Unsupported live slot in checkpoint: kind " + kind + ", IL variable " + schema[CheckpointHeaderSize + 2 + i * CheckpointSlotSize] + ".");
