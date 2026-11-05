@@ -1991,13 +1991,15 @@ struct CORINFO_AsyncResumeInfo
 struct CORINFO_AsyncCheckpointSlot
 {
     uint32_t Offset;      // Byte offset from managed GetRawData, excluding the method table.
-    uint32_t Kind;        // 0: unsupported, 1: Int32, 2: managed reference, 3: generic context handle.
+    uint32_t Kind;        // 1: Int32, 2: managed reference, 3: generic context handle, 4: value without GC references,
+                          // 5: struct with GC references; 100 + JIT type: unsupported.
     uint32_t ILNumber;    // Diagnostic identity; includes unknown/compiler-generated locals.
     uint32_t IsExact;
     uint32_t Origin;      // 0: unknown, 1: IL variable, 2: promoted IL field, 3/4: saved execution/sync context,
                           // 5/6: hidden generic context from the instantiated method/class.
     uint32_t FieldOffset; // Byte offset within the parent IL variable for origin 2; otherwise zero.
-    CORINFO_CLASS_HANDLE ClassHandle; // Fresh-process reference-slot type; never persisted.
+    uint32_t Size;        // Bytes the slot occupies in the continuation.
+    CORINFO_CLASS_HANDLE ClassHandle; // Fresh-process type of a reference or struct slot; never persisted.
 };
 
 struct CORINFO_AsyncCheckpointFrame

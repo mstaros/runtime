@@ -49,6 +49,13 @@ PhaseStatus Compiler::PhysicalPromotion()
         return PhaseStatus::MODIFIED_NOTHING;
     }
 
+    // A checkpoint names each saved slot by its IL variable and field offset. A replacement local would be saved
+    // across an await as a temporary no checkpoint can identify; struct promotion's field locals keep both.
+    if (compIsAsync() && compIsAsyncCheckpointProof())
+    {
+        return PhaseStatus::MODIFIED_NOTHING;
+    }
+
     if (fgNoStructPromotion)
     {
         return PhaseStatus::MODIFIED_NOTHING;

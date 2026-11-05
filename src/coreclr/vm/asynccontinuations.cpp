@@ -108,7 +108,7 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
             COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint method has no checkpoint metadata."));
         }
         const auto* info = reinterpret_cast<const CORINFO_AsyncCheckpointInfo*>(bytes);
-        if (info->Version != 5 || info->CodeAddress != reinterpret_cast<void*>(body->GetNativeCode()) ||
+        if (info->Version != 6 || info->CodeAddress != reinterpret_cast<void*>(body->GetNativeCode()) ||
             info->LayoutBytes > 1024 * 1024 || info->NumStates > 65536)
             COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint metadata has another version, code address or size."));
 
@@ -173,9 +173,9 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
                 COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint method has no managed owner."));
             keepAlive.Set(resolverObject);
 
-            I4ARRAYREF array = (I4ARRAYREF)AllocatePrimitiveArray(ELEMENT_TYPE_I4, 11 + frame->NumSlots * 6);
+            I4ARRAYREF array = (I4ARRAYREF)AllocatePrimitiveArray(ELEMENT_TYPE_I4, 11 + frame->NumSlots * 7);
             INT32* values = array->GetDirectPointerToNonObjectElements();
-            values[0] = 5;
+            values[0] = 6;
             values[1] = frame->State;
             values[2] = frame->Flags;
             values[3] = frame->DataSize;
@@ -189,12 +189,13 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
             const auto* slots = reinterpret_cast<const CORINFO_AsyncCheckpointSlot*>(frame + 1);
             for (uint32_t i = 0; i < frame->NumSlots; i++)
             {
-                values[11 + i * 6] = slots[i].Offset;
-                values[12 + i * 6] = slots[i].Kind;
-                values[13 + i * 6] = slots[i].ILNumber;
-                values[14 + i * 6] = slots[i].IsExact;
-                values[15 + i * 6] = slots[i].Origin;
-                values[16 + i * 6] = slots[i].FieldOffset;
+                values[11 + i * 7] = slots[i].Offset;
+                values[12 + i * 7] = slots[i].Kind;
+                values[13 + i * 7] = slots[i].ILNumber;
+                values[14 + i * 7] = slots[i].IsExact;
+                values[15 + i * 7] = slots[i].Origin;
+                values[16 + i * 7] = slots[i].FieldOffset;
+                values[17 + i * 7] = slots[i].Size;
             }
             schema.Set(array);
 
@@ -202,7 +203,8 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
             GCPROTECT_BEGIN(types);
             for (uint32_t i = 0; i < frame->NumSlots; i++)
             {
-                if (slots[i].Kind == 2)
+                // A reference slot's class, or a struct slot's type; a primitive value has none.
+                if (slots[i].Kind == 2 || ((slots[i].Kind == 4 || slots[i].Kind == 5) && slots[i].ClassHandle != nullptr))
                 {
                     TypeHandle handle = slots[i].ClassHandle == nullptr ? TypeHandle(g_pObjectClass)
                         : TypeHandle::FromPtr(slots[i].ClassHandle);
@@ -250,7 +252,7 @@ void AsyncContinuationsManager::RecordCheckpointInfoForTesting(MethodDesc* metho
 {
     LIMITED_METHOD_CONTRACT;
     const auto* info = reinterpret_cast<const CORINFO_AsyncCheckpointInfo*>(bytes);
-    if (info->Version != 5 || info->LayoutBytes > 1024 * 1024 ||
+    if (info->Version != 6 || info->LayoutBytes > 1024 * 1024 ||
         info->CodeAddress != reinterpret_cast<void*>(code))
         return;
 

@@ -14,7 +14,7 @@ namespace System.Runtime.CompilerServices
     public static partial class AsyncHelpers
     {
         private const int CheckpointHeaderSize = 11;
-        private const int CheckpointSlotSize = 6;
+        private const int CheckpointSlotSize = 7;
         // Deliberately internal and opt-in. The caller must own a quiescent, never-completing
         // IValueTaskSource<int>. This is an exact-build experiment, not a persistence API.
         // Records also contain a canonical method identity and captured reference types.
@@ -135,6 +135,17 @@ namespace System.Runtime.CompilerServices
                     if (schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 3)
                         continue;
                     ref byte slot = ref Unsafe.Add(ref data, schema[CheckpointHeaderSize + i * CheckpointSlotSize]);
+                    // A value is boxed as its declared type and a token handed over whole, for the host to bind; an
+                    // empty Nullable<T> boxes as null and needs no binding.
+                    if (CheckpointValueSlotType(schema, i, methods[methodIndex], slotTypes[i]) is Type valueType)
+                    {
+                        if (!host)
+                            throw new NotSupportedException("A checkpoint value slot needs a host binding.");
+                        object? boxed = valueType == typeof(CancellationToken) ? ReadCheckpointToken(schema, i, ref slot)
+                            : RuntimeHelpers.Box(ref slot, valueType.TypeHandle);
+                        values[i] = boxed == null ? null : encodeBinding!(boxed);
+                        continue;
+                    }
                     object? value = schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 1
                         ? Unsafe.ReadUnaligned<int>(ref slot)
                         : Unsafe.As<byte, object?>(ref slot);
@@ -233,6 +244,7 @@ namespace System.Runtime.CompilerServices
                 frameAwaited[f] = awaitedType;
                 slotTypes = CheckpointSlotTypes(schema, slotTypes, methods[index], out bool[] declared);
                 var restoredValues = new object?[values.Length];
+                var valueTypes = new Type?[values.Length];
                 for (int i = 0; i < values.Length; i++)
                 {
                     object? value = values[i];
@@ -241,6 +253,19 @@ namespace System.Runtime.CompilerServices
                         // A generic context is rebound from the recreated method, never persisted.
                         if (value != null)
                             throw new NotSupportedException("A saved generic context slot carries a value.");
+                        continue;
+                    }
+                    // A value must come back as a box of exactly its declared type (T, or null for an empty
+                    // Nullable<T>), and a token as a CancellationToken.
+                    if (CheckpointValueSlotType(schema, i, methods[index], slotTypes[i]) is Type valueType)
+                    {
+                        object? bound = host && value != null ? decodeBinding!(value) : null;
+                        Type boxedType = Nullable.GetUnderlyingType(valueType) ?? valueType;
+                        if ((bound == null ? boxedType == valueType || value != null : bound.GetType() != boxedType) ||
+                            referenceTypes[i] != null)
+                            throw new NotSupportedException("A restored value differs from its slot's declared type " + valueType + ".");
+                        restoredValues[i] = bound;
+                        valueTypes[i] = valueType;
                         continue;
                     }
                     if (host && schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] != 1 && value != null)
@@ -278,7 +303,9 @@ namespace System.Runtime.CompilerServices
                 {
                     ref byte slot = ref Unsafe.Add(ref data, schema[CheckpointHeaderSize + i * CheckpointSlotSize]);
                     int kind = schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize];
-                    if (kind == 1)
+                    if (valueTypes[i] is Type valueType)
+                        WriteCheckpointValue(ref slot, kind, valueType, restoredValues[i], schema[CheckpointHeaderSize + 6 + i * CheckpointSlotSize]);
+                    else if (kind == 1)
                         Unsafe.WriteUnaligned(ref slot, (int)restoredValues[i]!);
                     else if (kind == 3)
                         Unsafe.WriteUnaligned(ref slot,
@@ -345,6 +372,95 @@ namespace System.Runtime.CompilerServices
             if ((kind == 1 && value is int) || (kind == 2 && (value == null || value is string || host)))
                 return;
             throw new NotSupportedException("Checkpoint proof supports only Int32 and null/string live values.");
+        }
+
+        // What a value slot of a metadata frame restores as: its declared type, restored from its bytes, or
+        // CancellationToken, bound by the host whether the JIT saves it whole (kind 5) or promotes its single field.
+        // Null for an Int32, reference or generic-context slot. Admission follows the variable's declared type, not
+        // the JIT's choice to promote it: a promoted field is admitted only as part of a variable admitted whole.
+        private static Type? CheckpointValueSlotType(int[] schema, int index, MethodInfo method, Type? jitType)
+        {
+            int kind = schema[CheckpointHeaderSize + 1 + index * CheckpointSlotSize];
+            int origin = schema[CheckpointHeaderSize + 4 + index * CheckpointSlotSize];
+            if (kind == 3 || (kind <= 2 && origin != 2))
+                return null;
+            if (method is DynamicMethod)
+            {
+                // A script frame's variables have no declared types here; it keeps Int32 and reference slots.
+                if (kind >= 4)
+                    throw new NotSupportedException("A script frame's value slot is outside this checkpoint proof.");
+                return null;
+            }
+            if (origin == 2)
+            {
+                Type? variable = CheckpointVariableType(schema, index, method);
+                if (variable == typeof(CancellationToken))
+                    return typeof(CancellationToken);
+                if (variable == null || !IsCheckpointValueType(variable))
+                    throw new NotSupportedException("A field of a live " + (variable?.ToString() ?? "unidentified variable") +
+                        " is outside this checkpoint proof: only plain values and CancellationToken are restored.");
+                if (kind <= 2)
+                    return null;
+            }
+            Type? declared = CheckpointDeclaredSlotType(schema, index, method);
+            if (kind == 5)
+            {
+                if (declared == typeof(CancellationToken) && jitType == typeof(CancellationToken))
+                    return typeof(CancellationToken);
+                throw new NotSupportedException("A live struct with references is outside this checkpoint proof: " +
+                    (declared?.ToString() ?? "unidentified") + ".");
+            }
+            if (declared == null || !IsCheckpointValueType(declared) || (jitType != null && jitType != declared) ||
+                RuntimeHelpers.SizeOf(declared.TypeHandle) != schema[CheckpointHeaderSize + 6 + index * CheckpointSlotSize])
+                throw new NotSupportedException("A live value is outside this checkpoint proof: " + (declared?.ToString() ?? "unidentified") +
+                    ". Native-sized integers, pointers and references are not restored from bytes.");
+            return declared;
+        }
+
+        // Restored from their bytes: primitives other than native-sized integers, enums over them, and structs whose
+        // fields all qualify. A native-sized integer or a pointer may be a handle, and a reference needs a binding.
+        [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL2070:UnrecognizedReflectionPattern",
+            Justification = "Opt-in checkpoint proof: a live variable's type and its fields are rooted by the frame being captured or restored.")]
+        [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL2075:UnrecognizedReflectionPattern",
+            Justification = "Opt-in checkpoint proof: a live variable's type and its fields are rooted by the frame being captured or restored.")]
+        private static bool IsCheckpointValueType(Type type, int depth = 0)
+        {
+            if (type.IsPointer || type.IsFunctionPointer || !type.IsValueType || type.IsByRefLike || depth > 16)
+                return false;
+            if (type.IsEnum)
+                type = Enum.GetUnderlyingType(type);
+            if (type.IsPrimitive)
+                return type != typeof(IntPtr) && type != typeof(UIntPtr);
+            foreach (FieldInfo field in type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                if (!IsCheckpointValueType(field.FieldType, depth + 1))
+                    return false;
+            }
+            return true;
+        }
+
+        // A CancellationToken is a single reference to its source, saved whole (kind 5) or as that promoted field.
+        private static object ReadCheckpointToken(int[] schema, int index, ref byte slot) =>
+            schema[CheckpointHeaderSize + 1 + index * CheckpointSlotSize] == 5
+                ? Unsafe.As<byte, CancellationToken>(ref slot)
+                : new CancellationToken(Unsafe.As<byte, CancellationTokenSource?>(ref slot));
+
+        // Writes a restored value: a token through a typed store, a Nullable<T> from its T or null, and any other
+        // value as the bytes of its box.
+        private static unsafe void WriteCheckpointValue(ref byte slot, int kind, Type valueType, object? value, int size)
+        {
+            if (valueType == typeof(CancellationToken))
+            {
+                CancellationToken token = (CancellationToken)value!;
+                if (kind == 5)
+                    Unsafe.As<byte, CancellationToken>(ref slot) = token;
+                else
+                    Unsafe.As<byte, CancellationTokenSource?>(ref slot) = Unsafe.As<CancellationToken, CancellationTokenSource?>(ref token);
+            }
+            else if (Nullable.GetUnderlyingType(valueType) != null)
+                CastHelpers.Unbox_Nullable(ref slot, (MethodTable*)valueType.TypeHandle.Value, value);
+            else
+                Unsafe.CopyBlockUnaligned(ref slot, ref RuntimeHelpers.GetRawData(value!), (uint)size);
         }
 
         // What a frame's method produces for its caller: the X of its Task<X>, or void for Task.
@@ -419,7 +535,7 @@ namespace System.Runtime.CompilerServices
 
         private static void ValidateCheckpointSchema(int[] schema, bool host = false)
         {
-            if (IntPtr.Size != 8 || schema.Length < CheckpointHeaderSize || schema[0] != 5 || schema[7] < 0 ||
+            if (IntPtr.Size != 8 || schema.Length < CheckpointHeaderSize || schema[0] != 6 || schema[7] < 0 ||
                 schema[3] < 24 || schema[3] > 1024 * 1024 || (schema[5] != 1 && (!host || (schema[5] != 2 && schema[5] != 3))) ||
                 schema[6] < 0 || schema[6] > 1024 || schema.Length != CheckpointHeaderSize + schema[6] * CheckpointSlotSize ||
                 (schema[4] != -1 && (schema[4] < 24 || schema[4] > schema[3] - 8 || schema[4] % 8 != 0)) ||
@@ -439,14 +555,18 @@ namespace System.Runtime.CompilerServices
                 int kind = schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize];
                 int origin = schema[CheckpointHeaderSize + 4 + i * CheckpointSlotSize];
                 int fieldOffset = schema[CheckpointHeaderSize + 5 + i * CheckpointSlotSize];
+                int size = schema[CheckpointHeaderSize + 6 + i * CheckpointSlotSize];
                 if ((uint)origin > 6 || fieldOffset < 0 || (origin != 2 && fieldOffset != 0) ||
                     ((origin == 1 || origin == 2) && schema[CheckpointHeaderSize + 2 + i * CheckpointSlotSize] < 0) ||
                     ((origin == 3 || origin == 4) && kind != 2) || ((origin == 5 || origin == 6) != (kind == 3)))
                     throw new NotSupportedException("Invalid checkpoint slot origin.");
                 if (kind == 3 && ++contexts > 1)
                     throw new NotSupportedException("A checkpoint frame has more than one generic context slot.");
-                if ((kind != 1 && kind != 2 && kind != 3) || offset < 24 ||
-                    offset > schema[3] - (kind == 1 ? 4 : 8) || (kind != 1 && offset % 8 != 0))
+                // A value or struct is admitted by its declared type, so it needs an identified variable.
+                if ((kind == 4 || kind == 5) && origin != 1 && origin != 2)
+                    throw new NotSupportedException("A live value in checkpoint has no identified variable: kind " + kind + ", " + size + " bytes.");
+                if (kind < 1 || kind > 5 || offset < 24 || size <= 0 || offset > schema[3] - size ||
+                    (kind == 1 && size != 4) || ((kind == 2 || kind == 3) && size != 8) || (kind != 1 && kind != 4 && offset % 8 != 0))
                     throw new NotSupportedException("Unsupported live slot in checkpoint: kind " + kind + ", IL variable " + schema[CheckpointHeaderSize + 2 + i * CheckpointSlotSize] + ".");
             }
         }
@@ -695,7 +815,7 @@ namespace System.Runtime.CompilerServices
             Justification = "Opt-in checkpoint proof: the closed method, its locals' types and their fields are rooted by the frame being captured or restored.")]
         [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL2075:UnrecognizedReflectionPattern",
             Justification = "Opt-in checkpoint proof: the closed method, its locals' types and their fields are rooted by the frame being captured or restored.")]
-        private static Type? CheckpointDeclaredSlotType(int[] schema, int index, MethodInfo method)
+        private static Type? CheckpointVariableType(int[] schema, int index, MethodInfo method)
         {
             int il = schema[CheckpointHeaderSize + 2 + index * CheckpointSlotSize];
             int origin = schema[CheckpointHeaderSize + 4 + index * CheckpointSlotSize];
@@ -718,8 +838,16 @@ namespace System.Runtime.CompilerServices
             }
             if (variable == null)
                 return null;
-            variable = CloseCheckpointType(variable, method);
-            if (origin == 1)
+            return CloseCheckpointType(variable, method);
+        }
+
+        // The declared type of a slot's IL variable, or of its promoted field at the slot's field offset.
+        [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL2075:UnrecognizedReflectionPattern",
+            Justification = "Opt-in checkpoint proof: the closed method, its locals' types and their fields are rooted by the frame being captured or restored.")]
+        private static Type? CheckpointDeclaredSlotType(int[] schema, int index, MethodInfo method)
+        {
+            Type? variable = CheckpointVariableType(schema, index, method);
+            if (variable == null || schema[CheckpointHeaderSize + 4 + index * CheckpointSlotSize] == 1)
                 return variable;
             int fieldOffset = schema[CheckpointHeaderSize + 5 + index * CheckpointSlotSize];
             foreach (FieldInfo field in variable.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))

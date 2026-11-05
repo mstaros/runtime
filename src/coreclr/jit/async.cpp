@@ -2281,10 +2281,19 @@ void AsyncTransformation::CreateSuspension(BasicBlock*                      call
             if (!subLayout.ContainsLocal(inf.LclNum))
                 continue;
 
-            const LclVarDsc* dsc = m_compiler->lvaGetDesc(inf.LclNum);
+            LclVarDsc* dsc = m_compiler->lvaGetDesc(inf.LclNum);
             CORINFO_AsyncCheckpointSlot slot = {};
             slot.Offset = rawDataOffset + inf.Offset;
-            slot.Kind = dsc->TypeIs(TYP_INT) ? 1 : dsc->TypeIs(TYP_REF) ? 2 : 100 + static_cast<unsigned>(dsc->TypeGet());
+            slot.Size   = inf.Size;
+            // A struct, or a struct parameter passed by implicit reference, is saved whole. A value without GC
+            // references can be restored from its bytes; a struct with GC references is left to managed admission.
+            const bool         isStruct   = dsc->TypeIs(TYP_STRUCT) || dsc->IsImplicitByRef();
+            ClassLayout* const slotLayout = isStruct ? dsc->GetLayout() : nullptr;
+            slot.Kind = dsc->TypeIs(TYP_INT)                       ? 1
+                        : dsc->TypeIs(TYP_REF)                     ? 2
+                        : isStruct && slotLayout->HasGCPtr()       ? 5
+                        : isStruct || !varTypeIsGC(dsc->TypeGet()) ? 4
+                                                                   : 100 + static_cast<unsigned>(dsc->TypeGet());
             slot.ILNumber = m_compiler->compMap2ILvarNum(inf.LclNum);
             slot.Origin = static_cast<int32_t>(slot.ILNumber) >= 0 ? 1 : 0;
             if (dsc->lvIsStructField)
@@ -2317,7 +2326,9 @@ void AsyncTransformation::CreateSuspension(BasicBlock*                      call
                                   ? 6
                                   : 5;
             }
-            slot.ClassHandle = dsc->TypeIs(TYP_REF) ? dsc->lvClassHnd : NO_CLASS_HANDLE;
+            slot.ClassHandle = dsc->TypeIs(TYP_REF)                        ? dsc->lvClassHnd
+                               : isStruct && !slotLayout->IsCustomLayout() ? slotLayout->GetClassHandle()
+                                                                           : NO_CLASS_HANDLE;
             slot.IsExact = dsc->TypeIs(TYP_REF) && dsc->lvClassIsExact;
             append(&slot, sizeof(slot));
         }

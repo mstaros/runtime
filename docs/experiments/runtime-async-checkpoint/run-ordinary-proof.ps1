@@ -43,7 +43,8 @@ Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
 foreach ($test in @("Script_calls_external_DLL_with_nested_await_and_validator", "External_DLL_checkpoint_survives_repeated_restarts",
         "Script_calls_generic_DLL_methods", "Generic_DLL_checkpoint_survives_restart",
         "Collectible_DLL_checkpoint_survives_restart", "Collectible_generic_DLL_checkpoint_survives_restart",
-        "DLL_result_types_checkpoint_survives_restart")) {
+        "DLL_result_types_checkpoint_survives_restart", "DLL_generic_result_types_checkpoint_survives_restart",
+        "DLL_value_slots_checkpoint_survives_restart")) {
     & $corerun $tests --treenode-filter ("/*/*/NestedCheckpointTests/" + $test) --maximum-parallel-tests 1 2>&1 | Tee-Object -FilePath $log -Append
     if ($LASTEXITCODE -ne 0) { throw "External DLL proof failed: $test ($LASTEXITCODE)" }
 }
@@ -53,7 +54,7 @@ Copy-Item -LiteralPath $receipt -Destination (Join-Path $output "receipt.json") 
 $genericReceipt = Join-Path (Split-Path -Parent $tests) "TestResults\generic-dll-checkpoint.receipt.json"
 if (-not (Test-Path -LiteralPath $genericReceipt)) { throw "Generic DLL proof did not publish its receipt." }
 Copy-Item -LiteralPath $genericReceipt -Destination (Join-Path $output "generic-receipt.json") -Force
-foreach ($name in @("collectible-dll", "collectible-generic", "result-types")) {
+foreach ($name in @("collectible-dll", "collectible-generic", "result-types", "generic-result-types", "value-slots")) {
     $namedReceipt = Join-Path (Split-Path -Parent $tests) "TestResults\$name-checkpoint.receipt.json"
     if (-not (Test-Path -LiteralPath $namedReceipt)) { throw "Proof did not publish its receipt: $name" }
     Copy-Item -LiteralPath $namedReceipt -Destination (Join-Path $output "$name-receipt.json") -Force

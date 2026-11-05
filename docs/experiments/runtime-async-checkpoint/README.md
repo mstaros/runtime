@@ -17,9 +17,9 @@ replaced. Use -SkipBuild only after building this exact candidate.
 
 To include the guarded Merkle/ScriptMcp proof, build ScriptMcp.Server.Tests in Release
 and add -ScriptTests <absolute-test-assembly> -AspNetRoot <matching-framework-directory>.
-The ScriptMcp companion must understand checkpoint record version 5.
+The ScriptMcp companion must understand checkpoint record version 6.
 
-## Restore contract (version 5)
+## Restore contract (version 6)
 
 - JIT checkpoint metadata is owned by its compilation attempt. ResetForJitRetry
   discards it. A successful compilation transfers ownership to PrepareCodeConfig;
@@ -115,6 +115,25 @@ at the restored await by the ordinary dispatcher, which routes it to the nearest
 frame with a handler. The Int32 hooks keep their behavior, including no injected
 result for a void awaiter suspension. The JIT/EE interface GUID changed with this
 contract.
+
+Version 6 restores live values without references. Each slot record carries its
+size, and the JIT reports kind 4 for a value without GC references (a primitive, a
+struct, a vector) and kind 5 for a struct with GC references, with the struct's type.
+A value is admitted by its variable's declared type, never by its JIT type: bool, char,
+the 8- to 64-bit integers, float, double, enums over them, and structs whose fields all
+qualify (decimal, DateTime, Guid, Nullable<T> and the like). Native-sized integers and
+pointers are refused, since they may be handles, and so is anything with references.
+The declared size must equal the slot's size, and a struct slot's type must equal the
+declared type. A promoted field is admitted only when its variable is admitted whole, so
+admission does not depend on whether the JIT promotes. Capture boxes a value as its
+declared type (an empty Nullable<T> as null) for the host to bind; restore requires a
+box of exactly that type and copies its bytes. CancellationToken is the one struct with
+a reference that is admitted: saved whole or with its single field promoted, it reaches
+the host as a CancellationToken, and the host supplies the token the restored frame
+observes. In checkpoint mode the JIT skips physical promotion in async methods, whose
+replacement locals would be saved as unidentified temporaries. Only metadata frames
+take values; script frames keep Int32 and reference slots. The JIT/EE interface GUID
+changed with this contract.
 
 The host capture/restore hooks accept an optional layout validator. Capture invokes
 it before encoding any live object; restore invokes it before decoding or installing
@@ -214,7 +233,17 @@ returns an int and handles InvalidOperationException. A fresh process restores i
 three times: with a value, with a fault the handler catches, and with a cancellation
 that cancels the DLL frames' task and then the script's. An outcome of another type
 and frames reordered so that a caller no longer awaits what its callee returns are
-refused before any frame runs.
+refused before any frame runs. A generic variant runs two frames of shared code with
+String results; restore matches a frame's __Canon await to its callee's String by
+shape, and refuses a shared first frame that awaits a type parameter and a callee whose
+Int32 lacks that shape.
+
+A value-slots fixture keeps primitives, enums, decimal, DateTime, Guid, a nullable, a
+padded struct, a nested struct and a struct parameter live in two frames, promoted and
+whole, together with a CancellationToken. A fresh process restores them bit-exact and
+binds the token to one the restoring host owns. A live native-sized integer and a live
+struct with a string are refused at capture, and a decoded value of another type at
+restore.
 
 Ordinary-method metadata is copied into its loader allocator before native-code
 publication and indexed by MethodDesc plus code address. Lookup selects the entry
@@ -264,8 +293,10 @@ portability remain unproved.
   values. The original DynamicMethod host hook supports one guarded script frame
   with explicitly encoded bindings and List<int> identity. No arbitrary graph or closure serialization.
 - Host chains admit Task and Task<X> frames with any awaited result type. ValueTask
-  frames and custom awaitables remain unsupported, and live slots are still Int32 or
-  references.
+  frames and custom awaitables remain unsupported. Live slots are Int32, references,
+  values without references and CancellationToken; other structs with references are
+  refused, and a value is restored from its bytes, which are portable only between
+  identical builds.
 - A serializable Int32 can still encode process-local meaning: identity or randomized
   string hashes, thread IDs and similar values are not portable merely because
   their bits fit the schema. The script/host must avoid persisting such values as
