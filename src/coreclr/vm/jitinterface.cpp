@@ -11541,7 +11541,7 @@ void CEECodeGenInfo::reportMetadata(
         (length >= sizeof(CORINFO_AsyncCheckpointInfo)))
     {
         const auto* info = static_cast<const CORINFO_AsyncCheckpointInfo*>(value);
-        if (info->Version == 4 && info->LayoutBytes == length - sizeof(*info) && info->LayoutBytes <= 1024 * 1024)
+        if (info->Version == 5 && info->LayoutBytes == length - sizeof(*info) && info->LayoutBytes <= 1024 * 1024)
         {
             BYTE* copy = new (nothrow) BYTE[length];
             if (copy != nullptr)
