@@ -7341,6 +7341,14 @@ void Compiler::impSetupAsyncCall(GenTreeCall*            call,
     ILLocation newILLocation(callDI.GetLocation().GetOffset(), (ICorDebugInfo::SourceTypes)newSourceTypes);
     asyncInfo.CallAsyncDebugInfo = DebugInfo(callDI.GetInlineContext(), newILLocation);
 
+    if (compIsForInlining() && impInlineRoot()->compIsAsyncCheckpointProof())
+    {
+        // In the root method, an await inside an inlined async callee is the inlined call's await.
+        // Checkpoint metadata identifies it by that call's IL position, which does not depend on the
+        // statement locations of the inline contexts in between; several such awaits are ambiguous.
+        asyncInfo.CallAsyncDebugInfo = impInlineInfo->iciCall->GetAsyncInfo().CallAsyncDebugInfo;
+    }
+
     if ((prefixFlags & PREFIX_IS_TASK_AWAIT) != 0)
     {
         JITDUMP("Call is an async task await\n");

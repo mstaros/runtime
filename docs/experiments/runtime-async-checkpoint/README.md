@@ -100,9 +100,11 @@ and kind 3 a void await; kind 2 is any other awaited type, which the JIT reads f
 the await call's signature (its primitive kind, or its class with enums unnormalized)
 and the VM returns to CoreLib as a type. Shared generic code may report __Canon.
 Awaiting a non-async Task-returning call (`await source.Task`) calls its async
-version, which wraps the returned task in a transparent await; when the JIT inlines
-that version, the wrapper's await is the call site's own and takes its IL position
-and result type, so the frame is identified like any other await.
+version, which wraps the returned task in a transparent await. When the JIT inlines
+that version, and the wrapper with it, the await that suspends is the call site's
+own: in checkpoint mode it takes the call site's IL position, not the statement
+locations of the inline contexts in between, which optimized code does not keep.
+Several awaits inlined from one call site are ambiguous and rejected.
 Restore checks that each caller awaits exactly what its callee returns (Task<X> gives
 X, Task gives void; a __Canon awaited type matches by shape) and that the task's type
 is the outermost frame's. Frames may return Task or Task<X>. The outcome hook seeds

@@ -12015,11 +12015,14 @@ bool Compiler::impWrapTopOfStackInAwait()
         JITDUMP("Inheriting continuation handling %d from caller [%06u]\n",
                 (unsigned)inlCall->GetAsyncInfo().ContinuationContextHandling, dspTreeID(inlCall));
         asyncInfo->ContinuationContextHandling = inlCall->GetAsyncInfo().ContinuationContextHandling;
-        // The wrapper's await is the inlined call's own await: it suspends at that call's IL position
-        // and produces that call's result. Checkpoint metadata identifies a suspension by both.
-        asyncInfo->CallAsyncDebugInfo = inlCall->GetAsyncInfo().CallAsyncDebugInfo;
-        asyncInfo->ResultType         = inlCall->GetAsyncInfo().ResultType;
-        asyncInfo->ResultClass        = inlCall->GetAsyncInfo().ResultClass;
+        // The wrapper's await is the inlined call's own await and produces that call's result.
+        asyncInfo->ResultType  = inlCall->GetAsyncInfo().ResultType;
+        asyncInfo->ResultClass = inlCall->GetAsyncInfo().ResultClass;
+        if (impInlineRoot()->compIsAsyncCheckpointProof())
+        {
+            // Checkpoint metadata identifies the suspension by the inlined call's IL position.
+            asyncInfo->CallAsyncDebugInfo = inlCall->GetAsyncInfo().CallAsyncDebugInfo;
+        }
         impInheritAsyncContextsFromInliner(awaitCall);
     }
 
