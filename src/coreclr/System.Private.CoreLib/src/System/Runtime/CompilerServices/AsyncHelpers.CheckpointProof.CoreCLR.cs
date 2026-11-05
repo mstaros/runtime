@@ -67,6 +67,8 @@ namespace System.Runtime.CompilerServices
                 int[]? schema = null;
                 Type?[] slotTypes = null!;
                 IntPtr methodContext = default, classContext = default;
+                int contextKind = 0;
+                string? mismatch = null;
                 for (int i = 0; i < methods.Length; i++)
                 {
                     int[]? candidate = GetCheckpointInfo(methods[i], current.State,
@@ -78,7 +80,8 @@ namespace System.Runtime.CompilerServices
                     // Instantiations of shared generic code share resume addresses; only the saved
                     // instantiation context decides which of them owns this continuation.
                     ValidateCheckpointSchema(candidate, host);
-                    if (!IsCheckpointInstantiation(candidate, current, methods[i], candidateMethodContext, candidateClassContext))
+                    if (!IsCheckpointInstantiation(candidate, current, methods[i], candidateMethodContext, candidateClassContext,
+                        out int candidateContextKind, ref mismatch))
                         continue;
                     if (schema != null)
                     {
@@ -89,7 +92,8 @@ namespace System.Runtime.CompilerServices
                     methodIndex = i;
                     schema = candidate;
                     slotTypes = candidateTypes;
-                    methodContext = candidateMethodContext;
+                    contextKind = candidateContextKind;
+                    methodContext = candidateContextKind == 2 ? methods[i].MethodHandle.Value : candidateMethodContext;
                     classContext = candidateClassContext;
                     // Nongeneric code owns its resume addresses alone, so the first owner is the owner; only a
                     // generic owner needs the full scan, which also probes (and may compile) every later method.
@@ -97,7 +101,7 @@ namespace System.Runtime.CompilerServices
                         break;
                 }
                 if (schema == null)
-                    throw new NotSupportedException("Continuation does not belong to the supplied methods.");
+                    throw new NotSupportedException("Continuation does not belong to the supplied methods." + (mismatch == null ? "" : " " + mismatch));
 
                 ValidateCheckpointSchema(schema, host);
                 slotTypes = CheckpointSlotTypes(schema, slotTypes, methods[methodIndex], out bool[] declared);
@@ -127,9 +131,13 @@ namespace System.Runtime.CompilerServices
                 ref byte data = ref RuntimeHelpers.GetRawData(current);
                 for (int i = 0; i < values.Length; i++)
                 {
-                    // The instantiation context was matched above; restore rebinds it from the method.
+                    // The instantiation context was matched above and is never persisted; the record keeps only
+                    // which handle named it (1: the async variant's instantiation, 2: the method's own).
                     if (schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 3)
+                    {
+                        values[i] = contextKind;
                         continue;
+                    }
                     ref byte slot = ref Unsafe.Add(ref data, schema[CheckpointHeaderSize + i * CheckpointSlotSize]);
                     object? value = schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 1
                         ? Unsafe.ReadUnaligned<int>(ref slot)
@@ -212,9 +220,13 @@ namespace System.Runtime.CompilerServices
                     object? value = values[i];
                     if (schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 3)
                     {
-                        // A generic context is rebound from the recreated method, never persisted.
-                        if (value != null)
-                            throw new NotSupportedException("A saved generic context slot carries a value.");
+                        // A generic context is rebound from the recreated method, never persisted; the record says
+                        // whether the frame received the async variant's instantiation (1) or the method's own (2).
+                        if (value is not int contextKind || contextKind is not (1 or 2) ||
+                            (contextKind == 2 && schema[CheckpointHeaderSize + 4 + i * CheckpointSlotSize] != 5))
+                            throw new NotSupportedException("Malformed generic context record.");
+                        if (contextKind == 2)
+                            methodContext = methods[index].MethodHandle.Value;
                         continue;
                     }
                     if (host && schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] != 1 && value != null)
@@ -435,17 +447,34 @@ namespace System.Runtime.CompilerServices
         // instantiation through the hidden generic context or a generic receiver. Other code belongs to
         // a single instantiation; a continuation matching several supplied methods is rejected by the caller.
         private static bool IsCheckpointInstantiation(int[] schema, Continuation continuation, MethodInfo method,
-            IntPtr methodContext, IntPtr classContext)
+            IntPtr methodContext, IntPtr classContext, out int contextKind, ref string? mismatch)
         {
+            contextKind = 0;
             if (method is DynamicMethod)
                 return true;
             ref byte data = ref RuntimeHelpers.GetRawData(continuation);
             int contextOrigin = CheckpointContextOrigin(schema);
             for (int i = 0; contextOrigin != 0 && i < schema[6]; i++)
             {
-                if (schema[CheckpointHeaderSize + 4 + i * CheckpointSlotSize] == contextOrigin)
-                    return Unsafe.ReadUnaligned<IntPtr>(ref Unsafe.Add(ref data, schema[CheckpointHeaderSize + i * CheckpointSlotSize])) ==
-                        (contextOrigin == 5 ? methodContext : classContext);
+                if (schema[CheckpointHeaderSize + 4 + i * CheckpointSlotSize] != contextOrigin)
+                    continue;
+                // A caller passes the instantiation of the async variant it calls, or of the method itself.
+                IntPtr saved = Unsafe.ReadUnaligned<IntPtr>(ref Unsafe.Add(ref data, schema[CheckpointHeaderSize + i * CheckpointSlotSize]));
+                IntPtr expected = contextOrigin == 5 ? methodContext : classContext;
+                IntPtr primary = contextOrigin == 5 ? method.MethodHandle.Value : IntPtr.Zero;
+                if (saved == expected)
+                {
+                    contextKind = 1;
+                    return true;
+                }
+                if (contextOrigin == 5 && saved == primary)
+                {
+                    contextKind = 2;
+                    return true;
+                }
+                mismatch = "The saved generic context 0x" + saved.ToString("X") + " names neither 0x" + expected.ToString("X") +
+                    (contextOrigin == 5 ? " nor 0x" + primary.ToString("X") : "") + ".";
+                return false;
             }
             Type declaring = method.DeclaringType!;
             if (method.IsStatic || !declaring.IsGenericType)
