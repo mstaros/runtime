@@ -62,10 +62,11 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
             COMPlusThrow(kNotSupportedException);
         }
 
-        // Shared generic code is compiled once for its canonical form. An instantiation reaches
-        // it through an instantiating stub, and its checkpoint metadata belongs to that body.
-        // A shared body's hidden generic context names this exact instantiation.
-        MethodDesc* exact = body;
+        // Shared generic code is compiled once for its canonical form, and its checkpoint metadata
+        // belongs to that body. The hidden generic context a caller passes names the exact
+        // instantiation of the async variant, which the lookup without an instantiation argument returns.
+        MethodDesc* exact = (method->IsAsyncThunkMethod() && !method->IsLCGMethod())
+            ? method->GetAsyncVariant(/*allowInstParam*/ FALSE) : body;
         if (body->IsInstantiatingStub())
             body = body->GetWrappedMethodDesc();
         body->PrepareInitialCode();

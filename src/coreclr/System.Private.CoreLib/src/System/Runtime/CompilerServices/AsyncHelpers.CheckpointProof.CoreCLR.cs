@@ -67,7 +67,6 @@ namespace System.Runtime.CompilerServices
                 int[]? schema = null;
                 Type?[] slotTypes = null!;
                 IntPtr methodContext = default, classContext = default;
-                int contextKind = 0;
                 string? mismatch = null;
                 for (int i = 0; i < methods.Length; i++)
                 {
@@ -81,7 +80,7 @@ namespace System.Runtime.CompilerServices
                     // instantiation context decides which of them owns this continuation.
                     ValidateCheckpointSchema(candidate, host);
                     if (!IsCheckpointInstantiation(candidate, current, methods[i], candidateMethodContext, candidateClassContext,
-                        out int candidateContextKind, ref mismatch))
+                        ref mismatch))
                         continue;
                     if (schema != null)
                     {
@@ -92,8 +91,7 @@ namespace System.Runtime.CompilerServices
                     methodIndex = i;
                     schema = candidate;
                     slotTypes = candidateTypes;
-                    contextKind = candidateContextKind;
-                    methodContext = candidateContextKind == 2 ? methods[i].MethodHandle.Value : candidateMethodContext;
+                    methodContext = candidateMethodContext;
                     classContext = candidateClassContext;
                     // Nongeneric code owns its resume addresses alone, so the first owner is the owner; only a
                     // generic owner needs the full scan, which also probes (and may compile) every later method.
@@ -131,13 +129,10 @@ namespace System.Runtime.CompilerServices
                 ref byte data = ref RuntimeHelpers.GetRawData(current);
                 for (int i = 0; i < values.Length; i++)
                 {
-                    // The instantiation context was matched above and is never persisted; the record keeps only
-                    // which handle named it (1: the async variant's instantiation, 2: the method's own).
+                    // The instantiation context was matched above; it is never persisted, and restore
+                    // rebinds it from the recreated method.
                     if (schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 3)
-                    {
-                        values[i] = contextKind;
                         continue;
-                    }
                     ref byte slot = ref Unsafe.Add(ref data, schema[CheckpointHeaderSize + i * CheckpointSlotSize]);
                     object? value = schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 1
                         ? Unsafe.ReadUnaligned<int>(ref slot)
@@ -220,13 +215,9 @@ namespace System.Runtime.CompilerServices
                     object? value = values[i];
                     if (schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 3)
                     {
-                        // A generic context is rebound from the recreated method, never persisted; the record says
-                        // whether the frame received the async variant's instantiation (1) or the method's own (2).
-                        if (value is not int contextKind || contextKind is not (1 or 2) ||
-                            (contextKind == 2 && schema[CheckpointHeaderSize + 4 + i * CheckpointSlotSize] != 5))
-                            throw new NotSupportedException("Malformed generic context record.");
-                        if (contextKind == 2)
-                            methodContext = methods[index].MethodHandle.Value;
+                        // A generic context is rebound from the recreated method, never persisted.
+                        if (value != null)
+                            throw new NotSupportedException("A saved generic context slot carries a value.");
                         continue;
                     }
                     if (host && schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] != 1 && value != null)
@@ -447,9 +438,8 @@ namespace System.Runtime.CompilerServices
         // instantiation through the hidden generic context or a generic receiver. Other code belongs to
         // a single instantiation; a continuation matching several supplied methods is rejected by the caller.
         private static bool IsCheckpointInstantiation(int[] schema, Continuation continuation, MethodInfo method,
-            IntPtr methodContext, IntPtr classContext, out int contextKind, ref string? mismatch)
+            IntPtr methodContext, IntPtr classContext, ref string? mismatch)
         {
-            contextKind = 0;
             if (method is DynamicMethod)
                 return true;
             ref byte data = ref RuntimeHelpers.GetRawData(continuation);
@@ -458,27 +448,16 @@ namespace System.Runtime.CompilerServices
             {
                 if (schema[CheckpointHeaderSize + 4 + i * CheckpointSlotSize] != contextOrigin)
                     continue;
-                // A caller passes the instantiation of the async variant it calls, or of the method itself.
                 IntPtr saved = Unsafe.ReadUnaligned<IntPtr>(ref Unsafe.Add(ref data, schema[CheckpointHeaderSize + i * CheckpointSlotSize]));
                 IntPtr expected = contextOrigin == 5 ? methodContext : classContext;
-                IntPtr primary = contextOrigin == 5 ? method.MethodHandle.Value : IntPtr.Zero;
                 if (saved == expected)
-                {
-                    contextKind = 1;
                     return true;
-                }
-                if (contextOrigin == 5 && saved == primary)
-                {
-                    contextKind = 2;
-                    return true;
-                }
-                // Name what the frame received, so a refusal shows which instantiation handle it was.
+                // Name what the frame received, so a refusal shows which instantiation it was.
                 string received = contextOrigin == 5
                     ? RuntimeType.GetMethodBase(null, new RuntimeMethodHandleInternal(saved))?.ToString() ?? "?"
                     : "?";
                 mismatch = (mismatch == null ? "" : mismatch + " ") + "For " + method + " the saved generic context 0x" +
-                    saved.ToString("X") + " (" + received + ") names neither 0x" + expected.ToString("X") +
-                    (contextOrigin == 5 ? " nor 0x" + primary.ToString("X") : "") + ".";
+                    saved.ToString("X") + " (" + received + ") is not 0x" + expected.ToString("X") + ".";
                 return false;
             }
             Type declaring = method.DeclaringType!;
