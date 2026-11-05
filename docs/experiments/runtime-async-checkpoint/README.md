@@ -161,16 +161,31 @@ docs\experiments\runtime-async-checkpoint\run-ordinary-proof.cmd -RuntimeRoot D:
 Mode 4 extends checkpoint layout emission and the conservative IL-local policy to
 metadata runtime-async methods. Modes 1 through 3 retain their DynamicMethod scope.
 The extended internal host hooks accept MethodInfo arrays and multiple frames per
-task. Metadata methods must be closed and noncollectible, including their
-instantiation (RuntimeMethodInfo.IsCollectible); generic methods and methods of
-generic types are admitted as closed instantiations. Fresh lookup creates and JITs a
-missing metadata async body without invoking the method; an instantiation of shared
-code is resolved to its shared body. Collectible lifetimes are outside this proof.
+task. Metadata methods must be closed; generic methods and methods of generic types
+are admitted as closed instantiations. Fresh lookup creates and JITs a missing
+metadata async body without invoking the method; an instantiation of shared code is
+resolved to its shared body.
+
+Collectible methods and instantiations are admitted. Capture attributes a frame by
+its code address, so a frame names the load that owns its code, and a snapshot names
+methods and types by identity only: restore binds the methods the host recreates in
+new contexts. A suspended frame keeps its context alive through its continuation's
+type, allocated in the method's loader allocator, or through the generic-context
+keep-alive; restore allocates the destination's type and writes the destination's
+keep-alive. Restore refuses a method whose code, or a type of whose instantiation,
+belongs to a context that is already unloading: the host binds only through
+instances it holds, so such a method is a stale binding. Holding them is the host's
+lease; the check only detects a binding that is already stale.
 
 A second fixture runs two reference-type instantiations of one shared generic method
 in one chain, each with live values of both type parameters, through a fresh-process
 restore. Capture with one instantiation missing and restore with swapped
-instantiations are rejected.
+instantiations are rejected. The collectible fixtures restore the non-generic chain
+and three generic shapes (collectible code over core-library types, collectible code
+over a type of another collectible context, default-context code over a collectible
+type) into fresh collectible contexts. They check that the restored chains alone keep
+their contexts alive while suspended and that the contexts are collected after the
+runs complete.
 
 Ordinary-method metadata is copied into its loader allocator before native-code
 publication and indexed by MethodDesc plus code address. Lookup selects the entry

@@ -536,6 +536,9 @@ namespace System.Runtime.Loader
             }
         }
 
+        // Unload was called. The context still works until nothing references it, but nothing new should bind to it.
+        internal bool IsUnloading => _state != InternalState.Alive;
+
         private static AsyncLocal<AssemblyLoadContext?>? s_asyncLocalCurrent;
 
         /// <summary>Nullable current AssemblyLoadContext used for context sensitive reflection APIs</summary>

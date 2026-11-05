@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.InteropServices;
+using System.Runtime.Loader;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -29,9 +30,9 @@ namespace System.Runtime.CompilerServices
             return CaptureCheckpointCore(task, methods, encodeBinding, validateSlots);
         }
 
-        // Extended host proof for a mixed script/DLL continuation chain. Metadata methods must be closed
-        // and noncollectible, including their instantiation; exact DLL bytes are host-pinned. Instantiations
-        // of shared generic code are told apart by their saved generic context.
+        // Extended host proof for a mixed script/DLL continuation chain. Metadata methods must be closed and
+        // may be collectible; exact DLL bytes are host-pinned. Instantiations of shared generic code are told
+        // apart by their saved generic context.
         internal static object[][] CaptureMethodCheckpointForTesting<T>(
             Task<T> task, MethodInfo[] methods, Func<object, object> encodeBinding, Action<int[]>? validateSlots = null)
         {
@@ -197,6 +198,10 @@ namespace System.Runtime.CompilerServices
 
                 if (host && methods[index].ReturnType != typeof(Task<T>))
                     throw new NotSupportedException("Checkpoint task result type does not match the script.");
+                // A host binds frames only through instances it holds. A method of a context already told to
+                // unload is a stale binding: restoring it would run a retiring instance's code.
+                if (methods[index] is not DynamicMethod)
+                    ValidateCheckpointDestination(methods[index]);
                 int[] schema = GetCheckpointInfo(methods[index], state,
                     out object keepAlive, out IntPtr type, out IntPtr resume, out Type?[] slotTypes,
                     out IntPtr methodContext, out IntPtr classContext, host)!;
@@ -377,9 +382,45 @@ namespace System.Runtime.CompilerServices
         private static void ValidateCheckpointMethod(MethodInfo method)
         {
             // Closed generic instantiations are admitted; their frames are matched through the saved generic
-            // context. Collectible code, including an instantiation over a collectible type, is not.
-            if (method.DeclaringType == null || method.ContainsGenericParameters || method.IsCollectible)
-                throw new NotSupportedException("Metadata checkpoint proof requires a closed, noncollectible method.");
+            // context. Collectible code is admitted too: a frame is matched by its code address, so it names the
+            // load that owns that code, and its continuation keeps that load's context alive.
+            if (method.DeclaringType == null || method.ContainsGenericParameters)
+                throw new NotSupportedException("Metadata checkpoint proof requires a closed method.");
+        }
+
+        // Restore refuses a method whose code, or a type of whose instantiation, belongs to a load context that
+        // is unloading. Capture does not: a snapshot names methods by identity, never by context.
+        private static void ValidateCheckpointDestination(MethodInfo method)
+        {
+            ValidateCheckpointLoadContext(method.Module.Assembly);
+            if (method.DeclaringType is { IsGenericType: true } declaring)
+            {
+                foreach (Type argument in declaring.GetGenericArguments())
+                    ValidateCheckpointArgument(argument);
+            }
+            if (method.IsGenericMethod)
+            {
+                foreach (Type argument in method.GetGenericArguments())
+                    ValidateCheckpointArgument(argument);
+            }
+        }
+
+        private static void ValidateCheckpointArgument(Type type)
+        {
+            while (type.HasElementType)
+                type = type.GetElementType()!;
+            ValidateCheckpointLoadContext(type.Assembly);
+            if (type.IsGenericType)
+            {
+                foreach (Type argument in type.GetGenericArguments())
+                    ValidateCheckpointArgument(argument);
+            }
+        }
+
+        private static void ValidateCheckpointLoadContext(Assembly assembly)
+        {
+            if (AssemblyLoadContext.GetLoadContext(assembly) is { IsUnloading: true })
+                throw new NotSupportedException("Checkpoint restore binds a method whose load context is unloading.");
         }
 
         private static int[]? GetCheckpointInfo(MethodInfo method, int state,
