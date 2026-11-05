@@ -440,7 +440,7 @@ namespace System.Runtime.CompilerServices
         }
 
         // A CancellationToken is a single reference to its source, saved whole (kind 5) or as that promoted field.
-        private static object ReadCheckpointToken(int[] schema, int index, ref byte slot) =>
+        private static CancellationToken ReadCheckpointToken(int[] schema, int index, ref byte slot) =>
             schema[CheckpointHeaderSize + 1 + index * CheckpointSlotSize] == 5
                 ? Unsafe.As<byte, CancellationToken>(ref slot)
                 : new CancellationToken(Unsafe.As<byte, CancellationTokenSource?>(ref slot));
