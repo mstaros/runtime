@@ -17,9 +17,9 @@ replaced. Use -SkipBuild only after building this exact candidate.
 
 To include the guarded Merkle/ScriptMcp proof, build ScriptMcp.Server.Tests in Release
 and add -ScriptTests <absolute-test-assembly> -AspNetRoot <matching-framework-directory>.
-The ScriptMcp companion must understand checkpoint record version 3.
+The ScriptMcp companion must understand checkpoint record version 4.
 
-## Restore contract (version 3)
+## Restore contract (version 4)
 
 - JIT checkpoint metadata is owned by its compilation attempt. ResetForJitRetry
   discards it. A successful compilation transfers ownership to PrepareCodeConfig;
@@ -82,6 +82,18 @@ Origins 3 and 4 identify saved execution/synchronization-context operands of the
 await. Unknown JIT temporaries retain origin 0 and are not silently reclassified
 by their runtime value or type. Separate continuation context storage remains
 identified by the frame flags and the host context binding.
+
+Version 4 adds kind 3 with origins 5 and 6: the hidden generic context of shared
+generic code, naming the instantiated method or the instantiated class. In checkpoint
+mode an async body keeps that context, or a generic receiver, live at every suspension.
+Instantiations of shared code share resume addresses, so capture matches a continuation
+by resume address and by its saved context, and rejects a continuation that several
+supplied methods own. The context is never persisted: restore writes the recreated
+instantiation's handle and the keep-alive object the continuation allocation helper
+would store. A shared slot that reports a canonical (__Canon) class is checked against
+its declared type from the IL signature, substituted with the closed instantiation;
+an unidentified shared slot is rejected. A generic method's identity includes its
+type arguments. The JIT/EE interface GUID changed with this contract.
 
 The host capture/restore hooks accept an optional layout validator. Capture invokes
 it before encoding any live object; restore invokes it before decoding or installing
@@ -149,10 +161,16 @@ docs\experiments\runtime-async-checkpoint\run-ordinary-proof.cmd -RuntimeRoot D:
 Mode 4 extends checkpoint layout emission and the conservative IL-local policy to
 metadata runtime-async methods. Modes 1 through 3 retain their DynamicMethod scope.
 The extended internal host hooks accept MethodInfo arrays and multiple frames per
-task. Metadata methods are restricted to nongeneric methods on nongeneric,
-noncollectible types. Fresh lookup creates and JITs a missing metadata async body
-without invoking the method. Frames without a runtime keep-alive slot are admitted;
-collectible and generic method lifetimes are outside this proof.
+task. Metadata methods must be closed and noncollectible, including their
+instantiation (RuntimeMethodInfo.IsCollectible); generic methods and methods of
+generic types are admitted as closed instantiations. Fresh lookup creates and JITs a
+missing metadata async body without invoking the method; an instantiation of shared
+code is resolved to its shared body. Collectible lifetimes are outside this proof.
+
+A second fixture runs two reference-type instantiations of one shared generic method
+in one chain, each with live values of both type parameters, through a fresh-process
+restore. Capture with one instantiation missing and restore with swapped
+instantiations are rejected.
 
 Ordinary-method metadata is copied into its loader allocator before native-code
 publication and indexed by MethodDesc plus code address. Lookup selects the entry

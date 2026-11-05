@@ -29,8 +29,9 @@ namespace System.Runtime.CompilerServices
             return CaptureCheckpointCore(task, methods, encodeBinding, validateSlots);
         }
 
-        // Extended host proof for a mixed script/DLL continuation chain. Metadata
-        // methods must be nongeneric and noncollectible; exact DLL bytes are host-pinned.
+        // Extended host proof for a mixed script/DLL continuation chain. Metadata methods must be closed
+        // and noncollectible, including their instantiation; exact DLL bytes are host-pinned. Instantiations
+        // of shared generic code are told apart by their saved generic context.
         internal static object[][] CaptureMethodCheckpointForTesting<T>(
             Task<T> task, MethodInfo[] methods, Func<object, object> encodeBinding, Action<int[]>? validateSlots = null)
         {
@@ -65,23 +66,46 @@ namespace System.Runtime.CompilerServices
                 int methodIndex = -1;
                 int[]? schema = null;
                 Type?[] slotTypes = null!;
+                IntPtr methodContext = default, classContext = default;
                 for (int i = 0; i < methods.Length; i++)
                 {
                     int[]? candidate = GetCheckpointInfo(methods[i], current.State,
-                        out _, out IntPtr type, out IntPtr resume, out Type?[] candidateTypes, host, (IntPtr)current.ResumeInfo);
-                    if (candidate != null && resume == (IntPtr)current.ResumeInfo &&
-                        type == (IntPtr)RuntimeHelpers.GetMethodTable(current))
+                        out _, out IntPtr type, out IntPtr resume, out Type?[] candidateTypes,
+                        out IntPtr candidateMethodContext, out IntPtr candidateClassContext, host, (IntPtr)current.ResumeInfo);
+                    if (candidate == null || resume != (IntPtr)current.ResumeInfo ||
+                        type != (IntPtr)RuntimeHelpers.GetMethodTable(current))
+                        continue;
+                    // Instantiations of shared generic code share resume addresses; only the saved
+                    // instantiation context decides which of them owns this continuation.
+                    ValidateCheckpointSchema(candidate, host);
+                    if (!IsCheckpointInstantiation(candidate, current, methods[i], candidateMethodContext, candidateClassContext))
+                        continue;
+                    if (schema != null)
                     {
-                        methodIndex = i;
-                        schema = candidate;
-                        slotTypes = candidateTypes;
-                        break;
+                        if (ReferenceEquals(methods[i], methods[methodIndex]))
+                            continue;
+                        throw new NotSupportedException("Continuation matches more than one supplied method.");
                     }
+                    methodIndex = i;
+                    schema = candidate;
+                    slotTypes = candidateTypes;
+                    methodContext = candidateMethodContext;
+                    classContext = candidateClassContext;
+                    // Nongeneric code owns its resume addresses alone, so the first owner is the owner; only a
+                    // generic owner needs the full scan, which also probes (and may compile) every later method.
+                    if (methods[i] is DynamicMethod || !(methods[i].IsGenericMethod || methods[i].DeclaringType!.IsGenericType))
+                        break;
                 }
                 if (schema == null)
                     throw new NotSupportedException("Continuation does not belong to the supplied methods.");
 
                 ValidateCheckpointSchema(schema, host);
+                slotTypes = CheckpointSlotTypes(schema, slotTypes, methods[methodIndex], out bool[] declared);
+                int contextOrigin = CheckpointContextOrigin(schema);
+                if (contextOrigin != 0 && schema[4] != -1 &&
+                    !ReferenceEquals(Unsafe.As<byte, object?>(ref Unsafe.Add(ref RuntimeHelpers.GetRawData(current), schema[4])),
+                        CheckpointContextKeepAlive(contextOrigin, methodContext, classContext)))
+                    throw new NotSupportedException("The generic context keep-alive differs from its instantiation.");
                 // Validate the complete layout before walking any user-owned object.
                 validateSlots?.Invoke((int[])schema.Clone());
                 if (((uint)current.Flags & ~7u) != ((uint)schema[2] & ~7u) ||
@@ -103,12 +127,15 @@ namespace System.Runtime.CompilerServices
                 ref byte data = ref RuntimeHelpers.GetRawData(current);
                 for (int i = 0; i < values.Length; i++)
                 {
+                    // The instantiation context was matched above; restore rebinds it from the method.
+                    if (schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 3)
+                        continue;
                     ref byte slot = ref Unsafe.Add(ref data, schema[CheckpointHeaderSize + i * CheckpointSlotSize]);
                     object? value = schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 1
                         ? Unsafe.ReadUnaligned<int>(ref slot)
                         : Unsafe.As<byte, object?>(ref slot);
                     ValidateCheckpointValue(schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize], value, host);
-                    ValidateCheckpointReference(schema, i, slotTypes[i], value);
+                    ValidateCheckpointReference(schema, i, slotTypes[i], value, declared[i]);
                     if (schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 2 && value != null)
                         referenceTypes[i] = DynamicResolver.CheckpointTypeIdentity(value.GetType());
                     values[i] = host && value != null && schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] != 1
@@ -168,7 +195,8 @@ namespace System.Runtime.CompilerServices
                 if (host && methods[index].ReturnType != typeof(Task<T>))
                     throw new NotSupportedException("Checkpoint task result type does not match the script.");
                 int[] schema = GetCheckpointInfo(methods[index], state,
-                    out object keepAlive, out IntPtr type, out IntPtr resume, out Type?[] slotTypes, host)!;
+                    out object keepAlive, out IntPtr type, out IntPtr resume, out Type?[] slotTypes,
+                    out IntPtr methodContext, out IntPtr classContext, host)!;
                 if (identity != CheckpointMethodIdentity(methods[index]))
                     throw new NotSupportedException("Checkpoint method identity does not match the recreated method.");
                 ValidateCheckpointSchema(schema, host);
@@ -177,14 +205,22 @@ namespace System.Runtime.CompilerServices
                 if (!schema.AsSpan().SequenceEqual(savedSchema) || values.Length != schema[6] || referenceTypes.Length != values.Length)
                     throw new NotSupportedException("Checkpoint layout does not match the recreated method.");
                 validateSlots?.Invoke((int[])schema.Clone());
+                slotTypes = CheckpointSlotTypes(schema, slotTypes, methods[index], out bool[] declared);
                 var restoredValues = new object?[values.Length];
                 for (int i = 0; i < values.Length; i++)
                 {
                     object? value = values[i];
+                    if (schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 3)
+                    {
+                        // A generic context is rebound from the recreated method, never persisted.
+                        if (value != null)
+                            throw new NotSupportedException("A saved generic context slot carries a value.");
+                        continue;
+                    }
                     if (host && schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] != 1 && value != null)
                         value = decodeBinding!(value);
                     ValidateCheckpointValue(schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize], value, host);
-                    ValidateCheckpointReference(schema, i, slotTypes[i], value);
+                    ValidateCheckpointReference(schema, i, slotTypes[i], value, declared[i]);
                     string? actualType = schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 2 && value != null
                         ? DynamicResolver.CheckpointTypeIdentity(value.GetType()) : null;
                     if (referenceTypes[i] != actualType)
@@ -202,7 +238,11 @@ namespace System.Runtime.CompilerServices
                 current.ResumeInfo = (ResumeInfo*)resume;
                 ref byte data = ref RuntimeHelpers.GetRawData(current);
                 if (schema[4] != -1)
-                    Unsafe.As<byte, object?>(ref Unsafe.Add(ref data, schema[4])) = keepAlive;
+                {
+                    int contextOrigin = CheckpointContextOrigin(schema);
+                    Unsafe.As<byte, object?>(ref Unsafe.Add(ref data, schema[4])) = contextOrigin == 0
+                        ? keepAlive : CheckpointContextKeepAlive(contextOrigin, methodContext, classContext);
+                }
                 int contextOffset = CheckpointFlagOffset(schema, ContinuationFlags.ExecutionContextIndexFirstBit, ContinuationFlags.ExecutionContextIndexNumBits);
                 if (contextOffset != 0)
                     Unsafe.As<byte, ExecutionContext?>(ref Unsafe.Add(ref data, contextOffset)) = context;
@@ -211,8 +251,12 @@ namespace System.Runtime.CompilerServices
                 for (int i = 0; i < values.Length; i++)
                 {
                     ref byte slot = ref Unsafe.Add(ref data, schema[CheckpointHeaderSize + i * CheckpointSlotSize]);
-                    if (schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 1)
+                    int kind = schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize];
+                    if (kind == 1)
                         Unsafe.WriteUnaligned(ref slot, (int)restoredValues[i]!);
+                    else if (kind == 3)
+                        Unsafe.WriteUnaligned(ref slot,
+                            schema[CheckpointHeaderSize + 4 + i * CheckpointSlotSize] == 5 ? methodContext : classContext);
                     else
                         Unsafe.As<byte, object?>(ref slot) = restoredValues[i];
                 }
@@ -247,11 +291,13 @@ namespace System.Runtime.CompilerServices
             return task;
         }
 
-        private static void ValidateCheckpointReference(int[] schema, int index, Type? expected, object? value)
+        private static void ValidateCheckpointReference(int[] schema, int index, Type? expected, object? value,
+            bool declaredOnly = false)
         {
             if (schema[CheckpointHeaderSize + 1 + index * CheckpointSlotSize] != 2 || value == null)
                 return;
-            bool exact = schema[CheckpointHeaderSize + 3 + index * CheckpointSlotSize] != 0;
+            // A declared type from a shared generic slot admits its subtypes.
+            bool exact = !declaredOnly && schema[CheckpointHeaderSize + 3 + index * CheckpointSlotSize] != 0;
             if (expected == null || (exact ? value.GetType() != expected : !expected.IsInstanceOfType(value)))
                 throw new NotSupportedException("Decoded reference is incompatible with the continuation slot.");
         }
@@ -265,7 +311,7 @@ namespace System.Runtime.CompilerServices
 
         private static void ValidateCheckpointSchema(int[] schema, bool host = false)
         {
-            if (IntPtr.Size != 8 || schema.Length < CheckpointHeaderSize || schema[0] != 3 || schema[7] < 0 ||
+            if (IntPtr.Size != 8 || schema.Length < CheckpointHeaderSize || schema[0] != 4 || schema[7] < 0 ||
                 schema[3] < 24 || schema[3] > 1024 * 1024 || (schema[5] != 1 && (!host || schema[5] != 3)) ||
                 schema[6] < 0 || schema[6] > 1024 || schema.Length != CheckpointHeaderSize + schema[6] * CheckpointSlotSize ||
                 (schema[4] != -1 && (schema[4] < 24 || schema[4] > schema[3] - 8 || schema[4] % 8 != 0)) ||
@@ -278,17 +324,20 @@ namespace System.Runtime.CompilerServices
             uint resultIndex = (uint)schema[2] >> 11;
             if (schema[5] == 1 && (resultIndex == 0 || 24L + (resultIndex - 1L) * 8 > schema[3] - 4))
                 throw new NotSupportedException("Missing Int32 result slot.");
+            int contexts = 0;
             for (int i = 0; i < schema[6]; i++)
             {
                 int offset = schema[CheckpointHeaderSize + i * CheckpointSlotSize];
                 int kind = schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize];
                 int origin = schema[CheckpointHeaderSize + 4 + i * CheckpointSlotSize];
                 int fieldOffset = schema[CheckpointHeaderSize + 5 + i * CheckpointSlotSize];
-                if ((uint)origin > 4 || fieldOffset < 0 || (origin != 2 && fieldOffset != 0) ||
+                if ((uint)origin > 6 || fieldOffset < 0 || (origin != 2 && fieldOffset != 0) ||
                     ((origin == 1 || origin == 2) && schema[CheckpointHeaderSize + 2 + i * CheckpointSlotSize] < 0) ||
-                    (origin >= 3 && kind != 2))
+                    ((origin == 3 || origin == 4) && kind != 2) || ((origin == 5 || origin == 6) != (kind == 3)))
                     throw new NotSupportedException("Invalid checkpoint slot origin.");
-                if ((kind != 1 && kind != 2) || offset < 24 ||
+                if (kind == 3 && ++contexts > 1)
+                    throw new NotSupportedException("A checkpoint frame has more than one generic context slot.");
+                if ((kind != 1 && kind != 2 && kind != 3) || offset < 24 ||
                     offset > schema[3] - (kind == 1 ? 4 : 8) || (kind != 1 && offset % 8 != 0))
                     throw new NotSupportedException("Unsupported live slot in checkpoint: kind " + kind + ", IL variable " + schema[CheckpointHeaderSize + 2 + i * CheckpointSlotSize] + ".");
             }
@@ -310,21 +359,29 @@ namespace System.Runtime.CompilerServices
             if (method is DynamicMethod dynamicMethod)
                 return dynamicMethod._resolver!.GetCheckpointIdentity();
             ValidateCheckpointMethod(method);
-            return "metadata:" + method.Module.ModuleVersionId.ToString("D") + ":" +
+            string identity = "metadata:" + method.Module.ModuleVersionId.ToString("D") + ":" +
                 method.MetadataToken.ToString("X8") + ":" +
                 DynamicResolver.CheckpointTypeIdentity(method.DeclaringType!) + ":" + method.ToString();
+            // A generic method's instantiation is part of its identity.
+            if (method.IsGenericMethod)
+            {
+                foreach (Type argument in method.GetGenericArguments())
+                    identity += ":" + DynamicResolver.CheckpointTypeIdentity(argument);
+            }
+            return identity;
         }
 
         private static void ValidateCheckpointMethod(MethodInfo method)
         {
-            if (method.IsGenericMethod || method.DeclaringType == null || method.DeclaringType.IsGenericType ||
-                method.Module.Assembly.IsCollectible)
-                throw new NotSupportedException("Metadata checkpoint proof requires a nongeneric, noncollectible method.");
+            // Closed generic instantiations are admitted; their frames are matched through the saved generic
+            // context. Collectible code, including an instantiation over a collectible type, is not.
+            if (method.DeclaringType == null || method.ContainsGenericParameters || method.IsCollectible)
+                throw new NotSupportedException("Metadata checkpoint proof requires a closed, noncollectible method.");
         }
 
         private static int[]? GetCheckpointInfo(MethodInfo method, int state,
             out object keepAlive, out IntPtr type, out IntPtr resume, out Type?[] slotTypes,
-            bool host = false, IntPtr expectedResume = default)
+            out IntPtr methodContext, out IntPtr classContext, bool host = false, IntPtr expectedResume = default)
         {
             int[] schema = null!;
             slotTypes = null!;
@@ -339,7 +396,7 @@ namespace System.Runtime.CompilerServices
             }
             GetCheckpointInfoForTesting(handle, state, expectedResume,
                 ObjectHandleOnStack.Create(ref schema), ObjectHandleOnStack.Create(ref keepAlive),
-                ObjectHandleOnStack.Create(ref slotTypes), out type, out resume);
+                ObjectHandleOnStack.Create(ref slotTypes), out type, out resume, out methodContext, out classContext);
             GC.KeepAlive(method);
             // A capture probe must skip nonowners before enforcing the owner's signature.
             if (schema != null)
@@ -350,6 +407,169 @@ namespace System.Runtime.CompilerServices
                     throw new NotSupportedException("Checkpoint proof requires Task<Int32> methods.");
             }
             return schema;
+        }
+
+        // The frame's hidden generic-context slot: origin 5 (instantiated method) or 6 (instantiated
+        // class), or 0 when the frame has none.
+        private static int CheckpointContextOrigin(int[] schema)
+        {
+            for (int i = 0; i < schema[6]; i++)
+            {
+                int origin = schema[CheckpointHeaderSize + 4 + i * CheckpointSlotSize];
+                if (origin == 5 || origin == 6)
+                    return origin;
+            }
+            return 0;
+        }
+
+        // What AllocContinuationMethod and AllocContinuationClass store in the keep-alive field.
+        private static unsafe object? CheckpointContextKeepAlive(int origin, IntPtr methodContext, IntPtr classContext)
+        {
+            if (origin == 5)
+                return RuntimeMethodHandle.GetLoaderAllocator(new RuntimeMethodHandleInternal(methodContext));
+            IntPtr handle = ((MethodTable*)classContext)->GetLoaderAllocatorHandle();
+            return handle == IntPtr.Zero ? null : GCHandle.FromIntPtr(handle).Target;
+        }
+
+        // Shared generic instantiations share resume addresses, so a frame of shared code names its
+        // instantiation through the hidden generic context or a generic receiver. Other code belongs to
+        // a single instantiation; a continuation matching several supplied methods is rejected by the caller.
+        private static bool IsCheckpointInstantiation(int[] schema, Continuation continuation, MethodInfo method,
+            IntPtr methodContext, IntPtr classContext)
+        {
+            if (method is DynamicMethod)
+                return true;
+            ref byte data = ref RuntimeHelpers.GetRawData(continuation);
+            int contextOrigin = CheckpointContextOrigin(schema);
+            for (int i = 0; contextOrigin != 0 && i < schema[6]; i++)
+            {
+                if (schema[CheckpointHeaderSize + 4 + i * CheckpointSlotSize] == contextOrigin)
+                    return Unsafe.ReadUnaligned<IntPtr>(ref Unsafe.Add(ref data, schema[CheckpointHeaderSize + i * CheckpointSlotSize])) ==
+                        (contextOrigin == 5 ? methodContext : classContext);
+            }
+            Type declaring = method.DeclaringType!;
+            if (method.IsStatic || !declaring.IsGenericType)
+                return true;
+            for (int i = 0; i < schema[6]; i++)
+            {
+                if (schema[CheckpointHeaderSize + 4 + i * CheckpointSlotSize] != 1 ||
+                    schema[CheckpointHeaderSize + 2 + i * CheckpointSlotSize] != 0 ||
+                    schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] != 2)
+                    continue;
+                for (Type? type = Unsafe.As<byte, object?>(ref Unsafe.Add(ref data, schema[CheckpointHeaderSize + i * CheckpointSlotSize]))?.GetType();
+                    type != null; type = type.BaseType)
+                {
+                    if (type == declaring)
+                        return true;
+                }
+                return false;
+            }
+            return true;
+        }
+
+        // Shared generic code reports canonical (__Canon) classes for slots typed by a type parameter.
+        // Their declared type follows from the slot's IL variable or promoted field and the closed method,
+        // and a value is then checked against that declared type. Unidentified slots stay rejected.
+        private static Type?[] CheckpointSlotTypes(int[] schema, Type?[] slotTypes, MethodInfo method, out bool[] declared)
+        {
+            declared = new bool[slotTypes.Length];
+            Type?[]? exact = null;
+            for (int i = 0; i < slotTypes.Length; i++)
+            {
+                if (slotTypes[i] is not Type type || !ContainsCanon(type))
+                    continue;
+                Type? declaredType = method is DynamicMethod ? null : CheckpointDeclaredSlotType(schema, i, method);
+                if (declaredType == null || declaredType.ContainsGenericParameters || ContainsCanon(declaredType))
+                    throw new NotSupportedException("A shared generic slot has no identified declared type.");
+                exact ??= (Type?[])slotTypes.Clone();
+                exact[i] = declaredType;
+                declared[i] = true;
+            }
+            return exact ?? slotTypes;
+        }
+
+        private static bool ContainsCanon(Type type)
+        {
+            if (type == typeof(__Canon))
+                return true;
+            if (type.HasElementType)
+                return ContainsCanon(type.GetElementType()!);
+            if (type.IsGenericType)
+            {
+                foreach (Type argument in type.GetGenericArguments())
+                {
+                    if (ContainsCanon(argument))
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        // IL variables number the arguments (the receiver first) and then the locals.
+        [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
+            Justification = "Opt-in checkpoint proof: the closed method, its locals' types and their fields are rooted by the frame being captured or restored.")]
+        [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL2075:UnrecognizedReflectionPattern",
+            Justification = "Opt-in checkpoint proof: the closed method, its locals' types and their fields are rooted by the frame being captured or restored.")]
+        private static Type? CheckpointDeclaredSlotType(int[] schema, int index, MethodInfo method)
+        {
+            int il = schema[CheckpointHeaderSize + 2 + index * CheckpointSlotSize];
+            int origin = schema[CheckpointHeaderSize + 4 + index * CheckpointSlotSize];
+            if ((origin != 1 && origin != 2) || il < 0)
+                return null;
+            ParameterInfo[] parameters = method.GetParameters();
+            int receiver = method.IsStatic ? 0 : 1;
+            Type? variable;
+            if (il < parameters.Length + receiver)
+            {
+                variable = il < receiver ? method.DeclaringType : parameters[il - receiver].ParameterType;
+            }
+            else
+            {
+                IList<LocalVariableInfo>? locals = method.GetMethodBody()?.LocalVariables;
+                int local = il - parameters.Length - receiver;
+                if (locals == null || local >= locals.Count)
+                    return null;
+                variable = locals[local].LocalType;
+            }
+            if (variable == null)
+                return null;
+            variable = CloseCheckpointType(variable, method);
+            if (origin == 1)
+                return variable;
+            int fieldOffset = schema[CheckpointHeaderSize + 5 + index * CheckpointSlotSize];
+            foreach (FieldInfo field in variable.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                if (field is RtFieldInfo runtimeField && RuntimeFieldHandle.GetInstanceFieldOffset(runtimeField) == fieldOffset)
+                    return CloseCheckpointType(field.FieldType, method);
+            }
+            return null;
+        }
+
+        // A closed generic method's local signature may still name its type parameters; substitute them.
+        [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL2055:UnrecognizedReflectionPattern",
+            Justification = "Opt-in checkpoint proof: the closed method, its locals' types and their fields are rooted by the frame being captured or restored.")]
+        private static Type CloseCheckpointType(Type type, MethodInfo method)
+        {
+            if (!type.ContainsGenericParameters)
+                return type;
+            if (type.IsGenericParameter)
+            {
+                return type.DeclaringMethod != null
+                    ? method.GetGenericArguments()[type.GenericParameterPosition]
+                    : method.DeclaringType!.GetGenericArguments()[type.GenericParameterPosition];
+            }
+            if (type.IsSZArray)
+                return CloseCheckpointType(type.GetElementType()!, method).MakeArrayType();
+            if (type.IsArray)
+                return CloseCheckpointType(type.GetElementType()!, method).MakeArrayType(type.GetArrayRank());
+            if (type.IsByRef)
+                return CloseCheckpointType(type.GetElementType()!, method).MakeByRefType();
+            if (type.IsPointer)
+                return CloseCheckpointType(type.GetElementType()!, method).MakePointerType();
+            Type[] arguments = type.GetGenericArguments();
+            for (int i = 0; i < arguments.Length; i++)
+                arguments[i] = CloseCheckpointType(arguments[i], method);
+            return type.GetGenericTypeDefinition().MakeGenericType(arguments);
         }
 
         internal static int CheckpointPublicationStateForTesting(DynamicMethod method)
@@ -374,6 +594,6 @@ namespace System.Runtime.CompilerServices
         [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AsyncHelpers_GetCheckpointInfoForTesting")]
         private static partial void GetCheckpointInfoForTesting(IntPtr method, int state, IntPtr expectedResume,
             ObjectHandleOnStack schema, ObjectHandleOnStack keepAlive, ObjectHandleOnStack slotTypes,
-            out IntPtr continuationType, out IntPtr resumeInfo);
+            out IntPtr continuationType, out IntPtr resumeInfo, out IntPtr methodContext, out IntPtr classContext);
     }
 }

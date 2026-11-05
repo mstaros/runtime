@@ -2616,7 +2616,9 @@ inline bool Compiler::lvaKeepAliveAndReportThis()
     //
     if (genericsContextIsThis)
     {
-        const bool mustKeep      = (info.compMethodInfo->options & CORINFO_GENERICS_CTXT_KEEP_ALIVE) != 0;
+        // A checkpointed async body keeps its instantiation context live at every suspension.
+        const bool mustKeep      = ((info.compMethodInfo->options & CORINFO_GENERICS_CTXT_KEEP_ALIVE) != 0) ||
+                              (compIsAsync() && compIsAsyncCheckpointProof());
         const bool hasPatchpoint = doesMethodHavePatchpoints();
 
         if (lvaGenericsContextInUse || mustKeep || hasPatchpoint)
@@ -2644,6 +2646,13 @@ inline bool Compiler::lvaReportParamTypeArg()
         // If the VM requires us to keep the generics context alive and report it (for example, if any catch
         // clause catches a type that uses a generic parameter of this method) this flag will be set.
         if (info.compMethodInfo->options & CORINFO_GENERICS_CTXT_KEEP_ALIVE)
+        {
+            return true;
+        }
+
+        // A checkpointed async body keeps its instantiation context live at every suspension,
+        // so a restored frame can be matched to its exact instantiation.
+        if (compIsAsync() && compIsAsyncCheckpointProof())
         {
             return true;
         }

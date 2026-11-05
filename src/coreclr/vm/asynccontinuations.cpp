@@ -35,7 +35,7 @@ extern "C" INT32 QCALLTYPE AsyncHelpers_GetCheckpointPublicationStateForTesting(
 extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
     MethodDesc* method, INT32 state, intptr_t expectedResume, QCall::ObjectHandleOnStack schema,
     QCall::ObjectHandleOnStack keepAlive, QCall::ObjectHandleOnStack slotTypes,
-    intptr_t* continuationType, intptr_t* resumeInfo)
+    intptr_t* continuationType, intptr_t* resumeInfo, intptr_t* methodContext, intptr_t* classContext)
 {
     QCALL_CONTRACT;
     BEGIN_QCALL;
@@ -46,6 +46,8 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
     [&]() {
         *continuationType = 0;
         *resumeInfo = 0;
+        *methodContext = 0;
+        *classContext = 0;
         if (method == nullptr)
             COMPlusThrow(kNotSupportedException);
         // A metadata method's async body may not exist in a fresh process.
@@ -60,6 +62,12 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
             COMPlusThrow(kNotSupportedException);
         }
 
+        // Shared generic code is compiled once for its canonical form. An instantiation reaches
+        // it through an instantiating stub, and its checkpoint metadata belongs to that body.
+        // A shared body's hidden generic context names this exact instantiation.
+        MethodDesc* exact = body;
+        if (body->IsInstantiatingStub())
+            body = body->GetWrappedMethodDesc();
         body->PrepareInitialCode();
         LCGMethodResolver* resolver = body->IsLCGMethod()
             ? body->AsDynamicMethodDesc()->GetLCGMethodResolver() : nullptr;
@@ -72,7 +80,7 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
             COMPlusThrow(kNotSupportedException);
         }
         const auto* info = reinterpret_cast<const CORINFO_AsyncCheckpointInfo*>(bytes);
-        if (info->Version != 3 || info->CodeAddress != reinterpret_cast<void*>(body->GetNativeCode()) ||
+        if (info->Version != 4 || info->CodeAddress != reinterpret_cast<void*>(body->GetNativeCode()) ||
             info->LayoutBytes > 1024 * 1024 || info->NumStates > 65536)
             COMPlusThrow(kNotSupportedException);
 
@@ -126,7 +134,7 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
 
             I4ARRAYREF array = (I4ARRAYREF)AllocatePrimitiveArray(ELEMENT_TYPE_I4, 11 + frame->NumSlots * 6);
             INT32* values = array->GetDirectPointerToNonObjectElements();
-            values[0] = 3;
+            values[0] = 4;
             values[1] = frame->State;
             values[2] = frame->Flags;
             values[3] = frame->DataSize;
@@ -166,6 +174,8 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
         }
         *continuationType = reinterpret_cast<intptr_t>(frame->ContinuationClass);
         *resumeInfo = reinterpret_cast<intptr_t>(&info->ResumeInfos[state]);
+        *methodContext = reinterpret_cast<intptr_t>(exact);
+        *classContext = reinterpret_cast<intptr_t>(exact->GetMethodTable());
     }();
 #endif
     END_QCALL;
@@ -188,7 +198,7 @@ void AsyncContinuationsManager::RecordCheckpointInfoForTesting(MethodDesc* metho
 {
     LIMITED_METHOD_CONTRACT;
     const auto* info = reinterpret_cast<const CORINFO_AsyncCheckpointInfo*>(bytes);
-    if (info->Version != 3 || info->LayoutBytes > 1024 * 1024 ||
+    if (info->Version != 4 || info->LayoutBytes > 1024 * 1024 ||
         info->CodeAddress != reinterpret_cast<void*>(code))
         return;
 

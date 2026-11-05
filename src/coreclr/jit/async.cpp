@@ -2299,6 +2299,15 @@ void AsyncTransformation::CreateSuspension(BasicBlock*                      call
                 slot.Origin = 3;
             else if (isContextLocal(WellKnownArg::AsyncSynchronizationContext))
                 slot.Origin = 4;
+            // The hidden generic context identifies the instantiation that shared code runs for:
+            // origin 5 when it is the instantiated method, 6 when it is the instantiated class.
+            if ((m_compiler->info.compTypeCtxtArg != BAD_VAR_NUM) && (inf.LclNum == m_compiler->info.compTypeCtxtArg))
+            {
+                slot.Kind   = 3;
+                slot.Origin = ((m_compiler->info.compMethodInfo->options & CORINFO_GENERICS_CTXT_FROM_METHODTABLE) != 0)
+                                  ? 6
+                                  : 5;
+            }
             slot.ClassHandle = dsc->TypeIs(TYP_REF) ? dsc->lvClassHnd : NO_CLASS_HANDLE;
             slot.IsExact = dsc->TypeIs(TYP_REF) && dsc->lvClassIsExact;
             append(&slot, sizeof(slot));

@@ -40,11 +40,15 @@ Remove-Item Env:MERKLE_NESTED_CHECKPOINT_DIRECTORY -ErrorAction SilentlyContinue
 $corerun = Join-Path $core "corerun.exe"
 $log = Join-Path $output "external-dll-proof.log"
 Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
-foreach ($test in @("Script_calls_external_DLL_with_nested_await_and_validator", "External_DLL_checkpoint_survives_repeated_restarts")) {
+foreach ($test in @("Script_calls_external_DLL_with_nested_await_and_validator", "External_DLL_checkpoint_survives_repeated_restarts",
+        "Script_calls_generic_DLL_methods", "Generic_DLL_checkpoint_survives_restart")) {
     & $corerun $tests --treenode-filter ("/*/*/NestedCheckpointTests/" + $test) --maximum-parallel-tests 1 2>&1 | Tee-Object -FilePath $log -Append
     if ($LASTEXITCODE -ne 0) { throw "External DLL proof failed: $test ($LASTEXITCODE)" }
 }
 $receipt = Join-Path (Split-Path -Parent $tests) "TestResults\external-dll-checkpoint.receipt.json"
 if (-not (Test-Path -LiteralPath $receipt)) { throw "External DLL proof did not publish its receipt." }
 Copy-Item -LiteralPath $receipt -Destination (Join-Path $output "receipt.json") -Force
+$genericReceipt = Join-Path (Split-Path -Parent $tests) "TestResults\generic-dll-checkpoint.receipt.json"
+if (-not (Test-Path -LiteralPath $genericReceipt)) { throw "Generic DLL proof did not publish its receipt." }
+Copy-Item -LiteralPath $genericReceipt -Destination (Join-Path $output "generic-receipt.json") -Force
 Write-Host "ORDINARY METHOD CHECKPOINT PROOF PASSED: $output"

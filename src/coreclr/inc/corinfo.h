@@ -1987,14 +1987,15 @@ struct CORINFO_AsyncResumeInfo
 };
 
 // Internal, opt-in checkpoint proof metadata. Not a persisted format or a public ABI.
-// Only runtime-async DynamicMethods on a pinned runtime use this metadata.
+// Runtime-async DynamicMethods and mode-4 metadata methods on a pinned runtime use this metadata.
 struct CORINFO_AsyncCheckpointSlot
 {
     uint32_t Offset;      // Byte offset from managed GetRawData, excluding the method table.
-    uint32_t Kind;        // 0: unsupported, 1: Int32, 2: managed reference.
+    uint32_t Kind;        // 0: unsupported, 1: Int32, 2: managed reference, 3: generic context handle.
     uint32_t ILNumber;    // Diagnostic identity; includes unknown/compiler-generated locals.
     uint32_t IsExact;
-    uint32_t Origin;      // 0: unknown, 1: IL variable, 2: promoted IL field, 3/4: saved execution/sync context.
+    uint32_t Origin;      // 0: unknown, 1: IL variable, 2: promoted IL field, 3/4: saved execution/sync context,
+                          // 5/6: hidden generic context from the instantiated method/class.
     uint32_t FieldOffset; // Byte offset within the parent IL variable for origin 2; otherwise zero.
     CORINFO_CLASS_HANDLE ClassHandle; // Fresh-process reference-slot type; never persisted.
 };
