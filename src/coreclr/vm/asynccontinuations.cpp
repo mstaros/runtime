@@ -76,7 +76,7 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
         *methodContext = 0;
         *classContext = 0;
         if (method == nullptr)
-            COMPlusThrow(kNotSupportedException);
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint lookup has no method."));
         // A metadata method's async body may not exist in a fresh process.
         // Creating and preparing it must not invoke its pre-await instructions.
         MethodDesc* body = method->IsAsyncMethod() ? method :
@@ -86,7 +86,7 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
         if (body == nullptr)
         {
             if (expectedResume != 0) return;
-            COMPlusThrow(kNotSupportedException);
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint method has no async body."));
         }
 
         // Shared generic code is compiled once for its canonical form, and its checkpoint metadata
@@ -105,12 +105,12 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
         if (bytes == nullptr)
         {
             if (expectedResume != 0) return;
-            COMPlusThrow(kNotSupportedException);
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint method has no checkpoint metadata."));
         }
         const auto* info = reinterpret_cast<const CORINFO_AsyncCheckpointInfo*>(bytes);
         if (info->Version != 5 || info->CodeAddress != reinterpret_cast<void*>(body->GetNativeCode()) ||
             info->LayoutBytes > 1024 * 1024 || info->NumStates > 65536)
-            COMPlusThrow(kNotSupportedException);
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint metadata has another version, code address or size."));
 
         // Establish ownership before interpreting the caller's state number.
         if (expectedResume != 0)
@@ -122,7 +122,7 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
                 return;
         }
         if (state < 0 || static_cast<uint32_t>(state) >= info->NumStates)
-            COMPlusThrow(kNotSupportedException);
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint state is outside the method's states."));
 
         const BYTE* cursor = bytes + sizeof(*info);
         const BYTE* end = cursor + info->LayoutBytes;
@@ -132,24 +132,30 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
             const auto* candidate = reinterpret_cast<const CORINFO_AsyncCheckpointFrame*>(cursor);
             cursor += sizeof(*candidate);
             if (candidate->NumSlots > static_cast<size_t>(end - cursor) / sizeof(CORINFO_AsyncCheckpointSlot))
-                COMPlusThrow(kNotSupportedException);
+                COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint metadata is truncated."));
             if (candidate->State == static_cast<uint32_t>(state))
             {
-                if (frame != nullptr) COMPlusThrow(kNotSupportedException);
+                if (frame != nullptr)
+                    COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint metadata records a state twice."));
                 frame = candidate;
             }
             cursor += candidate->NumSlots * sizeof(CORINFO_AsyncCheckpointSlot);
         }
-        if (cursor != end || frame == nullptr || frame->AwaitILOffset == UINT32_MAX ||
-            info->ResumeInfos[state].Resume == 0 || info->ResumeInfos[state].DiagnosticIP == 0)
-            COMPlusThrow(kNotSupportedException);
+        if (cursor != end)
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint metadata is truncated."));
+        if (frame == nullptr)
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint state has no frame record."));
+        if (frame->AwaitILOffset == UINT32_MAX)
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint frame has no await IL offset."));
+        if (info->ResumeInfos[state].Resume == 0 || info->ResumeInfos[state].DiagnosticIP == 0)
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint state has no resume or diagnostic address."));
 
         // A root IL offset shared by several inlined awaits is ambiguous in this proof.
         for (cursor = bytes + sizeof(*info); cursor < end;)
         {
             const auto* candidate = reinterpret_cast<const CORINFO_AsyncCheckpointFrame*>(cursor);
             if (candidate != frame && candidate->AwaitILOffset == frame->AwaitILOffset)
-                COMPlusThrow(kNotSupportedException);
+                COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint frame shares its await IL offset with another suspension."));
             cursor += sizeof(*candidate) + candidate->NumSlots * sizeof(CORINFO_AsyncCheckpointSlot);
         }
 
@@ -157,7 +163,8 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
             GCX_COOP();
             OBJECTREF resolverObject = resolver != nullptr
                 ? resolver->GetManagedResolver() : body->GetMethodTable()->GetManagedClassObject();
-            if (resolverObject == NULL) COMPlusThrow(kNotSupportedException);
+            if (resolverObject == NULL)
+                COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint method has no managed owner."));
             keepAlive.Set(resolverObject);
 
             I4ARRAYREF array = (I4ARRAYREF)AllocatePrimitiveArray(ELEMENT_TYPE_I4, 11 + frame->NumSlots * 6);
@@ -206,7 +213,8 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
             {
                 TypeHandle result = frame->ResultClass != nullptr ? TypeHandle::FromPtr(frame->ResultClass)
                     : CheckpointPrimitiveType(static_cast<CorInfoType>(frame->ResultType));
-                if (result.IsNull()) COMPlusThrow(kNotSupportedException);
+                if (result.IsNull())
+                    COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint frame's awaited result type is unknown."));
                 awaitedType.Set(result.GetManagedClassObject());
             }
         }
