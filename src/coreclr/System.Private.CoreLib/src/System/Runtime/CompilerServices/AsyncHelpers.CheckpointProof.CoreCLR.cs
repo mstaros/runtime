@@ -457,10 +457,12 @@ namespace System.Runtime.CompilerServices
 
         // Restored from their bytes: primitives other than native-sized integers, enums over them, and structs whose
         // fields all qualify. With references, a struct's fields may also hold references, which the host binds. A
-        // native-sized integer or a pointer may be a handle, and a ref struct cannot be boxed.        [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL2070:UnrecognizedReflectionPattern",
+        // native-sized integer or a pointer may be a handle, and a ref struct cannot be boxed.
+        [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL2070:UnrecognizedReflectionPattern",
             Justification = "Opt-in checkpoint proof: a live variable's type and its fields are rooted by the frame being captured or restored.")]
         [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL2075:UnrecognizedReflectionPattern",
-            Justification = "Opt-in checkpoint proof: a live variable's type and its fields are rooted by the frame being captured or restored.")]        private static bool IsCheckpointValueType(Type type, bool references = false, int depth = 0)
+            Justification = "Opt-in checkpoint proof: a live variable's type and its fields are rooted by the frame being captured or restored.")]
+        private static bool IsCheckpointValueType(Type type, bool references = false, int depth = 0)
         {
             if (type.IsPointer || type.IsFunctionPointer || !type.IsValueType || type.IsByRefLike || depth > 16)
                 return false;
@@ -549,10 +551,12 @@ namespace System.Runtime.CompilerServices
             return fieldOffset;
         }
 
-        // The offsets at which a value type keeps references, through its nested structs.        [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL2070:UnrecognizedReflectionPattern",
+        // The offsets at which a value type keeps references, through its nested structs.
+        [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL2070:UnrecognizedReflectionPattern",
             Justification = "Opt-in checkpoint proof: a live variable's type and its fields are rooted by the frame being captured or restored.")]
         [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL2075:UnrecognizedReflectionPattern",
-            Justification = "Opt-in checkpoint proof: a live variable's type and its fields are rooted by the frame being captured or restored.")]        private static void CheckpointReferenceOffsets(Type type, int baseOffset, List<int> offsets, int depth)
+            Justification = "Opt-in checkpoint proof: a live variable's type and its fields are rooted by the frame being captured or restored.")]
+        private static void CheckpointReferenceOffsets(Type type, int baseOffset, List<int> offsets, int depth)
         {
             foreach (FieldInfo field in type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
             {
@@ -596,6 +600,7 @@ namespace System.Runtime.CompilerServices
             else
                 CopyCheckpointField(ref slot, ref RuntimeHelpers.GetRawData(value!), kind, size);
         }
+
         // What a frame's method produces for its caller: the X of its Task<X>, or void for Task.
         private static Type CheckpointReturnType(MethodInfo method)
         {

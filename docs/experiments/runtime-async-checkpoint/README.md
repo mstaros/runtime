@@ -146,6 +146,7 @@ stale contents, which for a call's argument temporary is a slot without a variab
 Only metadata frames take values; script frames keep Int32 and reference slots. The
 JIT/EE interface GUID changed with version 6; structs with references and the zero
 store changed neither the schema nor the GUID.
+
 The host capture/restore hooks accept an optional layout validator. Capture invokes
 it before encoding any live object; restore invokes it before decoding or installing
 values. The validator receives a copy of the schema. A controlled host must require
@@ -267,6 +268,7 @@ local leaves the local's other field, set before the await, intact. A live
 List<int>.Enumerator is refused by the host, which cannot restore its list's private
 version; a live struct holding a native-sized integer is refused at capture, and a box
 of another type at restore.
+
 Ordinary-method metadata is copied into its loader allocator before native-code
 publication and indexed by MethodDesc plus code address. Lookup selects the entry
 for installed code, so a losing compilation cannot provide the winner's layout.
@@ -320,7 +322,8 @@ portability remain unproved.
   is restored from its bytes, which are portable only between identical builds, and
   the host decides which references and struct types it binds. A value slot without a
   variable is refused: the zero store removes the argument temporaries seen so far,
-  and any other JIT temporary that holds a value fails the capture.- A serializable Int32 can still encode process-local meaning: identity or randomized
+  and any other JIT temporary that holds a value fails the capture.
+- A serializable Int32 can still encode process-local meaning: identity or randomized
   string hashes, thread IDs and similar values are not portable merely because
   their bits fit the schema. The script/host must avoid persisting such values as
   portable data or recreate them through an explicit binding.
