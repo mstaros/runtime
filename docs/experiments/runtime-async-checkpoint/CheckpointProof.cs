@@ -220,9 +220,9 @@ public static class CheckpointProof
             return;
         }
         ExpectNotSupported(() => Restore.Invoke(null, new object?[] { records.Reverse().ToArray(), methods, 41, null }),
-            "same-signature frames reversed", "frame order");
+            "same-signature frames reversed", "Checkpoint frame order, count or suspension state differs from capture.");
         ExpectNotSupported(() => Restore.Invoke(null, new object?[] { records.Skip(1).ToArray(), methods, 41, null }),
-            "same-signature chain truncated", "frame order");
+            "same-signature chain truncated", "Checkpoint frame order, count or suspension state differs from capture.");
         var sharedLabels = records.SelectMany(record => ((object?[])record[3]).OfType<string>()).Where(label => label == "hello").ToArray();
         Require(sharedLabels.Length >= 2 && sharedLabels.All(label => ReferenceEquals(label, sharedLabels[0])),
             "The file round trip split the shared label.");
