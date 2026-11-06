@@ -47,9 +47,11 @@ $proofTests = @("Script_calls_external_DLL_with_nested_await_and_validator", "Ex
         "DLL_result_types_checkpoint_survives_restart", "DLL_generic_result_types_checkpoint_survives_restart",
         "DLL_value_slots_checkpoint_survives_restart", "DLL_reference_struct_slots_checkpoint_survives_restart",
         "DLL_value_task_and_awaiter_checkpoint_survives_restart")
-$statementCases = [ordered]@{}
+$env:MERKLE_CHECKPOINT_CORE_ROOT = $core
+$restartReceipts = [ordered]@{
+    Direct_durable_event_survives_restart = "durable-event-checkpoint.receipt.json"
+}
 if ($StatementCoverage) {
-    $env:MERKLE_CHECKPOINT_CORE_ROOT = $core
     $statementCases = [ordered]@{
         Checkpointed_statement_scopes_restore_with_strict_slots = "statement-scopes"
         Checkpointed_deconstructing_vector_restores_with_strict_slots = "deconstructing-vector"
@@ -58,25 +60,27 @@ if ($StatementCoverage) {
         Checkpointed_using_segments_restore_with_strict_slots = "using-segments"
         Checkpointed_fixed_segments_restore_with_strict_slots = "fixed-segments"
     }
-    $proofTests += $statementCases.Keys
+    foreach ($test in $statementCases.Keys) {
+        $restartReceipts[$test] = "protected-checkpoint-" + $statementCases[$test] + ".receipt.json"
+    }
 }
+$proofTests += $restartReceipts.Keys
 foreach ($test in $proofTests) {
-    $statementReceipt = $null
-    if ($statementCases.Contains($test)) {
-        $name = "protected-checkpoint-" + $statementCases[$test] + ".receipt.json"
-        $statementReceipt = Join-Path (Split-Path -Parent $tests) "TestResults\$name"
-        if (Test-Path -LiteralPath $statementReceipt) { Remove-Item -LiteralPath $statementReceipt -Force }
+    $restartReceipt = $null
+    if ($restartReceipts.Contains($test)) {
+        $restartReceipt = Join-Path (Split-Path -Parent $tests) ("TestResults\" + $restartReceipts[$test])
+        if (Test-Path -LiteralPath $restartReceipt) { Remove-Item -LiteralPath $restartReceipt -Force }
     }
     $lines = & $corerun $tests --treenode-filter ("/*/*/NestedCheckpointTests/" + $test) --maximum-parallel-tests 1 2>&1 | Tee-Object -FilePath $log -Append
     $lines | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "External DLL proof failed: $test ($LASTEXITCODE)" }
+    if ($LASTEXITCODE -ne 0) { throw "Checkpoint proof failed: $test ($LASTEXITCODE)" }
     $summary = $lines -join [Environment]::NewLine
     if ($summary -notmatch '(?im)^\s*total:\s*1\s*$' -or $summary -notmatch '(?im)^\s*skipped:\s*0\s*$') {
         throw "Expected one executed case for $test. Build the current Merkle test project before running this proof."
     }
-    if ($statementReceipt) {
-        if (-not (Test-Path -LiteralPath $statementReceipt)) { throw "Missing restart receipt for $test." }
-        Copy-Item -LiteralPath $statementReceipt -Destination $output -Force
+    if ($restartReceipt) {
+        if (-not (Test-Path -LiteralPath $restartReceipt)) { throw "Missing restart receipt for $test." }
+        Copy-Item -LiteralPath $restartReceipt -Destination $output -Force
     }
 }
 $receipt = Join-Path (Split-Path -Parent $tests) "TestResults\external-dll-checkpoint.receipt.json"
