@@ -32,7 +32,8 @@ namespace System.Runtime.CompilerServices
 
         // Extended host proof for a mixed script/DLL continuation chain. Metadata methods must be closed and
         // may be collectible; exact DLL bytes are host-pinned. Instantiations of shared generic code are told
-        // apart by their saved generic context.
+        // apart by their saved generic context. A suspended ValueTask<T> method's ValueTask wraps such a task,
+        // which its AsTask() returns.
         internal static object[][] CaptureMethodCheckpointForTesting<T>(
             Task<T> task, MethodInfo[] methods, Func<object, object> encodeBinding, Action<int[]>? validateSlots = null)
         {
@@ -201,8 +202,9 @@ namespace System.Runtime.CompilerServices
         }
 
         // Restores a node whose first frame resumes from a completed awaited outcome: a result, a fault or a
-        // cancellation, as that task carries it. Frames may return Task or Task<X>; each caller must await
-        // exactly what its callee returns, and the node's task produces what its outermost frame returns.
+        // cancellation, as that task carries it. Frames may return Task, Task<X>, ValueTask or ValueTask<X>;
+        // each caller must await exactly what its callee returns, and the node's task produces what its
+        // outermost frame returns.
         internal static Task<T> RestoreMethodCheckpointWithOutcomeForTesting<T>(
             object[][] records, MethodInfo[] methods, Task awaited, Func<object, object> decodeBinding, Action<int[]>? validateSlots = null)
         {
@@ -355,12 +357,12 @@ namespace System.Runtime.CompilerServices
 
             // Each caller resumes with what its callee returns, written into the caller's typed result slot, so
             // the callee's result type must be exactly what the caller awaits. The task produces the outermost
-            // frame's result.
+            // frame's result; for a ValueTask<T> frame the host wraps it, as the runtime's own thunk does.
             if (host)
             {
                 for (int f = 1; f < records.Length; f++)
                     ValidateCheckpointAwait(frameKinds[f], frameAwaited[f], CheckpointReturnType(frameMethods[f - 1]));
-                if (frameMethods[^1].ReturnType != typeof(Task<T>))
+                if (frameMethods[^1].ReturnType != typeof(Task<T>) && frameMethods[^1].ReturnType != typeof(ValueTask<T>))
                     throw new NotSupportedException("Checkpoint task result type does not match the outermost frame.");
             }
 
@@ -601,15 +603,17 @@ namespace System.Runtime.CompilerServices
                 CopyCheckpointField(ref slot, ref RuntimeHelpers.GetRawData(value!), kind, size);
         }
 
-        // What a frame's method produces for its caller: the X of its Task<X>, or void for Task.
+        // What a frame's method produces for its caller: the X of its Task<X> or ValueTask<X>, or void for Task or
+        // ValueTask. Its async variant returns X whichever of them the method declares.
         private static Type CheckpointReturnType(MethodInfo method)
         {
             Type returnType = method.ReturnType;
-            if (returnType == typeof(Task))
+            if (returnType == typeof(Task) || returnType == typeof(ValueTask))
                 return typeof(void);
-            if (returnType.IsGenericType && returnType.GetGenericTypeDefinition() == typeof(Task<>))
+            if (returnType.IsGenericType && (returnType.GetGenericTypeDefinition() == typeof(Task<>) ||
+                returnType.GetGenericTypeDefinition() == typeof(ValueTask<>)))
                 return returnType.GetGenericArguments()[0];
-            throw new NotSupportedException("Checkpoint proof requires Task or Task<T> methods.");
+            throw new NotSupportedException("Checkpoint proof requires Task, Task<T>, ValueTask or ValueTask<T> methods.");
         }
 
         // A frame awaiting a callee frame must await exactly what that callee returns. Shared generic code

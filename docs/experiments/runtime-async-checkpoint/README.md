@@ -105,16 +105,23 @@ that version, and the wrapper with it, the await that suspends is the call site'
 own: in checkpoint mode it takes the call site's IL position, not the statement
 locations of the inline contexts in between, which optimized code does not keep.
 Several awaits inlined from one call site are ambiguous and rejected.
-Restore checks that each caller awaits exactly what its callee returns (Task<X> gives
-X, Task gives void; a __Canon awaited type matches by shape) and that the task's type
-is the outermost frame's. Frames may return Task or Task<X>. The outcome hook seeds
-the first frame with a completed task: a result must be a Task<X> of exactly the
-type that frame awaits, and a shared generic first frame awaiting a type parameter
-is refused because that type is not known exactly. A fault or cancellation is thrown
+Restore checks that each caller awaits exactly what its callee returns (Task<X> and
+ValueTask<X> give X, Task and ValueTask give void; a __Canon awaited type matches by
+shape) and that the task's type is the outermost frame's. Frames may return Task,
+Task<X>, ValueTask or ValueTask<X>. A suspended ValueTask<X> method's ValueTask wraps
+its runtime-async task, so a node whose outermost frame returns ValueTask<X> is
+captured from and restored as that task, which the host wraps. Awaiting a ValueTask
+suspends behind its task's or its IValueTaskSource's continuation, which capture skips
+as it skips a task's. The outcome hook seeds the first frame with a completed task: a
+result must be a Task<X> of exactly the type that frame awaits, and a shared generic
+first frame awaiting a type parameter is refused because that type is not known
+exactly. A fault or cancellation is thrown
 at the restored await by the ordinary dispatcher, which routes it to the nearest
 frame with a handler. The Int32 hooks keep their behavior, including no injected
 result for a void awaiter suspension. The JIT/EE interface GUID changed with this
-contract.
+contract. A frame suspended in a custom awaiter ([Unsafe]AwaitAwaiter) heads its own
+chain; restored, it resumes directly and reads its result from the awaiter the host
+restored. ValueTask frames and custom awaiters changed neither the schema nor the GUID.
 
 Version 6 restores live values. Each slot record carries its size, and the JIT
 reports kind 4 for a value without GC references (a primitive, a struct, a vector)
@@ -269,6 +276,15 @@ List<int>.Enumerator is refused by the host, which cannot restore its list's pri
 version; a live struct holding a native-sized integer is refused at capture, and a box
 of another type at restore.
 
+A value-task fixture chains, under a script, a frame that returns ValueTask<long> and
+awaits a custom awaitable, a frame that returns ValueTask and awaits it, and a frame
+that returns Task<int>. The awaiter is a struct holding a reference to a wait object;
+the host binds the wait and restores the awaiter over a completed one, from which the
+first frame reads its result. A second node is one frame that returns ValueTask<long>
+and awaits an IValueTaskSource: a fresh process restores it with a completed task, and
+the host wraps the node's task in a ValueTask. Restoring that node as an Int32 result
+is refused.
+
 Ordinary-method metadata is copied into its loader allocator before native-code
 publication and indexed by MethodDesc plus code address. Lookup selects the entry
 for installed code, so a losing compilation cannot provide the winner's layout.
@@ -316,8 +332,11 @@ portability remain unproved.
 - The original chain supports at most 16 Task<int> frames and Int32/null/string
   values. The original DynamicMethod host hook supports one guarded script frame
   with explicitly encoded bindings and List<int> identity. No arbitrary graph or closure serialization.
-- Host chains admit Task and Task<X> frames with any awaited result type. ValueTask
-  frames and custom awaitables remain unsupported. Live slots are Int32, references,
+- Host chains admit Task, Task<X>, ValueTask and ValueTask<X> frames with any awaited
+  result type, suspended at a task, a value task or a custom awaiter. A script frame
+  awaiting a ValueTask or a custom awaiter is not proven, nor is ConfigureAwait;
+  ConfigureAwaitOptions.SuppressThrowing suspends in a CoreLib frame that no host
+  supplies and is refused. Live slots are Int32, references,
   values, structs with references and CancellationToken. A value without references
   is restored from its bytes, which are portable only between identical builds, and
   the host decides which references and struct types it binds. A value slot without a
