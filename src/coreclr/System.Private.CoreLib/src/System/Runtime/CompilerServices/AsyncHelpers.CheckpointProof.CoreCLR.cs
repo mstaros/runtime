@@ -461,7 +461,7 @@ namespace System.Runtime.CompilerServices
             // for precise-init types after all frame checks, before running any resumed instructions.
             foreach (MethodInfo method in frameMethods)
                 if (method.DeclaringType is { } owner && (owner.Attributes & TypeAttributes.BeforeFieldInit) == 0)
-                    RuntimeHelpers.RunClassConstructor(owner.TypeHandle);
+                    InitializeCheckpointType(owner);
             observeFrame?.Invoke(first!);
             Continuation root = first!;
             if (outcome != null)
@@ -481,6 +481,10 @@ namespace System.Runtime.CompilerServices
             GC.KeepAlive(methods);
             return task;
         }
+
+        [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2059",
+            Justification = "The exact-build checkpoint experiment uses the host-retained, untrimmed declaring assembly.")]
+        private static void InitializeCheckpointType(Type owner) => RuntimeHelpers.RunClassConstructor(owner.TypeHandle);
 
         private static void ValidateCheckpointReference(int[] schema, int index, Type? expected, object? value,
             bool declaredOnly = false)
