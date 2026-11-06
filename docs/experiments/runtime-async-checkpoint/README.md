@@ -329,6 +329,18 @@ portability remain unproved.
   matching source text alone is insufficient.
 - Full canonical manifests are retained per frame for this bounded proof. The
   MessagePack value codec is unchanged, but identity metadata increases snapshot size.
+- Each task node admits at most 16 frames. The managed schema gate permits 1,024
+  slots and 1 MiB of continuation data; the native lookup permits 65,536 states
+  and 1 MiB of layout metadata. Schema 6 uses 11 header integers and seven per
+  slot. The standalone reader accepts that shape and bounds the whole file at 1 MiB.
+  File format v3 preserves string reference identity and frame positions. Recapture
+  older standalone files with the same candidate build used for restore.
+- Frame count, position, method, suspension state and effective thread-pool
+  dispatch are recorded together. Slot policies for every frame in one runtime
+  task run before its first value codec callback. The host owns graph-wide
+  prevalidation, authentication of task edges, generation and exact retained
+  method/load-context bindings. Injecting a generic leaf outcome requires an
+  exact result type; a typed root is required by the generic restore hook.
 - The original chain supports at most 16 Task<int> frames and Int32/null/string
   values. The original DynamicMethod host hook supports one guarded script frame
   with explicitly encoded bindings and List<int> identity. No arbitrary graph or closure serialization.
