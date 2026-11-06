@@ -1440,6 +1440,23 @@ GenTree* MorphCopyBlockHelper::CopyFieldByField()
         }
     }
 
+    // A field-by-field copy into a whole local that is not promoted writes it with partial stores, and liveness does
+    // not count partial stores as definitions. In checkpoint mode the local is zeroed first, so an await before the
+    // copy does not save the local's stale contents.
+    if ((result != nullptr) && m_srcDoFldStore && !m_dstDoFldStore && !m_dstSingleStoreLclVar &&
+        (m_dstLclNum != BAD_VAR_NUM) && (m_dstLclOffset == 0) && m_compiler->fgGlobalMorph && m_compiler->compIsAsync() &&
+        m_compiler->compIsAsyncCheckpointProof())
+    {
+        LclVarDsc* const dstVarDsc = m_compiler->lvaGetDesc(m_dstLclNum);
+        if (!dstVarDsc->lvPromoted && (dstVarDsc->lvExactSize() == m_blockSize))
+        {
+            GenTree* const zero = m_compiler->gtNewStoreLclVarNode(m_dstLclNum, m_compiler->gtNewIconNode(0));
+            zero->SetMorphed(m_compiler, /* doChildren */ true);
+            result = m_compiler->gtNewOperNode(GT_COMMA, TYP_VOID, zero, result);
+            result->SetMorphed(m_compiler);
+        }
+    }
+
     return result;
 }
 

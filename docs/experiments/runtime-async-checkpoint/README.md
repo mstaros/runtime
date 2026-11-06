@@ -116,30 +116,36 @@ frame with a handler. The Int32 hooks keep their behavior, including no injected
 result for a void awaiter suspension. The JIT/EE interface GUID changed with this
 contract.
 
-Version 6 restores live values without references. Each slot record carries its
-size, and the JIT reports kind 4 for a value without GC references (a primitive, a
-struct, a vector) and kind 5 for a struct with GC references, with the struct's type.
-A value is admitted by its variable's declared type: bool, char, the 8- to 64-bit
-integers, float, double, enums over them, and structs whose fields all qualify
-(decimal, DateTime, Guid, Nullable<T> and the like). Native-sized integers and
-pointers are refused, since they may be handles, and so is anything with references.
-The declared size must equal the slot's size, and a struct slot's type must equal the
-declared type. A promoted field is admitted only when its variable is admitted whole, so
-admission does not depend on whether the JIT promotes. A JIT temporary has no variable:
-one that holds a struct of plain data is admitted by the struct type the JIT reports,
-and any other unidentified value is refused. Such temporaries arise when the JIT copies
-a promoted struct into a call's argument temporary field by field: liveness treats the
-field stores as partial definitions, so the temporary is saved at an earlier await even
-though the copy overwrites it before the call. Capture boxes a value as its type (an
-empty Nullable<T> as null) for the host to bind; restore requires a box of exactly that
-type and copies its bytes.
-CancellationToken is the one struct with a reference that is admitted: saved whole or
-with its single field promoted, it reaches the host as a CancellationToken, and the host
-supplies the token the restored frame observes. In checkpoint mode the JIT skips
-physical promotion in async methods, whose replacement locals would be saved as
-unidentified temporaries. Only metadata frames take values; script frames keep Int32
-and reference slots. The JIT/EE interface GUID changed with this contract.
-
+Version 6 restores live values. Each slot record carries its size, and the JIT
+reports kind 4 for a value without GC references (a primitive, a struct, a vector)
+and kind 5 for a struct with GC references, with the struct's type. A value is
+admitted by its variable's declared type: bool, char, the 8- to 64-bit integers,
+float, double, enums over them, and structs whose fields all qualify or hold
+references (decimal, DateTime, Guid, Nullable<T>, KeyValuePair<TKey, TValue> and the
+like). Native-sized integers and pointers are refused, since they may be handles, and
+so are ref structs. The declared size must equal the slot's size, and a struct slot's
+type must equal the declared type. A promoted field is admitted only when its variable
+is admitted whole, so admission does not depend on whether the JIT promotes. Capture
+boxes a value as its type (an empty Nullable<T> as null) for the host to bind; restore
+requires a box of exactly that type and copies it, with write barriers when it holds
+references. A promoted variable whose type holds references reaches the host whole as
+well: capture checks each saved field's offset and kind against where the type keeps
+references and assembles the fields into one box, leaving fields the JIT did not save
+at their defaults, and restore writes the saved fields back from the box. The host
+thus decides on the struct's type whatever the JIT promotes; which references and
+struct types it binds is its own policy.
+CancellationToken stays a binding: saved whole or with its single field promoted, it
+reaches the host as a CancellationToken, and the host supplies the token the restored
+frame observes. A JIT temporary has no variable to restore a value as, so a value slot
+without an identified variable is refused. In checkpoint mode the JIT skips physical
+promotion in async methods, whose replacement locals would be saved as unidentified
+temporaries. It also stores zero to a whole local that is not promoted before copying
+a promoted struct into it field by field: liveness does not count the field stores as
+definitions, so without the zero store an await before the copy would save the local's
+stale contents, which for a call's argument temporary is a slot without a variable.
+Only metadata frames take values; script frames keep Int32 and reference slots. The
+JIT/EE interface GUID changed with version 6; structs with references and the zero
+store changed neither the schema nor the GUID.
 The host capture/restore hooks accept an optional layout validator. Capture invokes
 it before encoding any live object; restore invokes it before decoding or installing
 values. The validator receives a copy of the schema. A controlled host must require
@@ -245,12 +251,22 @@ Int32 lacks that shape.
 
 A value-slots fixture keeps primitives, enums, decimal, DateTime, Guid, a nullable, a
 padded struct, a nested struct and a struct parameter live in two frames, promoted and
-whole, together with a CancellationToken, and the argument temporaries the JIT copies
-promoted structs into. A fresh process restores them bit-exact and
-binds the token to one the restoring host owns. A live native-sized integer and a live
-struct with a string are refused at capture, and a decoded value of another type at
+whole, together with a CancellationToken. A fresh process restores them and binds the
+token to one the restoring host owns; each frame describes its values after the
+restore exactly as before the await, and no slot without a variable is saved. A live
+native-sized integer is refused at capture, and a decoded value of another type at
 restore.
 
+A reference-structs fixture keeps KeyValuePair<string, int>, a (string, long) tuple, a
+nullable KeyValuePair and structs that mix strings, a padded struct and a
+StringBuilder live in two frames under a script, whole and promoted. One builder is
+shared by both frames and several of the structs, and a promoted struct is passed by
+value to a call after the await. A fresh process restores them with the builder as one
+object. A promoted struct copied after the await into the first field of a larger
+local leaves the local's other field, set before the await, intact. A live
+List<int>.Enumerator is refused by the host, which cannot restore its list's private
+version; a live struct holding a native-sized integer is refused at capture, and a box
+of another type at restore.
 Ordinary-method metadata is copied into its loader allocator before native-code
 publication and indexed by MethodDesc plus code address. Lookup selects the entry
 for installed code, so a losing compilation cannot provide the winner's layout.
@@ -300,12 +316,11 @@ portability remain unproved.
   with explicitly encoded bindings and List<int> identity. No arbitrary graph or closure serialization.
 - Host chains admit Task and Task<X> frames with any awaited result type. ValueTask
   frames and custom awaitables remain unsupported. Live slots are Int32, references,
-  values without references and CancellationToken; other structs with references are
-  refused, and a value is restored from its bytes, which are portable only between
-  identical builds. A temporary that receives a promoted struct field by field is saved
-  at an earlier await although it is overwritten before its next use, so a snapshot can
-  hold dead copies.
-- A serializable Int32 can still encode process-local meaning: identity or randomized
+  values, structs with references and CancellationToken. A value without references
+  is restored from its bytes, which are portable only between identical builds, and
+  the host decides which references and struct types it binds. A value slot without a
+  variable is refused: the zero store removes the argument temporaries seen so far,
+  and any other JIT temporary that holds a value fails the capture.- A serializable Int32 can still encode process-local meaning: identity or randomized
   string hashes, thread IDs and similar values are not portable merely because
   their bits fit the schema. The script/host must avoid persisting such values as
   portable data or recreate them through an explicit binding.
