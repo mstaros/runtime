@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
+using System.Globalization;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.InteropServices;
@@ -59,7 +60,15 @@ namespace System.Runtime.CompilerServices
             if (current == null)
                 throw new NotSupportedException("The checkpoint contains no suspended script frame.");
 
+            ContinuationFlags notifierFlags = head is ValueTaskSourceContinuation source
+                ? source.CheckpointSchedulingFlags : head != current ? head.Flags : 0;
+            if ((notifierFlags & (ContinuationFlags.ContinueOnCapturedSynchronizationContext |
+                                  ContinuationFlags.ContinueOnCapturedTaskScheduler)) != 0)
+                throw new NotSupportedException("A pending notifier requires a captured scheduling context.");
+
             var frames = new List<object[]>();
+            var scheduling = new List<bool>();
+            var bindings = new List<(object?[] Values, int Index)>();
             while (current != null)
             {
                 if (frames.Count == 16)
@@ -74,14 +83,14 @@ namespace System.Runtime.CompilerServices
                 {
                     int[]? candidate = GetCheckpointInfo(methods[i], current.State,
                         out _, out IntPtr type, out IntPtr resume, out Type?[] candidateTypes, out _,
-                        out IntPtr candidateMethodContext, out IntPtr candidateClassContext, host, (IntPtr)current.ResumeInfo);
+                        out IntPtr candidateMethodContext, out IntPtr candidateClassContext, out int sharedCode, host, (IntPtr)current.ResumeInfo);
                     if (candidate == null || resume != (IntPtr)current.ResumeInfo ||
                         type != (IntPtr)RuntimeHelpers.GetMethodTable(current))
                         continue;
                     // Instantiations of shared generic code share resume addresses; only the saved
                     // instantiation context decides which of them owns this continuation.
                     ValidateCheckpointSchema(candidate, host);
-                    if (!IsCheckpointInstantiation(candidate, current, methods[i], candidateMethodContext, candidateClassContext,
+                    if (sharedCode != 0 && !IsCheckpointInstantiation(candidate, current, methods[i], candidateMethodContext, candidateClassContext,
                         ref mismatch))
                         continue;
                     if (schema != null)
@@ -110,7 +119,7 @@ namespace System.Runtime.CompilerServices
                     !ReferenceEquals(Unsafe.As<byte, object?>(ref Unsafe.Add(ref RuntimeHelpers.GetRawData(current), schema[4])),
                         CheckpointContextKeepAlive(contextOrigin, methodContext, classContext)))
                     throw new NotSupportedException("The generic context keep-alive differs from its instantiation.");
-                // Validate the complete layout before walking any user-owned object.
+                // No binding reaches the host codec until every frame has passed its layout and slot policy.
                 validateSlots?.Invoke((int[])schema.Clone());
                 if (((uint)current.Flags & ~7u) != ((uint)schema[2] & ~7u) ||
                     (current.Flags & (ContinuationFlags.ContinueOnCapturedSynchronizationContext |
@@ -143,7 +152,10 @@ namespace System.Runtime.CompilerServices
                         if (!host)
                             throw new NotSupportedException("A checkpoint value slot needs a host binding.");
                         if (CheckpointVariableFirstSlot(schema, i) == i)
-                            values[i] = encodeBinding!(ReadCheckpointPromotedVariable(schema, i, variableType, ref data));
+                        {
+                            values[i] = ReadCheckpointPromotedVariable(schema, i, variableType, ref data);
+                            if (values[i] != null) bindings.Add((values, i));
+                        }
                         continue;
                     }
                     // A value is boxed as its declared type and a token handed over whole, for the host to bind; an
@@ -154,7 +166,8 @@ namespace System.Runtime.CompilerServices
                             throw new NotSupportedException("A checkpoint value slot needs a host binding.");
                         object? boxed = valueType == typeof(CancellationToken) ? ReadCheckpointToken(schema, i, ref slot)
                             : RuntimeHelpers.Box(ref slot, valueType.TypeHandle);
-                        values[i] = boxed == null ? null : encodeBinding!(boxed);
+                        values[i] = boxed;
+                        if (boxed != null) bindings.Add((values, i));
                         continue;
                     }
                     object? value = schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 1
@@ -163,19 +176,31 @@ namespace System.Runtime.CompilerServices
                     ValidateCheckpointValue(schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize], value, host);
                     ValidateCheckpointReference(schema, i, slotTypes[i], value, declared[i]);
                     if (schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 2 && value != null)
-                        referenceTypes[i] = DynamicResolver.CheckpointTypeIdentity(value.GetType());
-                    values[i] = host && value != null && schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] != 1
-                        ? encodeBinding!(value) : value;
+                        referenceTypes[i] = CheckpointBoundTypeIdentity(value.GetType(), methods);
+                    values[i] = value;
+                    if (host && value != null && schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] != 1)
+                        bindings.Add((values, i));
                 }
 
                 string identity = CheckpointMethodIdentity(methods[methodIndex]);
+                scheduling.Add(((current.Flags | notifierFlags) & ContinuationFlags.ContinueOnThreadPool) != 0);
+                notifierFlags = 0;
                 frames.Add(host
-                    ? new object[] { methodIndex, current.State, schema, values, context == null ? null! : encodeBinding!(context), identity, referenceTypes }
+                    ? new object[] { methodIndex, current.State, schema, values, context!, identity, referenceTypes }
                     : new object[] { methodIndex, current.State, schema, values, identity, referenceTypes });
+                if (host && context != null) bindings.Add((frames[^1], 4));
                 current = current.Next;
             }
             if (host && !allowMultipleFrames && frames.Count != 1)
                 throw new NotSupportedException("Host checkpoint proof requires exactly one script frame.");
+            int identityIndex = host ? 5 : 4;
+            for (int f = 0; f < frames.Count; f++)
+            {
+                object[] frame = frames[f];
+                frame[identityIndex] = CheckpointFramePrefix(f, frames.Count, (int)frame[1], scheduling[f]) + (string)frame[identityIndex];
+            }
+            foreach (var (values, index) in bindings)
+                values[index] = encodeBinding!(values[index]!);
             GC.KeepAlive(methods);
             GC.KeepAlive(task);
             return frames.ToArray();
@@ -225,12 +250,12 @@ namespace System.Runtime.CompilerServices
             var frameMethods = new MethodInfo[records.Length];
             var frameKinds = new int[records.Length];
             var frameAwaited = new Type?[records.Length];
-            Continuation? first = null;
-            Continuation? last = null;
+            var layouts = new (object KeepAlive, IntPtr Type, IntPtr Resume, IntPtr MethodContext, IntPtr ClassContext,
+                Type?[] SlotTypes, bool[] Declared)[records.Length];
             for (int f = 0; f < records.Length; f++)
             {
                 object[] record = records[f];
-                if (record.Length != (host ? 7 : 6) || record[0] is not int index ||
+                if (record is null || record.Length != (host ? 7 : 6) || record[0] is not int index ||
                     (uint)index >= (uint)methods.Length || record[1] is not int state ||
                     record[2] is not int[] savedSchema || record[3] is not object?[] values ||
                     record[host ? 5 : 4] is not string identity || record[host ? 6 : 5] is not string?[] referenceTypes)
@@ -242,8 +267,9 @@ namespace System.Runtime.CompilerServices
                     ValidateCheckpointDestination(methods[index]);
                 int[] schema = GetCheckpointInfo(methods[index], state,
                     out object keepAlive, out IntPtr type, out IntPtr resume, out Type?[] slotTypes, out Type? awaitedType,
-                    out IntPtr methodContext, out IntPtr classContext, host)!;
-                if (identity != CheckpointMethodIdentity(methods[index]))
+                    out IntPtr methodContext, out IntPtr classContext, out _, host)!;
+                int separator = identity.IndexOf(':');
+                if (separator < 0 || !identity.AsSpan(separator + 1).SequenceEqual(CheckpointMethodIdentity(methods[index])))
                     throw new NotSupportedException("Checkpoint method identity does not match the recreated method.");
                 ValidateCheckpointSchema(schema, host);
                 if (savedSchema.Length >= CheckpointHeaderSize && (schema[8] != savedSchema[8] || schema[9] != savedSchema[9]))
@@ -255,6 +281,74 @@ namespace System.Runtime.CompilerServices
                 frameKinds[f] = schema[5];
                 frameAwaited[f] = awaitedType;
                 slotTypes = CheckpointSlotTypes(schema, slotTypes, methods[index], out bool[] declared);
+                layouts[f] = (keepAlive, type, resume, methodContext, classContext, slotTypes, declared);
+                for (int i = 0; i < values.Length; i++)
+                {
+                    int kind = schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize];
+                    if (kind == 3 && values[i] != null)
+                        throw new NotSupportedException("A saved generic context slot carries a value.");
+                    if (CheckpointPromotedVariable(schema, i, methods[index]) is Type variable)
+                    {
+                        ValidateCheckpointPromotedField(schema, i, variable);
+                        if ((CheckpointVariableFirstSlot(schema, i) != i && values[i] != null) || referenceTypes[i] != null)
+                            throw new NotSupportedException("Invalid promoted field payload.");
+                    }
+                    else
+                    {
+                        Type? valueType = CheckpointValueSlotType(schema, i, methods[index], slotTypes[i]);
+                        if ((valueType != null || kind != 2 || values[i] == null) && referenceTypes[i] != null)
+                            throw new NotSupportedException("Unexpected checkpoint reference identity.");
+                        if (valueType == null && kind == 1 && values[i] is not int)
+                            throw new NotSupportedException("Invalid checkpoint Int32 slot.");
+                    }
+                }
+                if (host && record[4] != null && CheckpointFlagOffset(schema, ContinuationFlags.ExecutionContextIndexFirstBit,
+                        ContinuationFlags.ExecutionContextIndexNumBits) == 0)
+                    throw new NotSupportedException("Unexpected execution context.");
+            }
+
+            // Each caller resumes with what its callee returns, written into the caller's typed result slot, so
+            // the callee's result type must be exactly what the caller awaits. The task produces the outermost
+            // frame's result; for a ValueTask<T> frame the host wraps it, as the runtime's own thunk does.
+            if (host)
+            {
+                for (int f = 1; f < records.Length; f++)
+                    ValidateCheckpointAwait(frameKinds[f], frameAwaited[f], CheckpointReturnType(frameMethods[f - 1]));
+                if (frameMethods[^1].ReturnType != typeof(Task<T>) && frameMethods[^1].ReturnType != typeof(ValueTask<T>))
+                    throw new NotSupportedException("Checkpoint task result type does not match the outermost frame.");
+            }
+
+            // Recreate the pending await as a completed task. The ordinary dispatcher delivers its result into
+            // the first frame, or throws its fault or cancellation at that await and routes it to the nearest
+            // frame with a handler, then resumes all callers. Without an outcome to deliver, a void await is a
+            // script frame's awaiter suspension, which reads its result from a host-rebound awaiter slot.
+            RuntimeAsyncTaskContinuation? outcome = null;
+            if (frameKinds[0] != 3 || deliverVoidOutcome)
+            {
+                outcome = new RuntimeAsyncTaskContinuation();
+                InitializeCheckpointOutcome(outcome, frameKinds[0], frameAwaited[0], awaited);
+            }
+
+            // Ordinal, length and suspension state bind a frame to its position even when all result types match.
+            // The trusted host authenticates the whole ordered snapshot, including its run and generation.
+            for (int f = 0; f < records.Length; f++)
+            {
+                string identity = (string)records[f][host ? 5 : 4];
+                if (!identity.StartsWith(CheckpointFramePrefix(f, records.Length, (int)records[f][1], identity[0] == 'P'),
+                        StringComparison.Ordinal))
+                    throw new NotSupportedException("Checkpoint frame order, count or suspension state differs from capture.");
+            }
+
+            Continuation? first = null;
+            Continuation? last = null;
+            for (int f = 0; f < records.Length; f++)
+            {
+                object[] record = records[f];
+                int index = (int)record[0], state = (int)record[1];
+                int[] schema = (int[])record[2];
+                object?[] values = (object?[])record[3];
+                string?[] referenceTypes = (string?[])record[host ? 6 : 5];
+                var (keepAlive, type, resume, methodContext, classContext, slotTypes, declared) = layouts[f];
                 var restoredValues = new object?[values.Length];
                 var valueTypes = new Type?[values.Length];
                 var variables = new Type?[values.Length];
@@ -276,8 +370,15 @@ namespace System.Runtime.CompilerServices
                         if (CheckpointVariableFirstSlot(schema, i) == i)
                         {
                             object? box = host && value != null ? decodeBinding!(value) : null;
-                            if (box == null || box.GetType() != variableType)
+                            Type? underlying = Nullable.GetUnderlyingType(variableType);
+                            if (box == null ? underlying == null || value != null : box.GetType() != (underlying ?? variableType))
                                 throw new NotSupportedException("A restored value differs from its slot's declared type " + variableType + ".");
+                            if (underlying != null)
+                            {
+                                object storage = RuntimeTypeHandle.InternalAllocNoChecks((MethodTable*)variableType.TypeHandle.Value);
+                                CastHelpers.Unbox_Nullable(ref RuntimeHelpers.GetRawData(storage), (MethodTable*)variableType.TypeHandle.Value, box);
+                                box = storage;
+                            }
                             restoredValues[i] = box;
                         }
                         else if (value != null)
@@ -305,7 +406,7 @@ namespace System.Runtime.CompilerServices
                     ValidateCheckpointValue(schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize], value, host);
                     ValidateCheckpointReference(schema, i, slotTypes[i], value, declared[i]);
                     string? actualType = schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 2 && value != null
-                        ? DynamicResolver.CheckpointTypeIdentity(value.GetType()) : null;
+                        ? CheckpointBoundTypeIdentity(value.GetType(), methods) : null;
                     if (referenceTypes[i] != actualType)
                         throw new NotSupportedException("Checkpoint reference type differs from capture.");
                     restoredValues[i] = value;
@@ -317,7 +418,8 @@ namespace System.Runtime.CompilerServices
 
                 var current = (Continuation)RuntimeTypeHandle.InternalAllocNoChecks((MethodTable*)type);
                 current.State = state;
-                current.Flags = (ContinuationFlags)((uint)schema[2] & ~6u);
+                current.Flags = (ContinuationFlags)schema[2] & ~ContinuationFlags.AllContinuationFlags;
+                if (((string)record[host ? 5 : 4])[0] == 'P') current.Flags |= ContinuationFlags.ContinueOnThreadPool;
                 current.ResumeInfo = (ResumeInfo*)resume;
                 ref byte data = ref RuntimeHelpers.GetRawData(current);
                 if (schema[4] != -1)
@@ -355,28 +457,17 @@ namespace System.Runtime.CompilerServices
                 last = current;
             }
 
-            // Each caller resumes with what its callee returns, written into the caller's typed result slot, so
-            // the callee's result type must be exactly what the caller awaits. The task produces the outermost
-            // frame's result; for a ValueTask<T> frame the host wraps it, as the runtime's own thunk does.
-            if (host)
-            {
-                for (int f = 1; f < records.Length; f++)
-                    ValidateCheckpointAwait(frameKinds[f], frameAwaited[f], CheckpointReturnType(frameMethods[f - 1]));
-                if (frameMethods[^1].ReturnType != typeof(Task<T>) && frameMethods[^1].ReturnType != typeof(ValueTask<T>))
-                    throw new NotSupportedException("Checkpoint task result type does not match the outermost frame.");
-            }
-
-            // Recreate the pending await as a completed task. The ordinary dispatcher delivers its result into
-            // the first frame, or throws its fault or cancellation at that await and routes it to the nearest
-            // frame with a handler, then resumes all callers. Without an outcome to deliver, a void await is a
-            // script frame's awaiter suspension, which reads its result from a host-rebound awaiter slot.
+            // A direct resume bypasses the metadata method prologue. Restore the CLR entry invariant
+            // for precise-init types after all frame checks, before running any resumed instructions.
+            foreach (MethodInfo method in frameMethods)
+                if (method.DeclaringType is { } owner && (owner.Attributes & TypeAttributes.BeforeFieldInit) == 0)
+                    RuntimeHelpers.RunClassConstructor(owner.TypeHandle);
             observeFrame?.Invoke(first!);
             Continuation root = first!;
-            if (frameKinds[0] != 3 || deliverVoidOutcome)
+            if (outcome != null)
             {
-                var head = new RuntimeAsyncTaskContinuation { Next = first };
-                InitializeCheckpointOutcome(head, frameKinds[0], frameAwaited[0], awaited);
-                root = head;
+                outcome.Next = first;
+                root = outcome;
             }
             var task = new RuntimeAsyncTask<T>();
             task.CheckpointProofState = root;
@@ -491,7 +582,7 @@ namespace System.Runtime.CompilerServices
 
         // A promoted variable whose type holds references reaches the host whole, as one box of its declared type, so
         // the host decides on that type whatever the JIT promotes. Null for any other slot. CancellationToken keeps its
-        // binding, and a promoted Nullable<T> with references is not assembled.
+        // binding; Nullable<T> is presented to the host using normal CLR boxing.
         private static Type? CheckpointPromotedVariable(int[] schema, int index, MethodInfo method)
         {
             if (schema[CheckpointHeaderSize + 4 + index * CheckpointSlotSize] != 2 || method is DynamicMethod)
@@ -499,7 +590,7 @@ namespace System.Runtime.CompilerServices
             Type? variable = CheckpointVariableType(schema, index, method);
             if (variable == null || !variable.IsValueType || variable == typeof(CancellationToken) || !CheckpointHasReferences(variable))
                 return null;
-            if (Nullable.GetUnderlyingType(variable) != null || !IsCheckpointValueType(variable, references: true))
+            if (!IsCheckpointValueType(variable, references: true))
                 throw new NotSupportedException("A field of a live " + variable +
                     " is outside this checkpoint proof: native-sized integers, pointers and ref structs are not restored.");
             return variable;
@@ -521,7 +612,7 @@ namespace System.Runtime.CompilerServices
 
         // A promoted variable as one box of its declared type: each saved field is copied to its offset, and a field
         // the JIT did not save keeps its default.
-        private static unsafe object ReadCheckpointPromotedVariable(int[] schema, int first, Type variable, ref byte data)
+        private static unsafe object? ReadCheckpointPromotedVariable(int[] schema, int first, Type variable, ref byte data)
         {
             object box = RuntimeTypeHandle.InternalAllocNoChecks((MethodTable*)variable.TypeHandle.Value);
             ref byte target = ref RuntimeHelpers.GetRawData(box);
@@ -534,7 +625,7 @@ namespace System.Runtime.CompilerServices
                     ref Unsafe.Add(ref data, schema[CheckpointHeaderSize + j * CheckpointSlotSize]),
                     schema[CheckpointHeaderSize + 1 + j * CheckpointSlotSize], schema[CheckpointHeaderSize + 6 + j * CheckpointSlotSize]);
             }
-            return box;
+            return Nullable.GetUnderlyingType(variable) == null ? box : RuntimeHelpers.Box(ref target, variable.TypeHandle);
         }
 
         // A saved field must lie within its variable, and its kind must agree with where the variable's type keeps
@@ -726,6 +817,33 @@ namespace System.Runtime.CompilerServices
             return (int)offset;
         }
 
+        private static string CheckpointFramePrefix(int index, int count, int state, bool pool) =>
+            string.Create(CultureInfo.InvariantCulture, $"{(pool ? 'P' : 'I')}{index}/{count}/{state}:");
+
+        private static string CheckpointBoundTypeIdentity(Type type, MethodInfo[] methods)
+        {
+            string identity = DynamicResolver.CheckpointTypeIdentity(type);
+            var bindings = new Text.StringBuilder();
+            void Add(Type value)
+            {
+                if (value.HasElementType) { Add(value.GetElementType()!); return; }
+                var context = AssemblyLoadContext.GetLoadContext(value.Assembly);
+                if (context != AssemblyLoadContext.Default)
+                {
+                    int anchor = Array.FindIndex(methods, m => AssemblyLoadContext.GetLoadContext(m.Module.Assembly) == context);
+                    if (anchor < 0 || context == null || context.IsUnloading)
+                        throw new NotSupportedException("Checkpoint value has no live load-context binding in the host method table.");
+                    bindings.Append('/').Append(anchor.ToString(CultureInfo.InvariantCulture));
+                }
+                else
+                    bindings.Append("/d");
+                if (value.IsGenericType)
+                    foreach (Type argument in value.GetGenericArguments()) Add(argument);
+            }
+            Add(type);
+            return identity + bindings.ToString();
+        }
+
         private static string CheckpointMethodIdentity(MethodInfo method)
         {
             if (method is DynamicMethod dynamicMethod)
@@ -791,7 +909,7 @@ namespace System.Runtime.CompilerServices
         // null for an Int32 (kind 1) or void (kind 3) await.
         private static int[]? GetCheckpointInfo(MethodInfo method, int state,
             out object keepAlive, out IntPtr type, out IntPtr resume, out Type?[] slotTypes, out Type? awaitedType,
-            out IntPtr methodContext, out IntPtr classContext, bool host = false, IntPtr expectedResume = default)
+            out IntPtr methodContext, out IntPtr classContext, out int sharedCode, bool host = false, IntPtr expectedResume = default)
         {
             int[] schema = null!;
             slotTypes = null!;
@@ -808,7 +926,7 @@ namespace System.Runtime.CompilerServices
             GetCheckpointInfoForTesting(handle, state, expectedResume,
                 ObjectHandleOnStack.Create(ref schema), ObjectHandleOnStack.Create(ref keepAlive),
                 ObjectHandleOnStack.Create(ref slotTypes), ObjectHandleOnStack.Create(ref awaitedType),
-                out type, out resume, out methodContext, out classContext);
+                out type, out resume, out methodContext, out classContext, out sharedCode);
             GC.KeepAlive(method);
             // A capture probe must skip nonowners before enforcing the owner's signature.
             if (schema != null)
@@ -860,7 +978,7 @@ namespace System.Runtime.CompilerServices
                 IntPtr saved = Unsafe.ReadUnaligned<IntPtr>(ref Unsafe.Add(ref data, schema[CheckpointHeaderSize + i * CheckpointSlotSize]));
                 IntPtr expected = contextOrigin == 5 ? methodContext : classContext;
                 if (saved == expected)
-                    return true;
+                    return contextOrigin == 5 || !method.IsGenericMethod;
                 // Name what the frame received, so a refusal shows which instantiation it was.
                 string received = contextOrigin == 5
                     ? RuntimeType.GetMethodBase(null, new RuntimeMethodHandleInternal(saved))?.ToString() ?? "?"
@@ -870,8 +988,8 @@ namespace System.Runtime.CompilerServices
                 return false;
             }
             Type declaring = method.DeclaringType!;
-            if (method.IsStatic || !declaring.IsGenericType)
-                return true;
+            if (method.IsStatic || method.IsGenericMethod || !declaring.IsGenericType)
+                return false;
             for (int i = 0; i < schema[6]; i++)
             {
                 if (schema[CheckpointHeaderSize + 4 + i * CheckpointSlotSize] != 1 ||
@@ -886,7 +1004,7 @@ namespace System.Runtime.CompilerServices
                 }
                 return false;
             }
-            return true;
+            return false;
         }
 
         // Shared generic code reports canonical (__Canon) classes for slots typed by a type parameter.
@@ -1051,6 +1169,6 @@ namespace System.Runtime.CompilerServices
         [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AsyncHelpers_GetCheckpointInfoForTesting")]
         private static partial void GetCheckpointInfoForTesting(IntPtr method, int state, IntPtr expectedResume,
             ObjectHandleOnStack schema, ObjectHandleOnStack keepAlive, ObjectHandleOnStack slotTypes, ObjectHandleOnStack awaitedType,
-            out IntPtr continuationType, out IntPtr resumeInfo, out IntPtr methodContext, out IntPtr classContext);
+            out IntPtr continuationType, out IntPtr resumeInfo, out IntPtr methodContext, out IntPtr classContext, out int sharedCode);
     }
 }

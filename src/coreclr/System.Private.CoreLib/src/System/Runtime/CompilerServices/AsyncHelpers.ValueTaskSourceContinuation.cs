@@ -14,6 +14,8 @@ namespace System.Runtime.CompilerServices
         {
             internal object? Source;
             internal short Token;
+            // HandleSuspended transfers these flags to the source, then clears them on the chain.
+            internal ContinuationFlags CheckpointSchedulingFlags;
             internal delegate*<object, Action<object?>, object?, short, ValueTaskSourceOnCompletedFlags, void> OnCompletedValueTaskSource;
             private delegate*<object, short, ref byte, void> _getResult;
 

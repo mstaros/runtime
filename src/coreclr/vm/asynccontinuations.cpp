@@ -62,7 +62,7 @@ static TypeHandle CheckpointPrimitiveType(CorInfoType type)
 extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
     MethodDesc* method, INT32 state, intptr_t expectedResume, QCall::ObjectHandleOnStack schema,
     QCall::ObjectHandleOnStack keepAlive, QCall::ObjectHandleOnStack slotTypes, QCall::ObjectHandleOnStack awaitedType,
-    intptr_t* continuationType, intptr_t* resumeInfo, intptr_t* methodContext, intptr_t* classContext)
+    intptr_t* continuationType, intptr_t* resumeInfo, intptr_t* methodContext, intptr_t* classContext, INT32* sharedCode)
 {
     QCALL_CONTRACT;
     BEGIN_QCALL;
@@ -75,6 +75,7 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
         *resumeInfo = 0;
         *methodContext = 0;
         *classContext = 0;
+        *sharedCode = 0;
         if (method == nullptr)
             COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint lookup has no method."));
         // A metadata method's async body may not exist in a fresh process.
@@ -230,6 +231,7 @@ extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
         *resumeInfo = reinterpret_cast<intptr_t>(&info->ResumeInfos[state]);
         *methodContext = reinterpret_cast<intptr_t>(exact);
         *classContext = reinterpret_cast<intptr_t>(exact->GetMethodTable());
+        *sharedCode = body->IsSharedByGenericInstantiations() ? 1 : 0;
     }();
 #endif
     END_QCALL;

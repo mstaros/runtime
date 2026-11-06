@@ -3,6 +3,7 @@
 
 #nullable enable
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -172,6 +173,23 @@ public static class CheckpointProof
         ProduceScheduling(path + ".pool");
         if (Environment.GetEnvironmentVariable("DOTNET_JitAsyncCheckpointProof") == "2")
             Require(records.All(r => ((int[])r[2])[10] == 1), "Forced JIT retry did not reach the installed metadata.");
+        var hostCapture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        var hostRestore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int policyCalls = 0, codecCalls = 0;
+        Func<object, object> codec = value => { codecCalls++; return value; };
+        Action<int[]> rejectSecond = _ => { if (++policyCalls == 2) throw new NotSupportedException("second frame"); };
+        ExpectNotSupported(() => hostCapture.Invoke(null, new object?[] { pending, methods, codec, rejectSecond }),
+            "late capture rejection", "second frame");
+        Require(codecCalls == 0, "The encoder ran before the second frame's policy.");
+        object[][] hostRecords = (object[][])hostCapture.Invoke(null, new object?[] { pending, methods, codec, null })!;
+        Require(codecCalls > 0, "The negative test needs an encodable first frame.");
+        codecCalls = 0;
+        policyCalls = 0;
+        ExpectNotSupported(() => hostRestore.Invoke(null, new object?[] { hostRecords, methods, Task.FromResult(41), codec, rejectSecond }),
+            "late restore rejection", "second frame");
+        Require(codecCalls == 0, "The decoder ran before the second frame's policy.");
         Write(path, records);
         Console.WriteLine($"READY producer={Environment.ProcessId} frames={records.Length} bytes={new FileInfo(path).Length}");
         Console.Out.Flush();
@@ -201,6 +219,13 @@ public static class CheckpointProof
             ExpectNotSupported(() => Restore.Invoke(null, new object?[] { records, methods, 41, null }), "effective JIT configuration", "Checkpoint JIT configuration differs.");
             return;
         }
+        ExpectNotSupported(() => Restore.Invoke(null, new object?[] { records.Reverse().ToArray(), methods, 41, null }),
+            "same-signature frames reversed", "frame order");
+        ExpectNotSupported(() => Restore.Invoke(null, new object?[] { records.Skip(1).ToArray(), methods, 41, null }),
+            "same-signature chain truncated", "frame order");
+        var sharedLabels = records.SelectMany(record => ((object?[])record[3]).OfType<string>()).Where(label => label == "hello").ToArray();
+        Require(sharedLabels.Length >= 2 && sharedLabels.All(label => ReferenceEquals(label, sharedLabels[0])),
+            "The file round trip split the shared label.");
         var swapped = records.Select(r => (object[])r.Clone()).ToArray();
         swapped[0][0] = 1 - (int)swapped[0][0];
         ExpectNotSupported(() => Restore.Invoke(null, new object?[] { swapped, methods, 41, null }), "swapped method index");
@@ -512,7 +537,8 @@ public static class CheckpointProof
                    FileShare.None, 4096, FileOptions.WriteThrough))
         using (var writer = new BinaryWriter(stream))
         {
-            writer.Write("RuntimeAsyncCheckpointProof-v2");
+            writer.Write("RuntimeAsyncCheckpointProof-v3");
+            var strings = new Dictionary<string, int>(ReferenceEqualityComparer.Instance);
             writer.Write(typeof(CheckpointProof).Module.ModuleVersionId.ToString());
             writer.Write(typeof(object).Module.ModuleVersionId.ToString());
             writer.Write(Fingerprint());
@@ -537,7 +563,19 @@ public static class CheckpointProof
                     {
                         case null: writer.Write((byte)0); break;
                         case int number: writer.Write((byte)1); writer.Write(number); break;
-                        case string text: writer.Write((byte)2); writer.Write(text); break;
+                        case string text:
+                            if (strings.TryGetValue(text, out int previous))
+                            {
+                                writer.Write((byte)3);
+                                writer.Write(previous);
+                            }
+                            else
+                            {
+                                strings.Add(text, strings.Count);
+                                writer.Write((byte)2);
+                                writer.Write(text);
+                            }
+                            break;
                         default: throw new NotSupportedException();
                     }
                 }
@@ -552,7 +590,14 @@ public static class CheckpointProof
     {
         Require(new FileInfo(path).Length <= 1024 * 1024, "Snapshot exceeds proof limit.");
         using var reader = new BinaryReader(File.OpenRead(path));
-        Require(reader.ReadString() == "RuntimeAsyncCheckpointProof-v2", "Unknown snapshot format.");
+        Require(reader.ReadString() == "RuntimeAsyncCheckpointProof-v3", "Unsupported proof file format; recapture with this build.");
+        var strings = new List<string>();
+        string ReadNewString()
+        {
+            string text = reader.ReadString();
+            strings.Add(text);
+            return text;
+        }
         Require(reader.ReadString() == typeof(CheckpointProof).Module.ModuleVersionId.ToString(), "Program version mismatch.");
         Require(reader.ReadString() == typeof(object).Module.ModuleVersionId.ToString(), "CoreLib version mismatch.");
         Require(reader.ReadString() == Fingerprint(), "Runtime binary fingerprint mismatch.");
@@ -562,7 +607,7 @@ public static class CheckpointProof
         for (int f = 0; f < count; f++)
         {
             int method = reader.ReadInt32(), state = reader.ReadInt32();
-            var schema = new int[Bounded(reader.ReadInt32(), 11, 4107)];
+            var schema = new int[Bounded(reader.ReadInt32(), 11, 11 + 7 * 1024)];
             for (int i = 0; i < schema.Length; i++) schema[i] = reader.ReadInt32();
             string identity = reader.ReadString();
             var referenceTypes = new string?[Bounded(reader.ReadInt32(), 0, 1024)];
@@ -573,7 +618,8 @@ public static class CheckpointProof
                 {
                     0 => null,
                     1 => reader.ReadInt32(),
-                    2 => reader.ReadString(),
+                    2 => ReadNewString(),
+                    3 => strings[Bounded(reader.ReadInt32(), 0, strings.Count - 1)],
                     _ => throw new InvalidDataException("Unknown value kind.")
                 };
             records[f] = new object[] { method, state, schema, values, identity, referenceTypes };

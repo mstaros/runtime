@@ -878,6 +878,7 @@ namespace System.Runtime.CompilerServices
                             configFlags = ValueTaskSourceOnCompletedFlags.UseSchedulingContext;
                         }
 
+                        valueTaskSourceCont.CheckpointSchedulingFlags = continuationFlags & ContinuationFlags.AllContinuationFlags;
                         // Clear continuation flags, so that continuation runs transparently
                         contWithContinueFlags.Flags &= ~ContinuationFlags.AllContinuationFlags;
 
