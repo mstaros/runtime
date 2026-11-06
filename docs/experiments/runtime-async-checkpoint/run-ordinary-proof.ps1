@@ -47,17 +47,35 @@ $proofTests = @("Script_calls_external_DLL_with_nested_await_and_validator", "Ex
         "DLL_result_types_checkpoint_survives_restart", "DLL_generic_result_types_checkpoint_survives_restart",
         "DLL_value_slots_checkpoint_survives_restart", "DLL_reference_struct_slots_checkpoint_survives_restart",
         "DLL_value_task_and_awaiter_checkpoint_survives_restart")
+$statementCases = [ordered]@{}
 if ($StatementCoverage) {
     $env:MERKLE_CHECKPOINT_CORE_ROOT = $core
-    $proofTests += "Checkpointed_statement_scopes_restore_with_strict_slots"
+    $statementCases = [ordered]@{
+        Checkpointed_statement_scopes_restore_with_strict_slots = "statement-scopes"
+        Checkpointed_deconstructing_vector_restores_with_strict_slots = "deconstructing-vector"
+        Checkpointed_do_and_goto_restore_with_strict_slots = "do-goto"
+        Checkpointed_checked_overflow_restores_with_strict_slots = "checked-overflow"
+        Checkpointed_using_segments_restore_with_strict_slots = "using-segments"
+    }
+    $proofTests += $statementCases.Keys
 }
 foreach ($test in $proofTests) {
+    $statementReceipt = $null
+    if ($statementCases.Contains($test)) {
+        $name = "protected-checkpoint-" + $statementCases[$test] + ".receipt.json"
+        $statementReceipt = Join-Path (Split-Path -Parent $tests) "TestResults\$name"
+        if (Test-Path -LiteralPath $statementReceipt) { Remove-Item -LiteralPath $statementReceipt -Force }
+    }
     $lines = & $corerun $tests --treenode-filter ("/*/*/NestedCheckpointTests/" + $test) --maximum-parallel-tests 1 2>&1 | Tee-Object -FilePath $log -Append
     $lines | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "External DLL proof failed: $test ($LASTEXITCODE)" }
     $summary = $lines -join [Environment]::NewLine
     if ($summary -notmatch '(?im)^\s*total:\s*1\s*$' -or $summary -notmatch '(?im)^\s*skipped:\s*0\s*$') {
         throw "Expected one executed case for $test. Build the current Merkle test project before running this proof."
+    }
+    if ($statementReceipt) {
+        if (-not (Test-Path -LiteralPath $statementReceipt)) { throw "Missing restart receipt for $test." }
+        Copy-Item -LiteralPath $statementReceipt -Destination $output -Force
     }
 }
 $receipt = Join-Path (Split-Path -Parent $tests) "TestResults\external-dll-checkpoint.receipt.json"
