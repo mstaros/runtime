@@ -36,7 +36,7 @@ $dotnet = Join-Path $runtime ".dotnet\dotnet.exe"
 $sdk = (Get-Content -LiteralPath (Join-Path $runtime "global.json") -Raw | ConvertFrom-Json).sdk.version
 $csc = Join-Path $runtime ".dotnet\sdk\$sdk\Roslyn\bincore\csc.dll"
 $worker = Join-Path $output "CheckpointProof.dll"
-$compile = @("/nostdlib+", "/target:exe", "/langversion:preview", "/nullable:enable", "/optimize+", ('/out:"' + $worker + '"'))
+$compile = @("/nostdlib+", "/target:exe", "/langversion:preview", "/features:runtime-async=on", "/nullable:enable", "/optimize+", ('/out:"' + $worker + '"'))
 foreach ($name in @("System.Private.CoreLib", "System.Runtime", "System.Console", "System.Linq",
     "System.Reflection.Emit", "System.Reflection.Emit.Lightweight", "System.Reflection.Primitives",
     "System.Threading", "System.Threading.Tasks", "System.Collections", "System.Runtime.Extensions", "System.IO.FileSystem")) {
@@ -122,6 +122,10 @@ foreach ($direction in @(@("cold", "hot"), @("hot", "cold"))) {
     Invoke-CheckpointChild ("statics-restore-" + $direction[1]) $staticSnapshot
 }
 # Value 3 adds a bounded publication barrier; the reader must observe the gap.
+$env:DOTNET_JitAsyncCheckpointProof = "4"
+$metadataSnapshot = Join-Path $output "metadata-initializer.bin"
+Invoke-CheckpointChild "metadata-initializer-produce" $metadataSnapshot
+Invoke-CheckpointChild "metadata-initializer-restore" $metadataSnapshot
 $env:DOTNET_JitAsyncCheckpointProof = "3"
 Invoke-CheckpointChild "publication" $snapshot
 $env:DOTNET_JitAsyncCheckpointProof = "0"
@@ -147,7 +151,7 @@ if ($negative.ExitCode -eq 0 -or -not ((Get-Content -LiteralPath $negativeErr -R
 $env:CHECKPOINT_PROOF_RUNTIME_SHA256 = $fingerprint
 # Existing process-isolated continuation/GC regression, with metadata off and on.
 $regression = Join-Path $output "DynamicMethodContinuationConcurrency.dll"
-$regressionArgs = @($compile[0..($compile.Count - 2)] | Where-Object { $_ -notlike '/out:*' })
+$regressionArgs = @($compile[0..($compile.Count - 2)] | Where-Object { $_ -notlike '/out:*' -and $_ -notlike '/features:*' })
 $regressionArgs += '/out:"' + $regression + '"'
 $regressionArgs += '"' + (Join-Path $repo "src\tests\async\reflection\dynamicmethod-continuation-concurrency.cs") + '"'
 $regressionRsp = Join-Path $output "regression.rsp"

@@ -42,6 +42,15 @@ namespace System.Runtime.CompilerServices
             return CaptureCheckpointCore(task, methods, encodeBinding, validateSlots, allowMultipleFrames: true);
         }
 
+        internal static object[][] CaptureVoidMethodCheckpointForTesting(
+            Task task, MethodInfo[] methods, Func<object, object> encodeBinding, Action<int[]>? validateSlots = null)
+        {
+            ArgumentNullException.ThrowIfNull(encodeBinding);
+            if (task is not RuntimeAsyncTask<VoidTaskResult> pending)
+                throw new NotSupportedException("Checkpoint capture requires a nongeneric runtime-async root.");
+            return CaptureCheckpointCore(pending, methods, encodeBinding, validateSlots, allowMultipleFrames: true);
+        }
+
         private static unsafe object[][] CaptureCheckpointCore<T>(
             Task<T> task, MethodInfo[] methods, Func<object, object>? encodeBinding, Action<int[]>? validateSlots = null,
             bool allowMultipleFrames = false)
@@ -238,6 +247,14 @@ namespace System.Runtime.CompilerServices
             return RestoreCheckpointCore<T>(records, methods, awaited, decodeBinding, validateSlots: validateSlots, deliverVoidOutcome: true);
         }
 
+        internal static Task RestoreVoidMethodCheckpointForTesting(
+            object[][] records, MethodInfo[] methods, Task awaited, Func<object, object> decodeBinding, Action<int[]>? validateSlots = null)
+        {
+            ArgumentNullException.ThrowIfNull(awaited);
+            ArgumentNullException.ThrowIfNull(decodeBinding);
+            return RestoreCheckpointCore<VoidTaskResult>(records, methods, awaited, decodeBinding, validateSlots: validateSlots, deliverVoidOutcome: true);
+        }
+
         private static unsafe Task<T> RestoreCheckpointCore<T>(
             object[][] records, MethodInfo[] methods, Task awaited, Func<object, object>? decodeBinding, Action<object>? observeFrame = null, Action<int[]>? validateSlots = null,
             bool deliverVoidOutcome = false)
@@ -314,7 +331,9 @@ namespace System.Runtime.CompilerServices
             {
                 for (int f = 1; f < records.Length; f++)
                     ValidateCheckpointAwait(frameKinds[f], frameAwaited[f], CheckpointReturnType(frameMethods[f - 1]));
-                if (frameMethods[^1].ReturnType != typeof(Task<T>) && frameMethods[^1].ReturnType != typeof(ValueTask<T>))
+                Type outer = frameMethods[^1].ReturnType;
+                if (outer != typeof(Task<T>) && outer != typeof(ValueTask<T>) &&
+                    !(typeof(T) == typeof(VoidTaskResult) && (outer == typeof(Task) || outer == typeof(ValueTask))))
                     throw new NotSupportedException("Checkpoint task result type does not match the outermost frame.");
             }
 

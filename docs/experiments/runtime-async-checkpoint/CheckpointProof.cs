@@ -9,11 +9,12 @@ using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
+using System.Runtime.Loader;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Sources;
 
-// Compiled as ordinary C#. Only the two emitted methods use runtime-async IL.
+// The emitted workers and the metadata initializer fixture suspend with runtime-async IL.
 public static class CheckpointProof
 {
     private static readonly Type Helpers = typeof(RuntimeHelpers).Assembly.GetType(
@@ -39,6 +40,8 @@ public static class CheckpointProof
                 Produce(args[1]);
             else if (args[0] is "restore" or "config")
                 Resume(args[1], args[0] == "config");
+            else if (args[0] == "metadata-initializer-produce") ProduceMetadataInitializer(args[1]);
+            else if (args[0] == "metadata-initializer-restore") RestoreMetadataInitializer(args[1]);
             else if (args[0].StartsWith("statics-", StringComparison.Ordinal))
                 ClassInitializationProof(args[1], args[0].Contains("produce"), args[0].EndsWith("-hot", StringComparison.Ordinal));
             else if (args[0] is "publication" or "disabled")
@@ -123,6 +126,7 @@ public static class CheckpointProof
     private sealed class PendingSource : IValueTaskSource<int>
     {
         public object? CallbackState;
+        public Action? Registered;
         public ValueTaskSourceStatus GetStatus(short token) => ValueTaskSourceStatus.Pending;
         public int GetResult(short token) => throw new InvalidOperationException("Source must never complete.");
         public void OnCompleted(Action<object?> continuation, object? state, short token,
@@ -130,6 +134,7 @@ public static class CheckpointProof
         {
             Require(CallbackState == null, "Source subscribed more than once.");
             CallbackState = state;
+            Registered?.Invoke();
         }
     }
 
@@ -301,10 +306,29 @@ public static class CheckpointProof
         s_nextWait = new PendingSource();
         Task<int> pending = Start(methods, s_nextWait, "hello");
         var first = (object[][])Capture.Invoke(null, new object[] { pending, methods })!;
-        s_nextWait = new PendingSource();
-        Task<int> second = RestoreFrames(first, methods, 1);
-        Require(!second.IsCompleted, "Expected second suspension.");
-        var records = (object[][])Capture.Invoke(null, new object[] { second, methods })!;
+        using var registered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var next = new PendingSource();
+        int registrationTimedOut = 0;
+        next.Registered = () =>
+        {
+            registered.Set();
+            if (!release.Wait(TimeSpan.FromSeconds(20))) Interlocked.Exchange(ref registrationTimedOut, 1);
+        };
+        s_nextWait = next;
+        var resuming = Task.Factory.StartNew(() => RestoreFrames(first, methods, 1),
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        object[][] records;
+        try
+        {
+            Require(registered.Wait(TimeSpan.FromSeconds(20)), "Second park was never registered.");
+            var parked = (Task<int>)next.CallbackState!;
+            Require(!parked.IsCompleted, "Expected a quiescent second suspension.");
+            records = (object[][])Capture.Invoke(null, new object[] { parked, methods })!;
+        }
+        finally { release.Set(); }
+        Require(ReferenceEquals(resuming.GetAwaiter().GetResult(), next.CallbackState) && registrationTimedOut == 0,
+            "The handoff did not capture the registered task while the notifier was held.");
         Require((int)records[0][1] > 0, "Reuse fixture must checkpoint a nonzero state.");
         Require(((object?[])records[0][3]).Any(value => value is int number && number == 17), "Unchanged local was not saved.");
         Write(path, records);
@@ -408,6 +432,139 @@ public static class CheckpointProof
             A = 17; B = 31; Label = new string("statics".ToCharArray());
             Interlocked.Increment(ref s_classInitializations);
         }
+    }
+
+    private static int s_metadataInitializations;
+    private static class MetadataInitializer
+    {
+        internal static readonly int Value;
+        static MetadataInitializer()
+        {
+            Value = 17;
+            Interlocked.Increment(ref s_metadataInitializations);
+        }
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public static async Task<int> Run(ValueTask<int> gate)
+        {
+            Prefix("metadata-initializer");
+            return await gate + Value;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static async Task<int> HoldWeak(object value, ValueTask<int> gate)
+    {
+        int result = await gate;
+        GC.KeepAlive(value);
+        return result;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static async Task<int> HoldNullable((string Text, int Count)? value, ValueTask<int> gate)
+    {
+        int result = await gate;
+        return result + (value is { } item ? item.Text.Length + item.Count : 0);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static async Task HoldVoidTask(ValueTask<int> gate) { _ = await gate; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static async ValueTask HoldVoidValueTask(ValueTask<int> gate) { _ = await gate; }
+
+    private static void CheckVoidRoots()
+    {
+        var capture = Helpers.GetMethod("CaptureVoidMethodCheckpointForTesting", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var restore = Helpers.GetMethod("RestoreVoidMethodCheckpointForTesting", BindingFlags.Static | BindingFlags.NonPublic)!;
+        Func<object, object> codec = v => v;
+        foreach (string name in new[] { nameof(HoldVoidTask), nameof(HoldVoidValueTask) })
+        {
+            MethodInfo[] methods = { typeof(CheckpointProof).GetMethod(name)! };
+            var gate = new ValueTask<int>(new PendingSource(), 0);
+            Task pending = name == nameof(HoldVoidTask) ? HoldVoidTask(gate) : HoldVoidValueTask(gate).AsTask();
+            var records = (object[][])capture.Invoke(null, new object?[] { pending, methods, codec, null })!;
+            var timeout = new TimeoutException();
+            foreach (Task<int> outcome in new[] { Task.FromResult(1), Task.FromException<int>(timeout),
+                Task.FromCanceled<int>(new CancellationToken(true)) })
+            {
+                var result = (Task)restore.Invoke(null, new object?[] { records, methods, outcome, codec, null })!;
+                try { result.GetAwaiter().GetResult(); }
+                catch (OperationCanceledException) when (outcome.IsCanceled) { }
+                catch (TimeoutException error) when (ReferenceEquals(error, timeout)) { }
+                Require(outcome.Status == result.Status, "Void root changed a committed outcome.");
+            }
+        }
+        Console.WriteLine("PASS Task and ValueTask roots preserve success, timeout and cancellation");
+    }
+
+    private static void CheckWeakAndNullableBindings()
+    {
+        var capture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.Static | BindingFlags.NonPublic)!.MakeGenericMethod(typeof(int));
+        var restore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.Static | BindingFlags.NonPublic)!.MakeGenericMethod(typeof(int));
+        var a = new AssemblyLoadContext("checkpoint-a", true);
+        var b = new AssemblyLoadContext("checkpoint-b", true);
+        try
+        {
+            Type Payload(AssemblyLoadContext alc) => alc.LoadFromAssemblyPath(typeof(CheckpointProof).Assembly.Location)
+                .GetType(typeof(PendingSource).FullName!, true)!;
+            Type left = Payload(a), right = Payload(b);
+            object saved = RuntimeHelpers.GetUninitializedObject(left);
+            object wrong = RuntimeHelpers.GetUninitializedObject(right);
+            MethodInfo[] methods = { typeof(CheckpointProof).GetMethod(nameof(HoldWeak))!,
+                left.GetMethod(nameof(PendingSource.GetStatus))!, right.GetMethod(nameof(PendingSource.GetStatus))! };
+            var pending = HoldWeak(saved, new ValueTask<int>(new PendingSource(), 0));
+            int encodes = 0;
+            Func<object, object> encode = v => ReferenceEquals(v, saved) ? ++encodes : throw new InvalidOperationException("Unexpected weak-slot binding.");
+            var frames = (object[][])capture.Invoke(null, new object?[] { pending, methods, encode, null })!;
+            Require(encodes == 1, "Weak slot must be present in the checkpoint.");
+            Func<object, object> decode = _ => wrong;
+            ExpectNotSupported(() => restore.Invoke(null, new object?[] { frames, methods, Task.FromResult(7), decode, null }),
+                "identical weak type from another load", "Checkpoint reference type differs from capture.");
+            decode = _ => saved;
+            Require(((Task<int>)restore.Invoke(null, new object?[] { frames, methods, Task.FromResult(7), decode, null })!).Result == 7,
+                "The registered load failed to restore.");
+        }
+        finally { a.Unload(); b.Unload(); }
+
+        foreach (var value in new (string Text, int Count)?[] { null, ("abcd", 3) })
+        {
+            MethodInfo[] methods = { typeof(CheckpointProof).GetMethod(nameof(HoldNullable))! };
+            var pending = HoldNullable(value, new ValueTask<int>(new PendingSource(), 0));
+            Func<object, object> codec = v => v;
+            var records = (object[][])capture.Invoke(null, new object?[] { pending, methods, codec, null })!;
+            var result = (Task<int>)restore.Invoke(null, new object?[] { records, methods, Task.FromResult(10), codec, null })!;
+            Require(result.GetAwaiter().GetResult() == (value.HasValue ? 17 : 10), "Nullable with references changed across restore.");
+        }
+        Console.WriteLine("PASS weak load-context identity and nullable values with references");
+    }
+
+    private static MethodInfo MetadataInitializerMethod() => typeof(MetadataInitializer).GetMethod(nameof(MetadataInitializer.Run))!;
+
+    private static void ProduceMetadataInitializer(string path)
+    {
+        MethodInfo[] methods = { MetadataInitializerMethod() };
+        var task = MetadataInitializer.Run(new ValueTask<int>(new PendingSource(), 0));
+        var capture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.Static | BindingFlags.NonPublic)!.MakeGenericMethod(typeof(int));
+        Func<object, object> unexpected = value => throw new InvalidOperationException("Unexpected metadata initializer binding: " + value.GetType());
+        var frames = (object[][])capture.Invoke(null, new object?[] { task, methods, unexpected, null })!;
+        object[] f = frames.Single();
+        Require(f[4] == null && s_metadataInitializations == 1, "Initializer capture must have no context binding.");
+        Write(path, new[] { new[] { f[0], f[1], f[2], f[3], f[5], f[6] } });
+        CheckWeakAndNullableBindings();
+        CheckVoidRoots();
+    }
+
+    private static void RestoreMetadataInitializer(string path)
+    {
+        object[] f = Read(path, out int producer).Single();
+        MethodInfo[] methods = { MetadataInitializerMethod() };
+        Require(producer != Environment.ProcessId && s_metadataInitializations == 0, "Metadata restore must start cold.");
+        var frames = new[] { new object[] { f[0], f[1], f[2], f[3], null!, f[4], f[5] } };
+        var restore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.Static | BindingFlags.NonPublic)!.MakeGenericMethod(typeof(int));
+        Func<object, object> unexpected = value => throw new InvalidOperationException("Unexpected metadata initializer payload: " + value);
+        s_restoring = true;
+        var task = (Task<int>)restore.Invoke(null, new object?[] { frames, methods, Task.FromResult(41), unexpected, null })!;
+        Require(task.GetAwaiter().GetResult() == 58 && s_metadataInitializations == 1, "Metadata restore skipped its declaring type initializer.");
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -581,6 +738,7 @@ public static class CheckpointProof
                 }
             }
             writer.Flush();
+            Require(stream.Length <= 1024 * 1024, "Snapshot exceeds proof limit.");
             stream.Flush(flushToDisk: true);
         }
         File.Move(path + ".tmp", path, overwrite: true);

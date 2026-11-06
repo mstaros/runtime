@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$RuntimeRoot,
     [Parameter(Mandatory=$true)][string]$ScriptTests,
+    [switch]$StatementCoverage,
     [switch]$SkipBuild
 )
 $ErrorActionPreference = "Stop"
@@ -40,12 +41,17 @@ Remove-Item Env:MERKLE_NESTED_CHECKPOINT_DIRECTORY -ErrorAction SilentlyContinue
 $corerun = Join-Path $core "corerun.exe"
 $log = Join-Path $output "external-dll-proof.log"
 Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
-foreach ($test in @("Script_calls_external_DLL_with_nested_await_and_validator", "External_DLL_checkpoint_survives_repeated_restarts",
+$proofTests = @("Script_calls_external_DLL_with_nested_await_and_validator", "External_DLL_checkpoint_survives_repeated_restarts",
         "Script_calls_generic_DLL_methods", "Generic_DLL_checkpoint_survives_restart",
         "Collectible_DLL_checkpoint_survives_restart", "Collectible_generic_DLL_checkpoint_survives_restart",
         "DLL_result_types_checkpoint_survives_restart", "DLL_generic_result_types_checkpoint_survives_restart",
         "DLL_value_slots_checkpoint_survives_restart", "DLL_reference_struct_slots_checkpoint_survives_restart",
-        "DLL_value_task_and_awaiter_checkpoint_survives_restart")) {
+        "DLL_value_task_and_awaiter_checkpoint_survives_restart")
+if ($StatementCoverage) {
+    $env:MERKLE_CHECKPOINT_CORE_ROOT = $core
+    $proofTests += "Checkpointed_statement_scopes_restore_with_strict_slots"
+}
+foreach ($test in $proofTests) {
     $lines = & $corerun $tests --treenode-filter ("/*/*/NestedCheckpointTests/" + $test) --maximum-parallel-tests 1 2>&1 | Tee-Object -FilePath $log -Append
     $lines | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "External DLL proof failed: $test ($LASTEXITCODE)" }
