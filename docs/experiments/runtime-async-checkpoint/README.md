@@ -280,7 +280,7 @@ A value-task fixture chains, under a script, a frame that returns ValueTask<long
 awaits a custom awaitable, a frame that returns ValueTask and awaits it, and a frame
 that returns Task<int>. The awaiter is a struct holding a reference to a wait object;
 the host binds the wait and restores the awaiter over a completed one, from which the
-first frame reads its result. A second node is one frame that returns ValueTask<long>
+first frame reads its result. The fixture also checks timeout and cancellation and counts registrations across restore. A second node is one frame that returns ValueTask<long>
 and awaits an IValueTaskSource: a fresh process restores it with a completed task, and
 the host wraps the node's task in a ValueTask. Restoring that node as an Int32 result
 is refused.
@@ -339,13 +339,15 @@ portability remain unproved.
   dispatch are recorded together. Slot policies for every frame in one runtime
   task run before its first value codec callback. The host owns graph-wide
   prevalidation, authentication of task edges, generation and exact retained
-  method/load-context bindings. Injecting a generic leaf outcome requires an
-  exact result type; a typed root is required by the generic restore hook.
+  method/load-context bindings. The structural validation hook can preflight a
+  task before dispatch. Injecting a generic leaf outcome requires an exact
+  result type. Separate hooks restore a nongeneric Task or ValueTask root.
+  The fixture covers success, timeout and cancellation for both.
 - The original chain supports at most 16 Task<int> frames and Int32/null/string
   values. The original DynamicMethod host hook supports one guarded script frame
   with explicitly encoded bindings and List<int> identity. No arbitrary graph or closure serialization.
 - Host chains admit Task, Task<X>, ValueTask and ValueTask<X> frames with any awaited
-  result type, suspended at a task, a value task or a custom awaiter. A script frame
+  result type that the runtime can validate, suspended at a task, a value task or a custom awaiter. A script frame
   awaiting a ValueTask or a custom awaiter is not proven, nor is ConfigureAwait;
   ConfigureAwaitOptions.SuppressThrowing suspends in a CoreLib frame that no host
   supplies and is refused. Live slots are Int32, references,
