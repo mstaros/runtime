@@ -3435,7 +3435,8 @@ PhaseStatus Compiler::optCloneLoops()
         JITDUMP("  No loops to clone\n");
         return PhaseStatus::MODIFIED_NOTHING;
     }
-    if (!optLoopCloningEnabled())
+    // Each suspended IL await must identify one resume point in a checkpointed method.
+    if (!optLoopCloningEnabled() || (compIsAsync() && compIsAsyncCheckpointProof()))
     {
         JITDUMP("  Loop cloning disabled\n");
         return PhaseStatus::MODIFIED_NOTHING;

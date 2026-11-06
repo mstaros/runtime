@@ -1171,7 +1171,15 @@ void Compiler::optValnumCSE_SetUpAsyncByrefKills()
             continue;
         }
 
-        // This block has a suspension point. Make all BYREF CSEs unavailable.
+        if (compIsAsyncCheckpointProof())
+        {
+            // EndMerge normally propagates incoming values through calls. A checkpoint must
+            // rematerialize even constant type handles in successors of this suspension.
+            // bbCseGen below still describes definitions after the final async call.
+            block->SetFlags(BBF_NO_CSE_IN);
+        }
+
+        // This block has a suspension point. Kill the affected local definitions.
         BitVecOps::IntersectionD(cseLivenessTraits, block->bbCseGen, cseAsyncKillsMask);
         BitVecOps::IntersectionD(cseLivenessTraits, block->bbCseOut, cseAsyncKillsMask);
 
