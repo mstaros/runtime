@@ -406,7 +406,7 @@ namespace System.Runtime.CompilerServices
                     ValidateCheckpointValue(schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize], value, host);
                     ValidateCheckpointReference(schema, i, slotTypes[i], value, declared[i]);
                     string? actualType = schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 2 && value != null
-                        ? CheckpointBoundTypeIdentity(value.GetType(), methods, restoring: true) : null;
+                        ? CheckpointBoundTypeIdentity(value.GetType(), methods) : null;
                     if (referenceTypes[i] != actualType)
                         throw new NotSupportedException("Checkpoint reference type differs from capture.");
                     restoredValues[i] = value;
@@ -459,9 +459,13 @@ namespace System.Runtime.CompilerServices
 
             // A direct resume bypasses the metadata method prologue. Restore the CLR entry invariant
             // for precise-init types after all frame checks, before running any resumed instructions.
-            foreach (MethodInfo method in frameMethods)
-                if (method.DeclaringType is { } owner && (owner.Attributes & TypeAttributes.BeforeFieldInit) == 0)
+            for (int f = frameMethods.Length - 1; f >= 0; f--)
+            {
+                MethodInfo method = frameMethods[f];
+                if (method.DeclaringType is { } owner && (method.IsStatic || owner.IsValueType) &&
+                    (owner.Attributes & TypeAttributes.BeforeFieldInit) == 0)
                     InitializeCheckpointType(owner);
+            }
             observeFrame?.Invoke(first!);
             Continuation root = first!;
             if (outcome != null)
@@ -824,7 +828,7 @@ namespace System.Runtime.CompilerServices
         private static string CheckpointFramePrefix(int index, int count, int state, bool pool) =>
             string.Create(CultureInfo.InvariantCulture, $"{(pool ? 'P' : 'I')}{index}/{count}/{state}:");
 
-        private static string CheckpointBoundTypeIdentity(Type type, MethodInfo[] methods, bool restoring = false)
+        private static string CheckpointBoundTypeIdentity(Type type, MethodInfo[] methods)
         {
             var identity = new Text.StringBuilder(DynamicResolver.CheckpointTypeIdentity(type));
             // A closed method can bind a collectible context through its module, its declaring
@@ -847,7 +851,9 @@ namespace System.Runtime.CompilerServices
             string Anchor(AssemblyLoadContext? context, Type value)
             {
                 if (context == AssemblyLoadContext.Default) return "d";
-                if (context != null && (!restoring || !context.IsUnloading))
+                // A held object can outlive an unload request. ValidateCheckpointDestination separately
+                // rejects installing a new suspended frame in an unloading assembly.
+                if (context != null)
                 {
                     for (int i = 0; i < methods.Length; i++)
                     {
