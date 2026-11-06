@@ -10,6 +10,9 @@
       <method name="CaptureMethodCheckpointForTesting" />
       <method name="RestoreMethodCheckpointForTesting" />
       <method name="RestoreMethodCheckpointWithOutcomeForTesting" />
+      <method name="ValidateMethodCheckpointForTesting" />
+      <method name="CaptureVoidMethodCheckpointForTesting" />
+      <method name="RestoreVoidMethodCheckpointForTesting" />
       <method name="InitializeCheckpointTypedOutcome" />
     </type>
     <type fullname="System.GC">

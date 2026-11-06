@@ -209,7 +209,7 @@ namespace System.Runtime.CompilerServices
                 frame[identityIndex] = CheckpointFramePrefix(f, frames.Count, (int)frame[1], scheduling[f]) + (string)frame[identityIndex];
             }
             foreach (var (values, index) in bindings)
-                values[index] = encodeBinding!(values[index]!);
+                values[index] = encodeBinding!(values[index]!) ?? throw new NotSupportedException("A live checkpoint binding needs a non-null token.");
             GC.KeepAlive(methods);
             GC.KeepAlive(task);
             return frames.ToArray();
@@ -255,16 +255,25 @@ namespace System.Runtime.CompilerServices
             return RestoreCheckpointCore<VoidTaskResult>(records, methods, awaited, decodeBinding, validateSlots: validateSlots, deliverVoidOutcome: true);
         }
 
-        private static unsafe Task<T> RestoreCheckpointCore<T>(
-            object[][] records, MethodInfo[] methods, Task awaited, Func<object, object>? decodeBinding, Action<object>? observeFrame = null, Action<int[]>? validateSlots = null,
-            bool deliverVoidOutcome = false)
+        // A host can validate every task node while its graph is sealed, before decoding
+        // even the first child or allowing any of its frames to execute.
+        internal static void ValidateMethodCheckpointForTesting<T>(
+            object[][] records, MethodInfo[] methods, Task awaited, bool deliverVoidOutcome, Action<int[]>? validateSlots = null)
         {
-            bool host = decodeBinding != null;
+            ArgumentNullException.ThrowIfNull(awaited);
+            _ = ValidateCheckpointFrames<T>(records, methods, awaited, validateSlots, true, deliverVoidOutcome, out _, out _);
+        }
+
+        private static unsafe (object KeepAlive, IntPtr Type, IntPtr Resume, IntPtr MethodContext, IntPtr ClassContext,
+            Type?[] SlotTypes, bool[] Declared)[] ValidateCheckpointFrames<T>(object[][] records, MethodInfo[] methods,
+            Task awaited, Action<int[]>? validateSlots, bool host, bool deliverVoidOutcome,
+            out MethodInfo[] frameMethods, out RuntimeAsyncTaskContinuation? outcome)
+        {
             if (records.Length == 0 || records.Length > 16)
                 throw new NotSupportedException("Invalid checkpoint frame count.");
 
             // What each frame runs and awaits, for the checks across frames below.
-            var frameMethods = new MethodInfo[records.Length];
+            frameMethods = new MethodInfo[records.Length];
             var frameKinds = new int[records.Length];
             var frameAwaited = new Type?[records.Length];
             var layouts = new (object KeepAlive, IntPtr Type, IntPtr Resume, IntPtr MethodContext, IntPtr ClassContext,
@@ -315,6 +324,8 @@ namespace System.Runtime.CompilerServices
                         Type? valueType = CheckpointValueSlotType(schema, i, methods[index], slotTypes[i]);
                         if ((valueType != null || kind != 2 || values[i] == null) && referenceTypes[i] != null)
                             throw new NotSupportedException("Unexpected checkpoint reference identity.");
+                        if (valueType == null && kind == 2 && values[i] != null && string.IsNullOrEmpty(referenceTypes[i]))
+                            throw new NotSupportedException("Missing checkpoint reference identity.");
                         if (valueType == null && kind == 1 && values[i] is not int)
                             throw new NotSupportedException("Invalid checkpoint Int32 slot.");
                     }
@@ -341,7 +352,7 @@ namespace System.Runtime.CompilerServices
             // the first frame, or throws its fault or cancellation at that await and routes it to the nearest
             // frame with a handler, then resumes all callers. Without an outcome to deliver, a void await is a
             // script frame's awaiter suspension, which reads its result from a host-rebound awaiter slot.
-            RuntimeAsyncTaskContinuation? outcome = null;
+            outcome = null;
             if (frameKinds[0] != 3 || deliverVoidOutcome)
             {
                 outcome = new RuntimeAsyncTaskContinuation();
@@ -358,6 +369,16 @@ namespace System.Runtime.CompilerServices
                     throw new NotSupportedException("Checkpoint frame order, count or suspension state differs from capture.");
             }
 
+            return layouts;
+        }
+
+        private static unsafe Task<T> RestoreCheckpointCore<T>(
+            object[][] records, MethodInfo[] methods, Task awaited, Func<object, object>? decodeBinding, Action<object>? observeFrame = null, Action<int[]>? validateSlots = null,
+            bool deliverVoidOutcome = false)
+        {
+            bool host = decodeBinding != null;
+            var layouts = ValidateCheckpointFrames<T>(records, methods, awaited, validateSlots, host, deliverVoidOutcome,
+                out MethodInfo[] frameMethods, out RuntimeAsyncTaskContinuation? outcome);
             Continuation? first = null;
             Continuation? last = null;
             for (int f = 0; f < records.Length; f++)
