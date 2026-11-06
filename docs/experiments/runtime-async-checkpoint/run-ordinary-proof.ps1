@@ -56,6 +56,7 @@ if ($StatementCoverage) {
         Checkpointed_do_and_goto_restore_with_strict_slots = "do-goto"
         Checkpointed_checked_overflow_restores_with_strict_slots = "checked-overflow"
         Checkpointed_using_segments_restore_with_strict_slots = "using-segments"
+        Checkpointed_fixed_segments_restore_with_strict_slots = "fixed-segments"
     }
     $proofTests += $statementCases.Keys
 }
