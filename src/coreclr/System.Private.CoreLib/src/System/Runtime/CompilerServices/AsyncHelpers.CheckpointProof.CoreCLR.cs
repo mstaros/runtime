@@ -406,7 +406,7 @@ namespace System.Runtime.CompilerServices
                     ValidateCheckpointValue(schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize], value, host);
                     ValidateCheckpointReference(schema, i, slotTypes[i], value, declared[i]);
                     string? actualType = schema[CheckpointHeaderSize + 1 + i * CheckpointSlotSize] == 2 && value != null
-                        ? CheckpointBoundTypeIdentity(value.GetType(), methods) : null;
+                        ? CheckpointBoundTypeIdentity(value.GetType(), methods, restoring: true) : null;
                     if (referenceTypes[i] != actualType)
                         throw new NotSupportedException("Checkpoint reference type differs from capture.");
                     restoredValues[i] = value;
@@ -824,28 +824,58 @@ namespace System.Runtime.CompilerServices
         private static string CheckpointFramePrefix(int index, int count, int state, bool pool) =>
             string.Create(CultureInfo.InvariantCulture, $"{(pool ? 'P' : 'I')}{index}/{count}/{state}:");
 
-        private static string CheckpointBoundTypeIdentity(Type type, MethodInfo[] methods)
+        private static string CheckpointBoundTypeIdentity(Type type, MethodInfo[] methods, bool restoring = false)
         {
-            string identity = DynamicResolver.CheckpointTypeIdentity(type);
-            var bindings = new Text.StringBuilder();
+            var identity = new Text.StringBuilder(DynamicResolver.CheckpointTypeIdentity(type));
+            // A closed method can bind a collectible context through its module, its declaring
+            // type arguments, or its method arguments. Argument paths distinguish two otherwise
+            // identical images loaded in different contexts by the same host.
+            static string? FindTypeContext(Type candidate, AssemblyLoadContext context, string path)
+            {
+                if (candidate.HasElementType)
+                    return FindTypeContext(candidate.GetElementType()!, context, path + "e");
+                if (AssemblyLoadContext.GetLoadContext(candidate.Assembly) == context) return path;
+                if (candidate.IsGenericType)
+                {
+                    Type[] args = candidate.GetGenericArguments();
+                    for (int i = 0; i < args.Length; i++)
+                        if (FindTypeContext(args[i], context, path + "." + i.ToString(CultureInfo.InvariantCulture)) is string found)
+                            return found;
+                }
+                return null;
+            }
+            string Anchor(AssemblyLoadContext? context, Type value)
+            {
+                if (context == AssemblyLoadContext.Default) return "d";
+                if (context != null && (!restoring || !context.IsUnloading))
+                {
+                    for (int i = 0; i < methods.Length; i++)
+                    {
+                        var method = methods[i];
+                        string index = i.ToString(CultureInfo.InvariantCulture);
+                        if (AssemblyLoadContext.GetLoadContext(method.Module.Assembly) == context) return index;
+                        if (method.DeclaringType is { } declaring && FindTypeContext(declaring, context, index + "t") is string owner)
+                            return owner;
+                        if (method.IsGenericMethod)
+                        {
+                            Type[] args = method.GetGenericArguments();
+                            for (int a = 0; a < args.Length; a++)
+                                if (FindTypeContext(args[a], context, index + "m" + a.ToString(CultureInfo.InvariantCulture)) is string arg)
+                                    return arg;
+                        }
+                    }
+                }
+                throw new NotSupportedException("Checkpoint value of type " + value + " does not belong to the supplied methods' load-context bindings.");
+            }
             void Add(Type value)
             {
                 if (value.HasElementType) { Add(value.GetElementType()!); return; }
-                var context = AssemblyLoadContext.GetLoadContext(value.Assembly);
-                if (context != AssemblyLoadContext.Default)
-                {
-                    int anchor = Array.FindIndex(methods, m => AssemblyLoadContext.GetLoadContext(m.Module.Assembly) == context);
-                    if (anchor < 0 || context == null || context.IsUnloading)
-                        throw new NotSupportedException("Checkpoint value has no live load-context binding in the host method table.");
-                    bindings.Append('/').Append(anchor.ToString(CultureInfo.InvariantCulture));
-                }
-                else
-                    bindings.Append("/d");
+                identity.Append('/').Append(Anchor(AssemblyLoadContext.GetLoadContext(value.Assembly), value));
                 if (value.IsGenericType)
                     foreach (Type argument in value.GetGenericArguments()) Add(argument);
             }
             Add(type);
-            return identity + bindings.ToString();
+            return identity.ToString();
         }
 
         private static string CheckpointMethodIdentity(MethodInfo method)
