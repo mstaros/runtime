@@ -2,7 +2,9 @@ param(
     [Parameter(Mandatory=$true)][string]$RuntimeRoot,
     [Parameter(Mandatory=$true)][string]$ScriptTests,
     [switch]$StatementCoverage,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$HostTests,
+    [string]$AspNetRoot
 )
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -13,10 +15,42 @@ if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot "build-runtime.cmd") $runtime
     if ($LASTEXITCODE -ne 0) { throw "Candidate runtime build failed: $LASTEXITCODE" }
 }
-# Re-run the existing isolated DynamicMethod and GC/publication/configuration proof.
-& (Join-Path $PSScriptRoot "run-proof.ps1") -RuntimeRoot $runtime -SkipBuild
-$source = Join-Path $repo "artifacts\experiments\runtime-async-checkpoint\Core_Root"
 $output = [IO.Directory]::CreateDirectory((Join-Path $runtime "artifacts\experiments\runtime-async-ordinary-checkpoint")).FullName
+$proofDir = Join-Path $repo "artifacts\experiments\runtime-async-checkpoint"
+$hostArgs = @{}
+$stagedHost = $null
+if (([bool]$HostTests) -ne ([bool]$AspNetRoot)) { throw "Supply -HostTests and -AspNetRoot together." }
+try {
+    if ($HostTests) {
+        # ScriptMcp's test project consumes a packaged ScriptPlatform. Exercise the same compiler and
+        # Merkle assemblies as the script suite without replacing any files in either build output.
+        $hostAssembly = (Resolve-Path -LiteralPath $HostTests).Path
+        $stagedHost = [IO.Directory]::CreateDirectory((Join-Path $proofDir ("host-" + [Guid]::NewGuid().ToString("N")))).FullName
+        Get-ChildItem -LiteralPath (Split-Path -Parent $hostAssembly) -Exclude TestResults |
+            Copy-Item -Destination $stagedHost -Recurse -Force
+        foreach ($name in @("MerkleV2", "MpsAgent.Merkle.Bridge", "MpsAgent.Merkle.Compiler",
+                "MpsAgent.Merkle.ControlFlow", "MpsAgent.Merkle.DynamicMethodIlVerification",
+                "MpsAgent.Merkle.EmitRuntime", "MpsAgent.Merkle.Runtime")) {
+            Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $tests) "$name.dll") -Destination $stagedHost -Force
+        }
+        $hostArgs = @{ ScriptTests = Join-Path $stagedHost ([IO.Path]::GetFileName($hostAssembly)); AspNetRoot = $AspNetRoot }
+        $hostReceipt = Join-Path $output "scriptmcp-receipt.json"
+        if (Test-Path -LiteralPath $hostReceipt) { Remove-Item -LiteralPath $hostReceipt -Force }
+    }
+    & (Join-Path $PSScriptRoot "run-proof.ps1") -RuntimeRoot $runtime -SkipBuild @hostArgs
+    if ($HostTests) {
+        $receiptPath = Join-Path $proofDir "scriptmcp\receipt.json"
+        $receipt = Get-Content -Raw -LiteralPath $receiptPath | ConvertFrom-Json
+        if (-not $receipt.slotContract.pendingTaskInBag -or -not $receipt.slotContract.wrongWaitRejected) {
+            throw "The host receipt lacks the ordinary Task<T> bag proof."
+        }
+        Copy-Item -LiteralPath $receiptPath -Destination $hostReceipt -Force
+    }
+}
+finally {
+    if ($stagedHost) { Remove-Item -LiteralPath $stagedHost -Recurse -Force }
+}
+$source = Join-Path $proofDir "Core_Root"
 $core = Join-Path $output "Core_Root"
 if (Test-Path -LiteralPath $core) { Remove-Item -LiteralPath $core -Recurse -Force }
 [IO.Directory]::CreateDirectory($core) | Out-Null
@@ -50,6 +84,7 @@ $proofTests = @("Script_calls_external_DLL_with_nested_await_and_validator", "Ex
 $env:MERKLE_CHECKPOINT_CORE_ROOT = $core
 $restartReceipts = [ordered]@{
     Direct_durable_event_survives_restart = "durable-event-checkpoint.receipt.json"
+    Checkpointed_string_task_rebinds_from_the_bag = "protected-checkpoint-ordinary-text.receipt.json"
 }
 if ($StatementCoverage) {
     $statementCases = [ordered]@{
