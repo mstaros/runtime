@@ -88,6 +88,7 @@ $env:MERKLE_CHECKPOINT_CORE_ROOT = $core
 $restartReceipts = [ordered]@{
     Direct_durable_event_survives_restart = "durable-event-checkpoint.receipt.json"
     Checkpointed_string_task_rebinds_from_the_bag = "protected-checkpoint-ordinary-text.receipt.json"
+    Protected_parameters_restore_result_and_timeout = "protected-checkpoint-handler-parameters.receipt.json"
     Completed_prefix_callables_restore_with_strict_slots = "protected-checkpoint-prefix-callables.receipt.json"
     Callables_created_after_resume_restore_with_strict_slots = "protected-checkpoint-suffix-callables.receipt.json"
     Retained_local_function_environment_restores_with_strict_slots = "protected-checkpoint-retained-local-function.receipt.json"
