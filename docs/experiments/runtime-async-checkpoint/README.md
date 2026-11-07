@@ -342,6 +342,14 @@ portability remain unproved.
   rejections from the reader and writer. Rejected writes must preserve the
   published bytes. These synthetic file-codec cases do not prove native layout,
   resume-state, identity-graph or host allocation/graph boundary behavior.
+  The runtime frame-count boundary has a separate real-continuation proof:
+  16 generated callers are captured, the producer is killed, and a fresh process
+  restores all 16 to -39 without prefix replay. The standalone and multi-frame
+  host hooks both admit 16 frames. A live 17-frame task is rejected before
+  encoding; zero/17-frame restore and host preflight requests are rejected before
+  policy, decoding or frame-observer callbacks. The runner requires all eight
+  rejection checks. Native slot/layout/state/identity and host graph limits still
+  need separate boundary tests.
   File format v3 preserves string reference identity and frame positions. Recapture
   older standalone files with the same candidate build used for restore.
 - Frame count, position, method, suspension state and effective thread-pool

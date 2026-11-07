@@ -202,6 +202,7 @@ public static class CheckpointProof
         ExpectNotSupported(() => hostRestore.Invoke(null, new object?[] { hostRecords, methods, Task.FromResult(41), codec, rejectSecond }),
             "late restore rejection", "second frame");
         Require(codecCalls == 0, "The decoder ran before the second frame's policy.");
+        ProduceFrameLimit(path + ".frames16");
         Write(path, records);
         Console.WriteLine($"READY producer={Environment.ProcessId} frames={records.Length} bytes={new FileInfo(path).Length}");
         Console.Out.Flush();
@@ -267,9 +268,114 @@ public static class CheckpointProof
         Require(s_prefixCalls == 0, "Pre-await code was reexecuted.");
         ResumeReuse(path + ".reuse");
         ResumeScheduling(path + ".pool");
+        ResumeFrameLimit(path + ".frames16");
         Console.WriteLine($"PASS producer={producer} restorer={Environment.ProcessId} frames={records.Length} result={actual} preAwaitCalls={s_prefixCalls}");
     }
 
+
+    private static DynamicMethod[] CreateFrameLimitProgram(int count)
+    {
+        var methods = new DynamicMethod[count];
+        for (int i = 0; i < count; i++)
+        {
+            methods[i] = CreateMethod("CheckpointFrameLimit" + i.ToString("D2", System.Globalization.CultureInfo.InvariantCulture));
+            EmitBody(methods[i], i == 0 ? null : methods[i - 1], 1, multiply: true);
+        }
+        return methods;
+    }
+
+    private static Task<int> StartFrameLimit(DynamicMethod[] methods, PendingSource source)
+    {
+        int prefixCalls = s_prefixCalls;
+        var invoke = methods[^1].CreateDelegate<Func<ValueTask<int>, int, object, Task<int>>>();
+        Task<int> pending = invoke(new ValueTask<int>(source, 0), 10, new string("hello".ToCharArray()));
+        Require(!pending.IsCompleted && ReferenceEquals(source.CallbackState, pending) &&
+            s_prefixCalls - prefixCalls == methods.Length, "Frame-limit program did not park every caller.");
+        return pending;
+    }
+
+    private static void ProduceFrameLimit(string path)
+    {
+        var methods = CreateFrameLimitProgram(16);
+        var source = new PendingSource();
+        Task<int> pending = StartFrameLimit(methods, source);
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        var records = (object[][])Capture.Invoke(null, new object[] { pending, methods })!;
+        Require(records.Length == 16 && records.Select((r, i) => (int)r[0] == i).All(v => v),
+            "The exact-limit chain was not captured in order.");
+        var hostCapture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int codecCalls = 0, policyCalls = 0;
+        Func<object, object> codec = value => { codecCalls++; return value; };
+        Action<int[]> policy = _ => policyCalls++;
+        var hostRecords = (object[][])hostCapture.Invoke(null, new object?[] { pending, methods, codec, policy })!;
+        Require(hostRecords.Length == 16 && policyCalls == 16 && codecCalls > 0 &&
+            hostRecords.All(r => r[4] == null), "Host capture did not admit the context-free exact-limit chain.");
+
+        var tooManyMethods = CreateFrameLimitProgram(17);
+        var tooManySource = new PendingSource();
+        Task<int> tooMany = StartFrameLimit(tooManyMethods, tooManySource);
+        ExpectNotSupported(() => Capture.Invoke(null, new object[] { tooMany, tooManyMethods }),
+            "17-frame capture", "Checkpoint proof supports at most 16 frames.");
+        codecCalls = 0;
+        policyCalls = 0;
+        ExpectNotSupported(() => hostCapture.Invoke(null, new object?[] { tooMany, tooManyMethods, codec, policy }),
+            "17-frame host capture", "Checkpoint proof supports at most 16 frames.");
+        Require(codecCalls == 0, "The encoder ran for an over-limit task node.");
+        Write(path, records);
+        Console.WriteLine("PASS runtime frame capture limit: accepted=16 rejected=17 rejectedEncoderCalls=0");
+        GC.KeepAlive(pending);
+        GC.KeepAlive(source);
+        GC.KeepAlive(tooMany);
+        GC.KeepAlive(tooManySource);
+    }
+
+    private static void ResumeFrameLimit(string path)
+    {
+        var records = Read(path, out int producer);
+        Require(producer != Environment.ProcessId && records.Length == 16,
+            "The exact-limit chain must come from the killed producer.");
+        var methods = CreateFrameLimitProgram(16);
+        var hostRestore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        var hostValidate = Helpers.GetMethod("ValidateMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int observed = 0, codecCalls = 0, policyCalls = 0;
+        Action<object> observer = _ => observed++;
+        Func<object, object> codec = value => { codecCalls++; return value; };
+        Action<int[]> policy = _ => policyCalls++;
+        // This fixture captured no ExecutionContext and its codec is identity.
+        // Add the host record's context field to the saved standalone records.
+        object[][] HostRecords(object[][] frames) => frames.Select(r =>
+            new object[] { r[0], r[1], r[2], r[3], null!, r[4], r[5] }).ToArray();
+        foreach (object[][] bad in new[] { Array.Empty<object[]>(), records.Concat(new[] { records[^1] }).ToArray() })
+        {
+            ExpectNotSupported(() => RestoreFrames(bad, methods, 41, observer),
+                bad.Length + "-frame restore", "Invalid checkpoint frame count.");
+            object[][] hostBad = HostRecords(bad);
+            ExpectNotSupported(() => hostRestore.Invoke(null, new object?[] { hostBad, methods, Task.FromResult(41), codec, policy }),
+                bad.Length + "-frame host restore", "Invalid checkpoint frame count.");
+            ExpectNotSupported(() => hostValidate.Invoke(null, new object?[] { hostBad, methods, Task.FromResult(41), true, policy }),
+                bad.Length + "-frame host preflight", "Invalid checkpoint frame count.");
+            Require(observed == 0 && codecCalls == 0 && policyCalls == 0,
+                "An invalid frame count reached frame allocation, policy or decoding.");
+        }
+
+        Task<int> restored = RestoreFrames(records, methods, 41, observer);
+        // Each of the 16 callers subtracts 10, then adds the five-character label.
+        Require(restored.IsCompleted && restored.GetAwaiter().GetResult() == -39 && observed == 16,
+            "The exact-limit chain did not restore all 16 frames.");
+        var hostRecords = HostRecords(records);
+        hostValidate.Invoke(null, new object?[] { hostRecords, methods, Task.FromResult(41), true, policy });
+        Require(policyCalls == 16 && codecCalls == 0, "Exact-limit host preflight did not visit each frame.");
+        policyCalls = 0;
+        var hostRestored = (Task<int>)hostRestore.Invoke(null, new object?[] { hostRecords, methods, Task.FromResult(41), codec, policy })!;
+        Require(hostRestored.IsCompleted && hostRestored.GetAwaiter().GetResult() == -39 &&
+            policyCalls == 16 && codecCalls > 0 && s_prefixCalls == 0,
+            "Exact-limit host restore failed, skipped bindings or replayed the prefix.");
+        Console.WriteLine($"PASS runtime frame restore limit: producer={producer} restorer={Environment.ProcessId} accepted=16 rejected=0,17 rejectedDecoderCalls=0 rejectedPolicyCalls=0 result=-39 observedFrames={observed} preAwaitCalls={s_prefixCalls}");
+    }
 
     private static PendingSource? s_nextWait;
     public static ValueTask<int> NextWait() => new(s_nextWait ?? throw new Exception("Missing wait"), 0);

@@ -93,6 +93,17 @@ Write-Host "Producer PID $($producer.Id) was killed; starting a fresh process."
 $restoreLog = Join-Path $output "restore.log"
 & $corerun $worker restore $snapshot 2>&1 | Tee-Object -FilePath $restoreLog
 if ($LASTEXITCODE -ne 0) { throw "Fresh-process restore failed: $LASTEXITCODE" }
+$frameLimitCapture = "PASS runtime frame capture limit: accepted=16 rejected=17 rejectedEncoderCalls=0"
+if (-not ([IO.File]::ReadAllText($producerOut).Contains($frameLimitCapture))) {
+    throw "Runtime frame-limit capture evidence is missing."
+}
+$frameLimitRestore = [regex]::Match([IO.File]::ReadAllText($restoreLog),
+    'PASS runtime frame restore limit: producer=(\d+) restorer=(\d+) accepted=16 rejected=0,17 rejectedDecoderCalls=0 rejectedPolicyCalls=0 result=-39 observedFrames=16 preAwaitCalls=0')
+if (-not $frameLimitRestore.Success -or [int]$frameLimitRestore.Groups[1].Value -ne $producer.Id -or
+    [int]$frameLimitRestore.Groups[2].Value -eq $producer.Id) {
+    throw "Runtime frame-limit restart evidence is missing or names the wrong producer."
+}
+
 
 # A wait bug in a new regression must fail promptly, not stall the whole build gate.
 function Invoke-CheckpointChild([string]$Mode, [string]$Path) {
@@ -218,6 +229,15 @@ $receipt = [ordered]@{
         TC_OnStackReplacement = "0"; ReadyToRun = "0"
     }
     runtime = $binaries; restoreOutput = [IO.File]::ReadAllText($restoreLog)
+    runtimeFrameLimit = [ordered]@{
+        passed = $true; maximumFrames = 16; result = -39; observedFrames = 16; preAwaitCalls = 0
+        producerPid = $producer.Id; producerKilled = $true; restorerPid = [int]$frameLimitRestore.Groups[2].Value
+        snapshotBytes = (Get-Item -LiteralPath ($snapshot + ".frames16")).Length
+        standaloneAndHostCaptureAtLimit = $true; standaloneAndHostRestoreAtLimit = $true
+        hostPreflightAtLimit = $true; rejectedCaptureCounts = @(17); rejectedRestoreCounts = @(0, 17)
+        rejectedEncoderCalls = 0; rejectedDecoderCalls = 0; rejectedPolicyCallsOnRestore = 0
+        rejectionChecks = 8; slotLayoutStateAndIdentityLimitsTested = $false
+    }
     proofFormatLimits = [ordered]@{
         passed = $true; frames = 16; schemaIntegers = 7179; referenceTypes = 1024; values = 1024
         fileBytes = 1048576; rejectionCases = 18; rejectedWritesPreservePublishedFile = $true
