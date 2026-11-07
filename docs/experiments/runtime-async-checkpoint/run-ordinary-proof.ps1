@@ -81,13 +81,16 @@ $proofTests = @("Script_calls_external_DLL_with_nested_await_and_validator", "Ex
         "DLL_result_types_checkpoint_survives_restart", "DLL_generic_result_types_checkpoint_survives_restart",
         "DLL_value_slots_checkpoint_survives_restart", "DLL_reference_struct_slots_checkpoint_survives_restart",
         "DLL_value_task_and_awaiter_checkpoint_survives_restart",
-        "Retained_local_function_environment_fails_strict_capture")
+        "Retained_local_function_environment_requires_compiler_binding",
+        "Retained_local_function_rejects_a_different_capture_cell")
 $env:MERKLE_CHECKPOINT_CORE_ROOT = $core
 $restartReceipts = [ordered]@{
     Direct_durable_event_survives_restart = "durable-event-checkpoint.receipt.json"
     Checkpointed_string_task_rebinds_from_the_bag = "protected-checkpoint-ordinary-text.receipt.json"
     Completed_prefix_callables_restore_with_strict_slots = "protected-checkpoint-prefix-callables.receipt.json"
     Callables_created_after_resume_restore_with_strict_slots = "protected-checkpoint-suffix-callables.receipt.json"
+    Retained_local_function_environment_restores_with_strict_slots = "protected-checkpoint-retained-local-function.receipt.json"
+    Retained_nested_function_environments_restore_shared_cells = "protected-checkpoint-retained-nested-functions.receipt.json"
 }
 if ($StatementCoverage) {
     $statementCases = [ordered]@{
