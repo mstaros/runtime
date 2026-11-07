@@ -342,7 +342,19 @@ public static class CheckpointProof
         var hostValidate = Helpers.GetMethod("ValidateMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
             .MakeGenericMethod(typeof(int));
         int observed = 0, codecCalls = 0, policyCalls = 0;
-        Action<object> observer = _ => observed++;
+        Action<object> observer = first =>
+        {
+            // The hook supplies the chain head once, before dispatch.
+            for (object? current = first; current != null;)
+            {
+                Require(++observed <= 16, "The restored frame chain is too long or cyclic.");
+                FieldInfo? next = null;
+                for (Type? type = current.GetType(); type != null && next == null; type = type.BaseType)
+                    next = type.GetField("Next", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+                Require(next != null, "Restored frame linkage was not found.");
+                current = next!.GetValue(current);
+            }
+        };
         Func<object, object> codec = value => { codecCalls++; return value; };
         Action<int[]> policy = _ => policyCalls++;
         // This fixture captured no ExecutionContext and its codec is identity.
@@ -364,8 +376,10 @@ public static class CheckpointProof
 
         Task<int> restored = RestoreFrames(records, methods, 41, observer);
         // Each of the 16 callers subtracts 10, then adds the five-character label.
-        Require(restored.IsCompleted && restored.GetAwaiter().GetResult() == -39 && observed == 16,
-            "The exact-limit chain did not restore all 16 frames.");
+        Require(restored.IsCompleted, "The exact-limit chain did not complete synchronously.");
+        int actual = restored.GetAwaiter().GetResult();
+        Require(actual == -39 && observed == 16,
+            $"The exact-limit chain restored {observed} frames with result {actual}.");
         var hostRecords = HostRecords(records);
         hostValidate.Invoke(null, new object?[] { hostRecords, methods, Task.FromResult(41), true, policy });
         Require(policyCalls == 16 && codecCalls == 0, "Exact-limit host preflight did not visit each frame.");
