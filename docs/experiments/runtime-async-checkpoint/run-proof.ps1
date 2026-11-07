@@ -114,6 +114,13 @@ function Invoke-CheckpointChild([string]$Mode, [string]$Path) {
     }
 }
 
+# File-format limits are independent of native schema admission.
+Invoke-CheckpointChild "format-limits" (Join-Path $output "format-limits.bin")
+$formatLimitsMarker = "PASS proof format limits: frames=16 schemaIntegers=7179 referenceTypes=1024 values=1024 bytes=1048576 rejectionCases=18"
+if (-not ([IO.File]::ReadAllText((Join-Path $output "format-limits.stdout.log")).Contains($formatLimitsMarker))) {
+    throw "Proof format boundary evidence is missing."
+}
+
 # Reverse class-initialization histories in separate processes, retaining the same
 # method IL/config and distinct evaluation-stack temporaries.
 foreach ($direction in @(@("cold", "hot"), @("hot", "cold"))) {
@@ -211,6 +218,11 @@ $receipt = [ordered]@{
         TC_OnStackReplacement = "0"; ReadyToRun = "0"
     }
     runtime = $binaries; restoreOutput = [IO.File]::ReadAllText($restoreLog)
+    proofFormatLimits = [ordered]@{
+        passed = $true; frames = 16; schemaIntegers = 7179; referenceTypes = 1024; values = 1024
+        fileBytes = 1048576; rejectionCases = 18; rejectedWritesPreservePublishedFile = $true
+        nativeLimitBoundariesTested = $false; hostGraphLimitBoundariesTested = $false
+    }
     continuationGcRegression = @("metadata disabled: passed", "metadata enabled: passed")
     negativeCases = @("unsupported live object", "changed schema", "changed value type", "swapped method index", "swapped method table", "changed method IL", "swapped await state", "effective JIT configuration", "runtime fingerprint")
     restoredNonzeroStateResuspended = $true; restoredContinuationReused = $true; jitRetryVerified = $true

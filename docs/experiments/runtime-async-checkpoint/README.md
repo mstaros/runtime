@@ -332,7 +332,16 @@ portability remain unproved.
 - Each task node admits at most 16 frames. The managed schema gate permits 1,024
   slots and 1 MiB of continuation data; the native lookup permits 65,536 states
   and 1 MiB of layout metadata. Schema 6 uses 11 header integers and seven per
-  slot. The standalone reader accepts that shape and bounds the whole file at 1 MiB.
+  slot. The standalone file writer and reader share bounds of 1–16 frames,
+  11–7,179 schema integers and 0–1,024 reference types/values per frame, plus 1 MiB
+  per file. Invalid counts are rejected before staging a write; an oversized
+  write cannot replace the published checkpoint. The reader checks the length
+  of the stream it opened before decoding, avoiding a separate path-length check.
+  The runner's `format-limits` child round-trips the minimum and exact maximum
+  counts and an exactly 1 MiB file, then requires 18 below-minimum/one-over
+  rejections from the reader and writer. Rejected writes must preserve the
+  published bytes. These synthetic file-codec cases do not prove native layout,
+  resume-state, identity-graph or host allocation/graph boundary behavior.
   File format v3 preserves string reference identity and frame positions. Recapture
   older standalone files with the same candidate build used for restore.
 - Frame count, position, method, suspension state and effective thread-pool

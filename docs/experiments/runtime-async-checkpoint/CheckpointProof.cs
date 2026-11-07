@@ -23,6 +23,12 @@ public static class CheckpointProof
         "CaptureCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!;
     private static readonly MethodInfo Restore = Helpers.GetMethod(
         "RestoreCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!;
+    // Standalone file-format bounds, shared by its writer and reader. Native
+    // restore independently validates frame semantics and its own layout limits.
+    private const int MaxProofFrames = 16;
+    private const int MaxProofSlots = 1024;
+    private const int MaxProofSchemaIntegers = 11 + 7 * MaxProofSlots;
+    private const int MaxProofFileBytes = 1024 * 1024;
     private static bool s_restoring;
     private static int s_prefixCalls;
 
@@ -44,6 +50,7 @@ public static class CheckpointProof
             else if (args[0] == "metadata-initializer-restore") RestoreMetadataInitializer(args[1]);
             else if (args[0].StartsWith("statics-", StringComparison.Ordinal))
                 ClassInitializationProof(args[1], args[0].Contains("produce"), args[0].EndsWith("-hot", StringComparison.Ordinal));
+            else if (args[0] == "format-limits") FormatLimitsProof(args[1]);
             else if (args[0] is "publication" or "disabled")
                 PublicationProof(args[0] == "disabled");
             else
@@ -688,8 +695,125 @@ public static class CheckpointProof
         Environment.GetEnvironmentVariable("CHECKPOINT_PROOF_RUNTIME_SHA256")
             ?? throw new Exception("Runner must supply the exact runtime fingerprint.");
 
+    // Exercise the standalone file codec independently of native restore. These
+    // synthetic envelopes test serialized counts, not native schema semantics.
+    private static void FormatLimitsProof(string path)
+    {
+        const int fileBytes = 1024 * 1024;
+        const string invalidLength = "Invalid snapshot length.";
+        const string oversized = "Snapshot exceeds proof limit.";
+        int rejected = 0;
+        object[] Frame(int schemaCount = 11, int referenceCount = 0, int valueCount = 0) =>
+            new object[] { 0, 0, new int[schemaCount],
+                Enumerable.Range(0, valueCount).Select(i => (object)i).ToArray(),
+                string.Empty, new string?[referenceCount] };
+        void Reject(Action action, string message)
+        {
+            try { action(); }
+            catch (InvalidOperationException ex) when (ex.Message == message)
+            {
+                rejected++;
+                return;
+            }
+            throw new Exception("Expected proof format rejection: " + message);
+        }
+        void RejectWrite(object[][] frames, string message)
+        {
+            byte[] published = File.ReadAllBytes(path);
+            Reject(() => Write(path, frames), message);
+            Require(File.ReadAllBytes(path).SequenceEqual(published),
+                "Rejected write changed the published checkpoint.");
+        }
+
+        Write(path, new[] { Frame() });
+        var minimal = Read(path, out int producer);
+        Require(producer == Environment.ProcessId && minimal.Length == 1 &&
+            ((int[])minimal[0][2]).Length == 11 && ((object[])minimal[0][3]).Length == 0 &&
+            ((string?[])minimal[0][5]).Length == 0, "Minimum proof counts did not round-trip.");
+        byte[] seed = File.ReadAllBytes(path);
+        long frameOffset, schemaOffset, referenceOffset, valueOffset;
+        using (var reader = new BinaryReader(new MemoryStream(seed)))
+        {
+            for (int i = 0; i < 4; i++) reader.ReadString();
+            reader.ReadInt32(); // producer
+            frameOffset = reader.BaseStream.Position;
+            reader.ReadInt32(); // frames
+            reader.ReadInt32(); // method
+            reader.ReadInt32(); // state
+            schemaOffset = reader.BaseStream.Position;
+            int schemaCount = reader.ReadInt32();
+            reader.BaseStream.Position += sizeof(int) * schemaCount;
+            reader.ReadString(); // method identity
+            referenceOffset = reader.BaseStream.Position;
+            Require(reader.ReadInt32() == 0, "Expected empty seed reference types.");
+            valueOffset = reader.BaseStream.Position;
+            Require(reader.ReadInt32() == 0, "Expected empty seed values.");
+        }
+        void RejectReadCount(long offset, int count)
+        {
+            byte[] bytes = (byte[])seed.Clone();
+            using (var writer = new BinaryWriter(new MemoryStream(bytes)))
+            {
+                writer.BaseStream.Position = offset;
+                writer.Write(count);
+            }
+            File.WriteAllBytes(path, bytes);
+            Reject(() => Read(path, out _), invalidLength);
+        }
+        foreach (int count in new[] { -1, 0, 17 }) RejectReadCount(frameOffset, count);
+        foreach (int count in new[] { -1, 10, 7180 }) RejectReadCount(schemaOffset, count);
+        foreach (int count in new[] { -1, 1025 }) RejectReadCount(referenceOffset, count);
+        foreach (int count in new[] { -1, 1025 }) RejectReadCount(valueOffset, count);
+        File.WriteAllBytes(path, seed);
+
+        RejectWrite(Array.Empty<object[]>(), invalidLength);
+        RejectWrite(Enumerable.Range(0, 17).Select(_ => Frame()).ToArray(), invalidLength);
+        RejectWrite(new[] { Frame(schemaCount: 10) }, invalidLength);
+        RejectWrite(new[] { Frame(schemaCount: 7180) }, invalidLength);
+        RejectWrite(new[] { Frame(referenceCount: 1025) }, invalidLength);
+        RejectWrite(new[] { Frame(valueCount: 1025) }, invalidLength);
+
+        Write(path, Enumerable.Range(0, 16).Select(_ => Frame(7179, 1024, 1024)).ToArray());
+        var maximum = Read(path, out _);
+        Require(maximum.Length == 16 && maximum.All(frame =>
+            ((int[])frame[2]).Length == 7179 && ((string?[])frame[5]).Length == 1024 &&
+            ((object[])frame[3]).Length == 1024 && (int)((object[])frame[3])[1023] == 1023),
+            "Maximum proof counts did not round-trip.");
+
+        object[] sized = Frame(valueCount: 1);
+        ((object[])sized[3])[0] = string.Empty;
+        Write(path, new[] { sized });
+        // This ASCII payload uses a three-byte 7-bit length prefix, two more
+        // bytes than the empty string. Verify the resulting file size exactly.
+        string payload = new string('x', fileBytes - checked((int)new FileInfo(path).Length) - 2);
+        ((object[])sized[3])[0] = payload;
+        Write(path, new[] { sized });
+        Require(new FileInfo(path).Length == fileBytes, "Exact-limit file size was not exercised.");
+        Require((string)((object[])Read(path, out _)[0][3])[0] == payload,
+            "Exact-limit payload did not round-trip.");
+        ((object[])sized[3])[0] = payload + "x";
+        RejectWrite(new[] { sized }, oversized);
+        using (var stream = new FileStream(path, FileMode.Append)) stream.WriteByte(0);
+        Require(new FileInfo(path).Length == fileBytes + 1, "One-over file size was not exercised.");
+        Reject(() => Read(path, out _), oversized);
+        Require(rejected == 18, "Proof format rejection coverage changed.");
+        File.Delete(path);
+        File.Delete(path + ".tmp");
+        Console.WriteLine("PASS proof format limits: frames=16 schemaIntegers=7179 referenceTypes=1024 values=1024 bytes=1048576 rejectionCases=18");
+    }
+
     private static void Write(string path, object[][] records)
     {
+        // Reject unreadable counts before opening the staging file. Otherwise a
+        // successful publication could replace a readable checkpoint with one
+        // that our reader always rejects.
+        Bounded(records.Length, 1, MaxProofFrames);
+        foreach (object[] record in records)
+        {
+            Bounded(((int[])record[2]).Length, 11, MaxProofSchemaIntegers);
+            Bounded(((string?[])record[5]).Length, 0, MaxProofSlots);
+            Bounded(((object?[])record[3]).Length, 0, MaxProofSlots);
+        }
         using (var stream = new FileStream(path + ".tmp", FileMode.Create, FileAccess.Write,
                    FileShare.None, 4096, FileOptions.WriteThrough))
         using (var writer = new BinaryWriter(stream))
@@ -738,7 +862,7 @@ public static class CheckpointProof
                 }
             }
             writer.Flush();
-            Require(stream.Length <= 1024 * 1024, "Snapshot exceeds proof limit.");
+            Require(stream.Length <= MaxProofFileBytes, "Snapshot exceeds proof limit.");
             stream.Flush(flushToDisk: true);
         }
         File.Move(path + ".tmp", path, overwrite: true);
@@ -746,8 +870,8 @@ public static class CheckpointProof
 
     private static object[][] Read(string path, out int producer)
     {
-        Require(new FileInfo(path).Length <= 1024 * 1024, "Snapshot exceeds proof limit.");
         using var reader = new BinaryReader(File.OpenRead(path));
+        Require(reader.BaseStream.Length <= MaxProofFileBytes, "Snapshot exceeds proof limit.");
         Require(reader.ReadString() == "RuntimeAsyncCheckpointProof-v3", "Unsupported proof file format; recapture with this build.");
         var strings = new List<string>();
         string ReadNewString()
@@ -760,17 +884,17 @@ public static class CheckpointProof
         Require(reader.ReadString() == typeof(object).Module.ModuleVersionId.ToString(), "CoreLib version mismatch.");
         Require(reader.ReadString() == Fingerprint(), "Runtime binary fingerprint mismatch.");
         producer = reader.ReadInt32();
-        int count = Bounded(reader.ReadInt32(), 1, 16);
+        int count = Bounded(reader.ReadInt32(), 1, MaxProofFrames);
         var records = new object[count][];
         for (int f = 0; f < count; f++)
         {
             int method = reader.ReadInt32(), state = reader.ReadInt32();
-            var schema = new int[Bounded(reader.ReadInt32(), 11, 11 + 7 * 1024)];
+            var schema = new int[Bounded(reader.ReadInt32(), 11, MaxProofSchemaIntegers)];
             for (int i = 0; i < schema.Length; i++) schema[i] = reader.ReadInt32();
             string identity = reader.ReadString();
-            var referenceTypes = new string?[Bounded(reader.ReadInt32(), 0, 1024)];
+            var referenceTypes = new string?[Bounded(reader.ReadInt32(), 0, MaxProofSlots)];
             for (int i = 0; i < referenceTypes.Length; i++) { string type = reader.ReadString(); referenceTypes[i] = type.Length == 0 ? null : type; }
-            var values = new object?[Bounded(reader.ReadInt32(), 0, 1024)];
+            var values = new object?[Bounded(reader.ReadInt32(), 0, MaxProofSlots)];
             for (int i = 0; i < values.Length; i++)
                 values[i] = reader.ReadByte() switch
                 {
