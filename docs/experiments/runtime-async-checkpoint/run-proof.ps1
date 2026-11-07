@@ -66,6 +66,26 @@ $env:DOTNET_ReadyToRun = "0"
 $env:COMPlus_TieredCompilation = "0"
 $env:COMPlus_ReadyToRun = "0"
 $corerun = Join-Path $coreRoot "corerun.exe"
+# A wait bug in a new regression must fail promptly, not stall the whole build gate.
+function Invoke-CheckpointChild([string]$Mode, [string]$Path) {
+    $stdout = Join-Path $output ($Mode + ".stdout.log")
+    $stderr = Join-Path $output ($Mode + ".stderr.log")
+    $child = Start-Process -FilePath $corerun -ArgumentList @(('"' + $worker + '"'), $Mode, ('"' + $Path + '"')) -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    # Windows PowerShell needs the process handle retained before timed waiting
+    # so ExitCode is available after a fast child exits.
+    $null = $child.Handle
+    try {
+        if (-not $child.WaitForExit(30000)) { throw "Checkpoint child timed out: $Mode" }
+        $child.WaitForExit()
+        Get-Content -LiteralPath $stdout
+        Get-Content -LiteralPath $stderr
+        if ($child.ExitCode -ne 0) { throw "Checkpoint child failed: $Mode ($($child.ExitCode))" }
+    } finally {
+        if (-not $child.HasExited) { $child.Kill(); $child.WaitForExit() }
+        $child.Dispose()
+    }
+}
+
 $snapshot = Join-Path $output "checkpoint.bin"
 Remove-Item -LiteralPath $snapshot -Force -ErrorAction SilentlyContinue
 $producerOut = Join-Path $output "producer.stdout.log"
@@ -91,8 +111,10 @@ Get-Content -LiteralPath $producerOut
 Get-Content -LiteralPath $producerErr
 Write-Host "Producer PID $($producer.Id) was killed; starting a fresh process."
 $restoreLog = Join-Path $output "restore.log"
-& $corerun $worker restore $snapshot 2>&1 | Tee-Object -FilePath $restoreLog
-if ($LASTEXITCODE -ne 0) { throw "Fresh-process restore failed: $LASTEXITCODE" }
+# Capture both streams before reporting failure; a PowerShell native-error
+# pipeline can otherwise discard all but the exception's first line.
+Invoke-CheckpointChild "restore" $snapshot
+Copy-Item -LiteralPath (Join-Path $output "restore.stdout.log") -Destination $restoreLog -Force
 $frameLimitCapture = "PASS runtime frame capture limit: accepted=16 rejected=17 rejectedEncoderCalls=0"
 if (-not ([IO.File]::ReadAllText($producerOut).Contains($frameLimitCapture))) {
     throw "Runtime frame-limit capture evidence is missing."
@@ -104,26 +126,6 @@ if (-not $frameLimitRestore.Success -or [int]$frameLimitRestore.Groups[1].Value 
     throw "Runtime frame-limit restart evidence is missing or names the wrong producer."
 }
 
-
-# A wait bug in a new regression must fail promptly, not stall the whole build gate.
-function Invoke-CheckpointChild([string]$Mode, [string]$Path) {
-    $stdout = Join-Path $output ($Mode + ".stdout.log")
-    $stderr = Join-Path $output ($Mode + ".stderr.log")
-    $child = Start-Process -FilePath $corerun -ArgumentList @(('"' + $worker + '"'), $Mode, ('"' + $Path + '"')) -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-    # Windows PowerShell needs the process handle retained before timed waiting
-    # so ExitCode is available after a fast child exits.
-    $null = $child.Handle
-    try {
-        if (-not $child.WaitForExit(30000)) { throw "Checkpoint child timed out: $Mode" }
-        $child.WaitForExit()
-        Get-Content -LiteralPath $stdout
-        Get-Content -LiteralPath $stderr
-        if ($child.ExitCode -ne 0) { throw "Checkpoint child failed: $Mode ($($child.ExitCode))" }
-    } finally {
-        if (-not $child.HasExited) { $child.Kill(); $child.WaitForExit() }
-        $child.Dispose()
-    }
-}
 
 # File-format limits are independent of native schema admission.
 Invoke-CheckpointChild "format-limits" (Join-Path $output "format-limits.bin")
