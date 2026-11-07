@@ -344,7 +344,9 @@ portability remain unproved.
   resume-state, identity-graph or host allocation/graph boundary behavior.
   The runtime frame-count boundary has a separate real-continuation proof:
   16 generated callers are captured, the producer is killed, and a fresh process
-  restores all 16 to -39 without prefix replay. The standalone and multi-frame
+  restores all 16 to -39 without prefix replay. An ordered callback in each
+  emitted caller checks exactly-once resumed execution from inner to outer.
+  The standalone and multi-frame
   host hooks both admit 16 frames. A live 17-frame task is rejected before
   encoding; zero/17-frame restore and host preflight requests are rejected before
   policy, decoding or frame-observer callbacks. The runner requires all eight
@@ -388,3 +390,7 @@ portability remain unproved.
 Receipts, snapshots and child logs are retained under
 artifacts/experiments/runtime-async-checkpoint. Earlier version-1 results established
 feasibility; each new schema version's validation must use freshly captured snapshots.
+
+The main restore child uses the same bounded process helper as the auxiliary
+checks, retaining stdout and stderr separately. A failing restore prints its full
+exception and stack trace before the runner reports the child exit code.

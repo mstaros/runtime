@@ -100,7 +100,7 @@ public static class CheckpointProof
             m.GetParameters()[0].ParameterType.GetGenericTypeDefinition() == taskType)
         .MakeGenericMethod(typeof(int));
 
-    private static void EmitBody(DynamicMethod method, DynamicMethod? callee, int constant, bool multiply)
+    private static void EmitBody(DynamicMethod method, DynamicMethod? callee, int constant, bool multiply, int? frameIndex = null)
     {
         ILGenerator il = method.GetILGenerator();
         LocalBuilder saved = il.DeclareLocal(typeof(int));
@@ -121,6 +121,11 @@ public static class CheckpointProof
         else
         {
             il.Emit(OpCodes.Call, Await(typeof(ValueTask<>)));
+        }
+        if (frameIndex is int index)
+        {
+            il.Emit(OpCodes.Ldc_I4, index);
+            il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(FrameLimitResumed))!);
         }
         il.Emit(OpCodes.Ldloc, saved);
         il.Emit(multiply ? OpCodes.Sub : OpCodes.Mul);
@@ -273,13 +278,21 @@ public static class CheckpointProof
     }
 
 
+    private static int s_frameLimitResumes;
+
+    public static void FrameLimitResumed(int index)
+    {
+        Require(index == s_frameLimitResumes, "A boundary frame resumed out of order or more than once.");
+        s_frameLimitResumes++;
+    }
+
     private static DynamicMethod[] CreateFrameLimitProgram(int count)
     {
         var methods = new DynamicMethod[count];
         for (int i = 0; i < count; i++)
         {
             methods[i] = CreateMethod("CheckpointFrameLimit" + i.ToString("D2", System.Globalization.CultureInfo.InvariantCulture));
-            EmitBody(methods[i], i == 0 ? null : methods[i - 1], 1, multiply: true);
+            EmitBody(methods[i], i == 0 ? null : methods[i - 1], 1, multiply: true, frameIndex: i);
         }
         return methods;
     }
@@ -290,7 +303,7 @@ public static class CheckpointProof
         var invoke = methods[^1].CreateDelegate<Func<ValueTask<int>, int, object, Task<int>>>();
         Task<int> pending = invoke(new ValueTask<int>(source, 0), 10, new string("hello".ToCharArray()));
         Require(!pending.IsCompleted && ReferenceEquals(source.CallbackState, pending) &&
-            s_prefixCalls - prefixCalls == methods.Length, "Frame-limit program did not park every caller.");
+            s_prefixCalls - prefixCalls == methods.Length && s_frameLimitResumes == 0, "Frame-limit program did not park every caller.");
         return pending;
     }
 
@@ -342,19 +355,9 @@ public static class CheckpointProof
         var hostValidate = Helpers.GetMethod("ValidateMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
             .MakeGenericMethod(typeof(int));
         int observed = 0, codecCalls = 0, policyCalls = 0;
-        Action<object> observer = first =>
-        {
-            // The hook supplies the chain head once, before dispatch.
-            for (object? current = first; current != null;)
-            {
-                Require(++observed <= 16, "The restored frame chain is too long or cyclic.");
-                FieldInfo? next = null;
-                for (Type? type = current.GetType(); type != null && next == null; type = type.BaseType)
-                    next = type.GetField("Next", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
-                Require(next != null, "Restored frame linkage was not found.");
-                current = next!.GetValue(current);
-            }
-        };
+        // The hook supplies the chain head once; continuation objects do not
+        // support GetType. Count actual post-await execution in the emitted IL.
+        Action<object> observer = _ => observed++;
         Func<object, object> codec = value => { codecCalls++; return value; };
         Action<int[]> policy = _ => policyCalls++;
         // This fixture captured no ExecutionContext and its codec is identity.
@@ -370,25 +373,26 @@ public static class CheckpointProof
                 bad.Length + "-frame host restore", "Invalid checkpoint frame count.");
             ExpectNotSupported(() => hostValidate.Invoke(null, new object?[] { hostBad, methods, Task.FromResult(41), true, policy }),
                 bad.Length + "-frame host preflight", "Invalid checkpoint frame count.");
-            Require(observed == 0 && codecCalls == 0 && policyCalls == 0,
-                "An invalid frame count reached frame allocation, policy or decoding.");
+            Require(observed == 0 && codecCalls == 0 && policyCalls == 0 && s_frameLimitResumes == 0,
+                "An invalid frame count reached observation, policy, decoding or dispatch.");
         }
 
         Task<int> restored = RestoreFrames(records, methods, 41, observer);
         // Each of the 16 callers subtracts 10, then adds the five-character label.
         Require(restored.IsCompleted, "The exact-limit chain did not complete synchronously.");
         int actual = restored.GetAwaiter().GetResult();
-        Require(actual == -39 && observed == 16,
-            $"The exact-limit chain restored {observed} frames with result {actual}.");
+        Require(actual == -39 && observed == 1 && s_frameLimitResumes == 16,
+            $"The exact-limit chain resumed {s_frameLimitResumes} frames with result {actual}.");
         var hostRecords = HostRecords(records);
         hostValidate.Invoke(null, new object?[] { hostRecords, methods, Task.FromResult(41), true, policy });
         Require(policyCalls == 16 && codecCalls == 0, "Exact-limit host preflight did not visit each frame.");
         policyCalls = 0;
+        s_frameLimitResumes = 0;
         var hostRestored = (Task<int>)hostRestore.Invoke(null, new object?[] { hostRecords, methods, Task.FromResult(41), codec, policy })!;
         Require(hostRestored.IsCompleted && hostRestored.GetAwaiter().GetResult() == -39 &&
-            policyCalls == 16 && codecCalls > 0 && s_prefixCalls == 0,
+            policyCalls == 16 && codecCalls > 0 && s_frameLimitResumes == 16 && s_prefixCalls == 0,
             "Exact-limit host restore failed, skipped bindings or replayed the prefix.");
-        Console.WriteLine($"PASS runtime frame restore limit: producer={producer} restorer={Environment.ProcessId} accepted=16 rejected=0,17 rejectedDecoderCalls=0 rejectedPolicyCalls=0 result=-39 observedFrames={observed} preAwaitCalls={s_prefixCalls}");
+        Console.WriteLine($"PASS runtime frame restore limit: producer={producer} restorer={Environment.ProcessId} accepted=16 rejected=0,17 rejectedDecoderCalls=0 rejectedPolicyCalls=0 result=-39 resumedFrames={s_frameLimitResumes} observerCalls={observed} preAwaitCalls={s_prefixCalls}");
     }
 
     private static PendingSource? s_nextWait;

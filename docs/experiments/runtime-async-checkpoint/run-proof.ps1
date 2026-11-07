@@ -120,7 +120,7 @@ if (-not ([IO.File]::ReadAllText($producerOut).Contains($frameLimitCapture))) {
     throw "Runtime frame-limit capture evidence is missing."
 }
 $frameLimitRestore = [regex]::Match([IO.File]::ReadAllText($restoreLog),
-    'PASS runtime frame restore limit: producer=(\d+) restorer=(\d+) accepted=16 rejected=0,17 rejectedDecoderCalls=0 rejectedPolicyCalls=0 result=-39 observedFrames=16 preAwaitCalls=0')
+    'PASS runtime frame restore limit: producer=(\d+) restorer=(\d+) accepted=16 rejected=0,17 rejectedDecoderCalls=0 rejectedPolicyCalls=0 result=-39 resumedFrames=16 observerCalls=1 preAwaitCalls=0')
 if (-not $frameLimitRestore.Success -or [int]$frameLimitRestore.Groups[1].Value -ne $producer.Id -or
     [int]$frameLimitRestore.Groups[2].Value -eq $producer.Id) {
     throw "Runtime frame-limit restart evidence is missing or names the wrong producer."
@@ -232,7 +232,7 @@ $receipt = [ordered]@{
     }
     runtime = $binaries; restoreOutput = [IO.File]::ReadAllText($restoreLog)
     runtimeFrameLimit = [ordered]@{
-        passed = $true; maximumFrames = 16; result = -39; observedFrames = 16; preAwaitCalls = 0
+        passed = $true; maximumFrames = 16; result = -39; resumedFrames = 16; observerCalls = 1; preAwaitCalls = 0
         producerPid = $producer.Id; producerKilled = $true; restorerPid = [int]$frameLimitRestore.Groups[2].Value
         snapshotBytes = (Get-Item -LiteralPath ($snapshot + ".frames16")).Length
         standaloneAndHostCaptureAtLimit = $true; standaloneAndHostRestoreAtLimit = $true
