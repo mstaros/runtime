@@ -6036,6 +6036,13 @@ PhaseStatus Compiler::optVNBasedDeadStoreRemoval()
             continue;
         }
 
+        // CSE rematerializes temporaries on each side of a checkpoint. Removing an equal definition
+        // here can keep a process-local type handle live across suspension without an IL identity.
+        if (compIsAsync() && compIsAsyncCheckpointProof() && varDsc->lvIsCSE)
+        {
+            continue;
+        }
+
         if (compIsAsync() && ((varDsc->TypeGet() == TYP_BYREF) ||
                               ((varDsc->TypeGet() == TYP_STRUCT) && varDsc->GetLayout()->HasGCByRef())))
         {
