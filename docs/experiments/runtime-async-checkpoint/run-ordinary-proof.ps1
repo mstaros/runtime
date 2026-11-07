@@ -43,9 +43,16 @@ try {
         $receipt = Get-Content -Raw -LiteralPath $receiptPath | ConvertFrom-Json
         if (-not $receipt.slotContract.pendingTaskInBag -or -not $receipt.slotContract.wrongWaitRejected -or
             -not $receipt.slotContract.globalsBound -or -not $receipt.slotContract.wrongGlobalsRejected -or
-            -not $receipt.slotContract.protectedGlobalsFinally -or $receipt.slotContract.globalsFinallyCases.Count -ne 5 -or
-            @($receipt.slotContract.globalsFinallyCases | Where-Object { $_.finallyCount -ne 1 }).Count -ne 0) {
-            throw "The host receipt lacks the ordinary Task<T> bag and protected-globals proof."
+            -not $receipt.slotContract.protectedGlobalsFinally -or -not $receipt.slotContract.protectedGlobalsCatchAndFilter -or
+            $receipt.slotContract.globalsFinallyCases.Count -ne 13 -or
+            @($receipt.slotContract.globalsFinallyCases | Where-Object {
+                $_.finallyCount -ne 1 -or $_.decodedGlobals -ne 1 -or $_.prefixCalls -ne 0 -or $_.betweenCalls -ne 0 -or
+                ($_.outcome -eq "success" -and ($_.filterCalls -ne 0 -or $_.catchCount -ne 0 -or $_.fallbackCatchCount -ne 0)) -or
+                ($_.outcome -ne "success" -and ($_.filterCalls -ne 1 -or -not $_.filterGlobalsValid -or
+                    ($_.filterOutcome -eq "accept" -and ($_.catchCount -ne 1 -or $_.fallbackCatchCount -ne 0)) -or
+                    ($_.filterOutcome -ne "accept" -and ($_.catchCount -ne 0 -or $_.fallbackCatchCount -ne 1))))
+            }).Count -ne 0) {
+            throw "The host receipt lacks the ordinary Task<T> bag and protected catch/filter/finally globals proof."
         }
         Copy-Item -LiteralPath $receiptPath -Destination $hostReceipt -Force
     }
