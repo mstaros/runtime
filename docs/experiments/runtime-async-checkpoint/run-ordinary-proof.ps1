@@ -41,7 +41,8 @@ try {
     if ($HostTests) {
         $receiptPath = Join-Path $proofDir "scriptmcp\receipt.json"
         $receipt = Get-Content -Raw -LiteralPath $receiptPath | ConvertFrom-Json
-        if (-not $receipt.slotContract.pendingTaskInBag -or -not $receipt.slotContract.wrongWaitRejected) {
+        if (-not $receipt.slotContract.pendingTaskInBag -or -not $receipt.slotContract.wrongWaitRejected -or
+            -not $receipt.slotContract.globalsBound -or -not $receipt.slotContract.wrongGlobalsRejected) {
             throw "The host receipt lacks the ordinary Task<T> bag proof."
         }
         Copy-Item -LiteralPath $receiptPath -Destination $hostReceipt -Force
