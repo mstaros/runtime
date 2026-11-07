@@ -42,8 +42,10 @@ try {
         $receiptPath = Join-Path $proofDir "scriptmcp\receipt.json"
         $receipt = Get-Content -Raw -LiteralPath $receiptPath | ConvertFrom-Json
         if (-not $receipt.slotContract.pendingTaskInBag -or -not $receipt.slotContract.wrongWaitRejected -or
-            -not $receipt.slotContract.globalsBound -or -not $receipt.slotContract.wrongGlobalsRejected) {
-            throw "The host receipt lacks the ordinary Task<T> bag proof."
+            -not $receipt.slotContract.globalsBound -or -not $receipt.slotContract.wrongGlobalsRejected -or
+            -not $receipt.slotContract.protectedGlobalsFinally -or $receipt.slotContract.globalsFinallyCases.Count -ne 5 -or
+            @($receipt.slotContract.globalsFinallyCases | Where-Object { $_.finallyCount -ne 1 }).Count -ne 0) {
+            throw "The host receipt lacks the ordinary Task<T> bag and protected-globals proof."
         }
         Copy-Item -LiteralPath $receiptPath -Destination $hostReceipt -Force
     }
