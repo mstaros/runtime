@@ -400,6 +400,7 @@ public static class CheckpointProof
     private static int s_slotResumeCalls;
     private static int s_slotValuesChecked;
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static void SlotLimitResumed(int checks)
     {
         Require(s_slotResumeCalls == 0 && checks == 1023, "Unexpected slot-limit resumed execution.");
@@ -440,9 +441,10 @@ public static class CheckpointProof
         il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(ReadLabel))!);
         il.Emit(OpCodes.Add); il.Emit(OpCodes.Ret);
         il.MarkLabel(invalid);
-        il.Emit(OpCodes.Ldstr, "A saved slot value changed across restart.");
-        il.Emit(OpCodes.Newobj, typeof(InvalidOperationException).GetConstructor(new[] { typeof(string) })!);
-        il.Emit(OpCodes.Throw);
+        // Keep assertion machinery out of the measured frame's JIT slot layout.
+        il.Emit(OpCodes.Ldc_I4_M1);
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(SlotLimitResumed))!);
+        il.Emit(OpCodes.Ldc_I4_0); il.Emit(OpCodes.Ret);
         return method;
     }
 
