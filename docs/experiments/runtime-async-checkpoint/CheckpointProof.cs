@@ -460,12 +460,13 @@ public static class CheckpointProof
     private static int[] SlotLimitSchema(DynamicMethod method, int slotCount)
     {
         var lookup = Helpers.GetMethod("GetCheckpointInfo", BindingFlags.NonPublic | BindingFlags.Static)!;
-        var schema = (int[])lookup.Invoke(null, new object?[] {
-            method, 0, null, IntPtr.Zero, IntPtr.Zero, null, null, IntPtr.Zero, IntPtr.Zero, 0, false, IntPtr.Zero })!;
+        object?[] arguments = { method, 0, null, IntPtr.Zero, IntPtr.Zero, null, null, IntPtr.Zero, IntPtr.Zero, 0, false, IntPtr.Zero };
+        var schema = (int[])lookup.Invoke(null, arguments)!;
+        var slotTypes = (Type?[])arguments[5]!;
         if (schema[6] != slotCount)
             Console.WriteLine("Slot-count mismatch: " + string.Join("; ", Enumerable.Range(0, schema[6])
                 .Where(i => schema[12 + 7 * i] != 1 || schema[15 + 7 * i] != 1 || i < 3 || i >= schema[6] - 3)
-                .Select(i => i + ":" + string.Join(",", schema.Skip(11 + 7 * i).Take(7)))));
+                .Select(i => i + ":" + string.Join(",", schema.Skip(11 + 7 * i).Take(7)) + ":" + slotTypes[i])));
         Require(schema[0] == 6 && schema[5] == 1 && schema[6] == slotCount &&
             schema.Length == 11 + 7 * slotCount && schema[3] < 1024 * 1024,
             $"Expected {slotCount} slots, got {schema[6]} in {schema[3]} layout bytes.");
