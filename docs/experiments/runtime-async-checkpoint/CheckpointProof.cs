@@ -50,6 +50,13 @@ public static class CheckpointProof
             else if (args[0] == "metadata-initializer-restore") RestoreMetadataInitializer(args[1]);
             else if (args[0].StartsWith("statics-", StringComparison.Ordinal))
                 ClassInitializationProof(args[1], args[0].Contains("produce"), args[0].EndsWith("-hot", StringComparison.Ordinal));
+            else if (args[0] == "state-count-produce") ProduceStateCount(args[1]);
+            else if (args[0] == "state-count-restore") ResumeStateCount(args[1]);
+            else if (args[0] == "identity-limits") IdentityLimitProof(args[1]);
+            else if (args[0] == "ordinary-metadata-emit") EmitOrdinaryMetadataAssembly(args[1]);
+            else if (args[0] == "ordinary-metadata-produce") ProduceOrdinaryMetadata(args[1]);
+            else if (args[0] == "ordinary-metadata-restore") ResumeOrdinaryMetadata(args[1]);
+            else if (args[0] == "nearest-metadata") NearestMetadataProof(args[1]);
             else if (args[0] == "native-metadata-produce") ProduceMetadataLimit(args[1]);
             else if (args[0] == "native-metadata-restore") ResumeMetadataLimit(args[1]);
             else if (args[0] == "format-limits") FormatLimitsProof(args[1]);
@@ -619,15 +626,20 @@ public static class CheckpointProof
         s_metadataChecked = checkedIntegers;
     }
 
-    private static DynamicMethod CreateMetadataLimitProgram(int states, int slots)
+    private static DynamicMethod CreateMetadataLimitProgram(int states, int slots, int dropAfter = 0)
     {
-        var method = CreateMethod($"CheckpointMetadataLimit{states}x{slots}",
+        var method = CreateMethod($"CheckpointMetadataLimit{states}x{slots}d{dropAfter}",
             new[] { typeof(int[]), typeof(object) });
-        var il = method.GetILGenerator();
+        EmitMetadataLimitBody(method.GetILGenerator(), method.Name, states, slots, dropAfter);
+        return method;
+    }
+
+    private static void EmitMetadataLimitBody(ILGenerator il, string name, int states, int slots, int dropAfter)
+    {
         var saved = Enumerable.Range(0, slots - 1).Select(_ => il.DeclareLocal(typeof(int))).ToArray();
         var sum = il.DeclareLocal(typeof(int));
         Label invalid = il.DefineLabel();
-        il.Emit(OpCodes.Ldstr, method.Name);
+        il.Emit(OpCodes.Ldstr, name);
         il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(Prefix))!);
         for (int i = 0; i < saved.Length; i++)
         {
@@ -647,15 +659,21 @@ public static class CheckpointProof
             }
             il.Emit(OpCodes.Ldc_I4, state); il.Emit(OpCodes.Ldc_I4, states);
             il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(MetadataLimitOutcome))!);
+            if (state + 1 == dropAfter)
+            {
+                il.Emit(OpCodes.Ldloc, saved[^1]); il.Emit(OpCodes.Ldc_I4, 10000 + saved.Length - 1);
+                il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(MetadataLimitEarlyValue))!);
+            }
         }
-        for (int i = 0; i < saved.Length; i++)
+        int retained = saved.Length - (dropAfter == 0 ? 0 : 1);
+        for (int i = 0; i < retained; i++)
         {
             il.Emit(OpCodes.Ldloc, saved[i]); il.Emit(OpCodes.Ldc_I4, 10000 + i);
             il.Emit(OpCodes.Bne_Un, invalid);
             il.Emit(OpCodes.Ldloc, sum); il.Emit(OpCodes.Ldloc, saved[i]);
             il.Emit(OpCodes.Add); il.Emit(OpCodes.Stloc, sum);
         }
-        il.Emit(OpCodes.Ldc_I4, saved.Length);
+        il.Emit(OpCodes.Ldc_I4, retained);
         il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(MetadataLimitCompleted))!);
         il.Emit(OpCodes.Ldloc, sum); il.Emit(OpCodes.Ldarg_1);
         il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(ReadLabel))!);
@@ -664,32 +682,35 @@ public static class CheckpointProof
         il.Emit(OpCodes.Ldc_I4_M1);
         il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(MetadataLimitCompleted))!);
         il.Emit(OpCodes.Ldc_I4_0); il.Emit(OpCodes.Ret);
-        return method;
     }
 
-    private static int[] MetadataLimitSchema(DynamicMethod method, int state)
+    private static int[] MetadataLimitSchema(MethodInfo method, int state)
     {
         var lookup = Helpers.GetMethod("GetCheckpointInfo", BindingFlags.NonPublic | BindingFlags.Static)!;
         object?[] arguments = { method, state, null, IntPtr.Zero, IntPtr.Zero, null, null, IntPtr.Zero, IntPtr.Zero, 0, false, IntPtr.Zero };
         return (int[])lookup.Invoke(null, arguments)!;
     }
 
-    private static int[][] MeasureMetadataLimit(DynamicMethod method, int states, int slots, int expectedBytes)
+    private static int[][] MeasureMetadataLimit(MethodInfo method, int states, int slots, int expectedBytes, int dropAfter = 0)
     {
         Require(IntPtr.Size == 8, "This native layout measurement is x64-only.");
         var schemas = Enumerable.Range(0, states).Select(state => MetadataLimitSchema(method, state)).ToArray();
         Require(schemas.Select((s, state) => s[0] == 6 && s[1] == state && s[5] == 1 &&
-            s[6] == slots && s.Length == 11 + 7 * slots && s[3] < 1024 * 1024).All(v => v),
+            s[6] == slots - (dropAfter != 0 && state >= dropAfter ? 1 : 0) &&
+            s.Length == 11 + 7 * s[6] && s[3] < 1024 * 1024).All(v => v),
             "Measured native metadata has an unexpected state, slot count or data layout.");
         Require(schemas.Select(s => s[7]).Distinct().Count() == states &&
             schemas.Sum(s => 48 + 40 * s[6]) == expectedBytes, "Native metadata byte measurement changed.");
         ExpectNotSupported(() => MetadataLimitSchema(method, states), "metadata state count",
             "Checkpoint state is outside the method's states.");
-        Console.WriteLine($"MEASURE native metadata: states={states} slotsPerState={slots} layoutBytes={expectedBytes} maximumFrameDataBytes={schemas.Max(s => s[3])}");
+        if (dropAfter == 0)
+            Console.WriteLine($"MEASURE native metadata: states={states} slotsPerState={slots} layoutBytes={expectedBytes} maximumFrameDataBytes={schemas.Max(s => s[3])}");
+        else
+            Console.WriteLine($"MEASURE native metadata: states={states} firstSlots={slots} laterSlots={slots - 1} dropAfter={dropAfter} layoutBytes={expectedBytes} maximumFrameDataBytes={schemas.Max(s => s[3])}");
         return schemas;
     }
 
-    private static Task<int> StartMetadataLimit(DynamicMethod method, int states, int slots, PendingSource source)
+    private static Task<int> StartMetadataLimit(MethodInfo method, int states, int slots, PendingSource source)
     {
         s_metadataWait = source;
         s_metadataWaitCalls = s_metadataOutcomeCalls = 0;
@@ -802,6 +823,396 @@ public static class CheckpointProof
             s_metadataOutcomeCalls == 1 && s_prefixCalls == 0 && s_metadataWaitCalls == 0,
             "Native metadata boundary host restore failed or replayed a prefix.");
         Console.WriteLine($"PASS native metadata restore limit: producer={producer} restorer={Environment.ProcessId} acceptedBytes=1048576 rejectedCalculatedBytes=1049856 state=31 result=8503382 checkedIntegers=817 rejectedDecoderCalls=0 rejectedPolicyCalls=0 resumedStates=1 preAwaitCalls=0");
+    }
+
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void MetadataLimitEarlyValue(int actual, int expected) =>
+        Require(actual == expected, "The metadata control lost its early-dead slot.");
+
+    private static object[][] MetadataHostRecords(object[][] frames) => frames.Select(r =>
+        new object[] { r[0], r[1], r[2], r[3], null!, r[4], r[5] }).ToArray();
+
+    private static object[][] MetadataStandaloneRecords(object[][] frames) => frames.Select(r =>
+        new object[] { r[0], r[1], r[2], r[3], r[5], r[6] }).ToArray();
+
+    private static object[][] MetadataRejectedRecords(object[][] frames, MethodInfo method)
+    {
+        var frame = (object[])frames.Single().Clone();
+        string saved = (string)frame[4];
+        string identity = (string)Helpers.GetMethod("CheckpointMethodIdentity", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, new object[] { method })!;
+        frame[4] = saved.Substring(0, saved.IndexOf(':') + 1) + identity;
+        return new[] { frame };
+    }
+
+    private static void EmitOrdinaryMetadataAssembly(string path)
+    {
+        var assembly = new PersistedAssemblyBuilder(new AssemblyName("CheckpointMetadataBoundary"), typeof(object).Assembly);
+        var module = assembly.DefineDynamicModule("CheckpointMetadataBoundary");
+        var type = module.DefineType("CheckpointMetadataBoundary", TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed);
+        foreach (var shape in new[] { (Name: "AtLimit", States: 32, Slots: 818, Drop: 0),
+            (Name: "NearControl", States: 33, Slots: 794, Drop: 5), (Name: "NearestOver", States: 33, Slots: 794, Drop: 6) })
+        {
+            var method = type.DefineMethod(shape.Name, MethodAttributes.Public | MethodAttributes.Static,
+                typeof(Task<int>), new[] { typeof(int[]), typeof(object) });
+            method.SetImplementationFlags(Enum.Parse<MethodImplAttributes>("Async") | MethodImplAttributes.NoInlining);
+            EmitMetadataLimitBody(method.GetILGenerator(), shape.Name, shape.States, shape.Slots, shape.Drop);
+        }
+        foreach (var stateShape in new[] { (Name: "StateCountAtLimit", Count: 21845), (Name: "StateCountOver", Count: 21846) })
+        {
+            var method = type.DefineMethod(stateShape.Name, MethodAttributes.Public | MethodAttributes.Static, typeof(Task<int>), Type.EmptyTypes);
+            method.SetImplementationFlags(Enum.Parse<MethodImplAttributes>("Async") | MethodImplAttributes.NoInlining);
+            EmitStateCountBody(method.GetILGenerator(), stateShape.Count);
+        }
+        type.CreateType();
+        assembly.Save(path);
+        Console.WriteLine("PASS ordinary metadata assembly emitted once");
+    }
+
+    private static MethodInfo[] OrdinaryMetadataMethods(string path)
+    {
+        var type = Assembly.LoadFile(Path.GetFullPath(path + ".dll")).GetType("CheckpointMetadataBoundary", throwOnError: true)!;
+        var methods = new[] { "AtLimit", "NearControl", "NearestOver" }.Select(name => type.GetMethod(name)!).ToArray();
+        Require(methods.All(m => m is not DynamicMethod && !m.Module.Assembly.IsDynamic),
+            "Expected saved ordinary metadata methods.");
+        return methods;
+    }
+
+    private static void ProduceOrdinaryMetadata(string path)
+    {
+        var methods = OrdinaryMetadataMethods(path);
+        var source = new PendingSource();
+        Task<int> pending = StartMetadataLimit(methods[0], 32, 818, source);
+        var exact = MeasureMetadataLimit(methods[0], 32, 818, 1048576);
+        var capture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int codecs = 0, policies = 0;
+        Func<object, object> codec = value => { codecs++; return value; };
+        Action<int[]> policy = _ => policies++;
+        var frames = (object[][])capture.Invoke(null, new object?[] { pending, new[] { methods[0] }, codec, policy })!;
+        Require(codecs == 1 && policies == 1 && frames.Single()[4] == null &&
+            ((int[])frames[0][2]).SequenceEqual(exact[31]), "Ordinary metadata boundary capture failed.");
+        var controlSource = new PendingSource();
+        Task<int> controlTask = StartMetadataLimit(methods[1], 33, 794, controlSource);
+        var control = MeasureMetadataLimit(methods[1], 33, 794, 1048544, 5);
+        var controlFrames = (object[][])capture.Invoke(null, new object?[] { controlTask, new[] { methods[1] }, codec, policy })!;
+        Require(controlFrames.Single()[4] == null && ((int[])controlFrames[0][2]).SequenceEqual(control[32]),
+            "Ordinary nearest-size control did not capture.");
+        var overSource = new PendingSource();
+        Task<int> over = StartMetadataLimit(methods[2], 33, 794, overSource);
+        ExpectNotSupported(() => MetadataLimitSchema(methods[2], 0), "ordinary nearest oversized metadata lookup",
+            "Checkpoint method has no checkpoint metadata.");
+        codecs = policies = 0;
+        ExpectNotSupported(() => capture.Invoke(null, new object?[] { over, new[] { methods[2] }, codec, policy }),
+            "ordinary nearest oversized metadata capture");
+        Require(codecs == 0 && policies == 0 && s_metadataCompleted == 0,
+            "Ordinary oversized metadata reached a callback.");
+        Write(path, MetadataStandaloneRecords(frames));
+        Write(path + ".control", MetadataStandaloneRecords(controlFrames));
+        File.WriteAllText(path + ".schemas.json", "{\"atLimit\":[" +
+            string.Join(",", exact.Select(s => "[" + string.Join(",", s) + "]")) +
+            "],\"control\":[" + string.Join(",", control.Select(s => "[" + string.Join(",", s) + "]")) + "]}");
+        Console.WriteLine($"READY ordinary metadata producer={Environment.ProcessId} acceptedBytes=1048576 controlBytes=1048544 rejectedCalculatedBytes=1048584 rejectedEncoderCalls=0 rejectedPolicyCalls=0");
+        Console.Out.Flush();
+        Thread.Sleep(Timeout.Infinite);
+        GC.KeepAlive(pending); GC.KeepAlive(source); GC.KeepAlive(controlTask); GC.KeepAlive(controlSource);
+        GC.KeepAlive(over); GC.KeepAlive(overSource);
+    }
+
+    private static void ResumeOrdinaryMetadata(string path)
+    {
+        var frames = Read(path, out int producer);
+        var control = Read(path + ".control", out int controlProducer);
+        Require(producer == controlProducer && producer != Environment.ProcessId, "Ordinary metadata producer was not replaced.");
+        s_restoring = true;
+        var methods = OrdinaryMetadataMethods(path);
+        MeasureMetadataLimit(methods[0], 32, 818, 1048576);
+        MeasureMetadataLimit(methods[1], 33, 794, 1048544, 5);
+        ExpectNotSupported(() => MetadataLimitSchema(methods[2], 0), "fresh ordinary nearest oversized metadata lookup",
+            "Checkpoint method has no checkpoint metadata.");
+        var bad = MetadataHostRecords(MetadataRejectedRecords(control, methods[2]));
+        var restore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        var validate = Helpers.GetMethod("ValidateMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int codecs = 0, policies = 0;
+        Func<object, object> codec = value => { codecs++; return value; };
+        Action<int[]> policy = _ => policies++;
+        ExpectNotSupported(() => restore.Invoke(null, new object?[] { bad, new[] { methods[2] }, Task.FromResult(41), codec, policy }),
+            "ordinary nearest oversized restore", "Checkpoint method has no checkpoint metadata.");
+        ExpectNotSupported(() => validate.Invoke(null, new object?[] { bad, new[] { methods[2] }, Task.FromResult(41), true, policy }),
+            "ordinary nearest oversized preflight", "Checkpoint method has no checkpoint metadata.");
+        Require(codecs == 0 && policies == 0 && s_metadataCompleted == 0 && s_prefixCalls == 0 &&
+            s_metadataWaitCalls == 0 && s_metadataOutcomeCalls == 0, "Ordinary oversized metadata reached restore callbacks.");
+        var hostFrames = MetadataHostRecords(frames);
+        validate.Invoke(null, new object?[] { hostFrames, new[] { methods[0] }, Task.FromResult(41), true, policy });
+        Require(policies == 1 && codecs == 0, "Ordinary exact metadata preflight failed.");
+        policies = 0;
+        var restored = (Task<int>)restore.Invoke(null, new object?[] { hostFrames, new[] { methods[0] }, Task.FromResult(41), codec, policy })!;
+        Require(restored.IsCompleted && restored.GetAwaiter().GetResult() == 8503382 && codecs == 1 && policies == 1 &&
+            s_metadataCompleted == 1 && s_metadataChecked == 817 && s_metadataOutcomeCalls == 1 &&
+            s_prefixCalls == 0 && s_metadataWaitCalls == 0, "Ordinary exact metadata restore failed or replayed.");
+        Console.WriteLine($"PASS ordinary metadata restart: producer={producer} restorer={Environment.ProcessId} acceptedBytes=1048576 controlBytes=1048544 rejectedCalculatedBytes=1048584 result=8503382 checkedIntegers=817 resumedStates=1 preAwaitCalls=0 rejectedDecoderCalls=0 rejectedPolicyCalls=0");
+    }
+
+    private static void NearestMetadataProof(string path)
+    {
+        var control = CreateMetadataLimitProgram(33, 794, 5);
+        var source = new PendingSource();
+        Task<int> pending = StartMetadataLimit(control, 33, 794, source);
+        var schemas = MeasureMetadataLimit(control, 33, 794, 1048544, 5);
+        var frames = (object[][])Capture.Invoke(null, new object[] { pending, new[] { control } })!;
+        Require(((int[])frames.Single()[2]).SequenceEqual(schemas[32]), "Nearest-size control capture failed.");
+        // A second accepted control verifies six early 794-slot states; its
+        // omitted final state has 793 slots. Adding it gives 1048584 bytes.
+        var shortened = CreateMetadataLimitProgram(32, 794, 6);
+        var shortSchemas = MeasureMetadataLimit(shortened, 32, 794, 1016816, 6);
+        var overMethod = CreateMetadataLimitProgram(33, 794, 6);
+        var overSource = new PendingSource();
+        Task<int> over = StartMetadataLimit(overMethod, 33, 794, overSource);
+        ExpectNotSupported(() => MetadataLimitSchema(overMethod, 0), "nearest oversized metadata lookup",
+            "Checkpoint method has no checkpoint metadata.");
+        var hostCapture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        var hostRestore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        var hostValidate = Helpers.GetMethod("ValidateMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int codecs = 0, policies = 0, observed = 0;
+        Func<object, object> codec = value => { codecs++; return value; };
+        Action<int[]> policy = _ => policies++;
+        Action<object> observer = _ => observed++;
+        ExpectNotSupported(() => Capture.Invoke(null, new object[] { over, new[] { overMethod } }), "nearest oversized capture");
+        ExpectNotSupported(() => hostCapture.Invoke(null, new object?[] { over, new[] { overMethod }, codec, policy }),
+            "nearest oversized host capture");
+        var bad = MetadataRejectedRecords(frames, overMethod);
+        ExpectNotSupported(() => RestoreFrames(bad, new[] { overMethod }, 41, observer), "nearest oversized restore",
+            "Checkpoint method has no checkpoint metadata.");
+        ExpectNotSupported(() => hostRestore.Invoke(null, new object?[] { MetadataHostRecords(bad), new[] { overMethod }, Task.FromResult(41), codec, policy }),
+            "nearest oversized host restore", "Checkpoint method has no checkpoint metadata.");
+        ExpectNotSupported(() => hostValidate.Invoke(null, new object?[] { MetadataHostRecords(bad), new[] { overMethod }, Task.FromResult(41), true, policy }),
+            "nearest oversized host preflight", "Checkpoint method has no checkpoint metadata.");
+        Require(codecs == 0 && policies == 0 && observed == 0 && s_metadataCompleted == 0,
+            "Nearest oversized metadata reached callbacks.");
+        File.WriteAllText(path, "{\"control\":[" + string.Join(",", schemas.Select(s => "[" + string.Join(",", s) + "]")) +
+            "],\"shortened\":[" + string.Join(",", shortSchemas.Select(s => "[" + string.Join(",", s) + "]")) + "]}");
+        Console.WriteLine("PASS nearest native metadata: controlBytes=1048544 shortenedBytes=1016816 rejectedCalculatedBytes=1048584 minimumGranularity=8 rejectionChecks=5 rejectedCallbacks=0");
+        GC.KeepAlive(pending); GC.KeepAlive(source); GC.KeepAlive(over); GC.KeepAlive(overSource);
+    }
+
+
+    private static void EmitStateCountBody(ILGenerator il, int states)
+    {
+        il.Emit(OpCodes.Ldstr, "CheckpointStateCount");
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(Prefix))!);
+        for (int state = 0; state < states; state++)
+        {
+            il.Emit(OpCodes.Ldc_I4, state); il.Emit(OpCodes.Ldc_I4, states);
+            il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(MetadataLimitWait))!);
+            il.Emit(OpCodes.Call, Await(typeof(ValueTask<>)));
+            if (state != states - 1) il.Emit(OpCodes.Pop);
+        }
+        il.Emit(OpCodes.Ret);
+    }
+
+    private static MethodInfo StateCountMethod(string path, string name) =>
+        Assembly.LoadFile(Path.GetFullPath(path + ".dll")).GetType("CheckpointMetadataBoundary", true)!.GetMethod(name)!;
+
+    private static Task<int> StartStateCount(MethodInfo method, int states, PendingSource source)
+    {
+        s_metadataWait = source; s_metadataWaitCalls = 0;
+        var pending = method.CreateDelegate<Func<Task<int>>>()();
+        Require(!pending.IsCompleted && ReferenceEquals(source.CallbackState, pending) && s_metadataWaitCalls == states,
+            "State-count method did not park at its last state.");
+        return pending;
+    }
+
+    private static void ProduceStateCount(string path)
+    {
+        const int states = 21845;
+        var method = StateCountMethod(path, "StateCountAtLimit");
+        var source = new PendingSource();
+        var pending = StartStateCount(method, states, source);
+        var offsets = new HashSet<int>();
+        int bytes = 0;
+        using (var writer = new StreamWriter(path + ".schemas.json"))
+        {
+            writer.Write('[');
+            for (int state = 0; state < states; state++)
+            {
+                var schema = MetadataLimitSchema(method, state);
+                Require(schema[0] == 6 && schema[1] == state && schema[6] == 0 && schema.Length == 11 &&
+                    offsets.Add(schema[7]), "The maximum-state method acquired slots or ambiguous states.");
+                bytes += 48;
+                if (state != 0) writer.Write(',');
+                writer.Write('['); writer.Write(string.Join(",", schema)); writer.Write(']');
+            }
+            writer.Write(']');
+        }
+        Require(bytes == 1048560, "The zero-slot state metadata measurement changed.");
+        foreach (int state in new[] { -1, states, 65535, 65536 })
+            ExpectNotSupported(() => MetadataLimitSchema(method, state), "out-of-range state " + state,
+                "Checkpoint state is outside the method's states.");
+        var capture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int codecs = 0, policies = 0;
+        Func<object, object> codec = value => { codecs++; return value; };
+        Action<int[]> policy = _ => policies++;
+        var frames = (object[][])capture.Invoke(null, new object?[] { pending, new[] { method }, codec, policy })!;
+        Require(codecs == 0 && policies == 1 && frames.Single()[4] == null, "State-count capture unexpectedly encoded a binding.");
+        var overMethod = StateCountMethod(path, "StateCountOver");
+        var overSource = new PendingSource();
+        var over = StartStateCount(overMethod, states + 1, overSource);
+        ExpectNotSupported(() => MetadataLimitSchema(overMethod, 0), "state-count metadata one-over",
+            "Checkpoint method has no checkpoint metadata.");
+        codecs = policies = 0;
+        ExpectNotSupported(() => capture.Invoke(null, new object?[] { over, new[] { overMethod }, codec, policy }),
+            "state-count one-over capture");
+        Require(codecs == 0 && policies == 0, "State-count one-over reached callbacks.");
+        Write(path, MetadataStandaloneRecords(frames));
+        Console.WriteLine($"READY state count producer={Environment.ProcessId} acceptedStates=21845 layoutBytes=1048560 rejectedStates=21846 rejectedCalculatedBytes=1048608 rejectedCallbacks=0");
+        Console.Out.Flush(); Thread.Sleep(Timeout.Infinite);
+        GC.KeepAlive(pending); GC.KeepAlive(source); GC.KeepAlive(over); GC.KeepAlive(overSource);
+    }
+
+    private static void ResumeStateCount(string path)
+    {
+        var frames = Read(path, out int producer);
+        Require(producer != Environment.ProcessId && (int)frames.Single()[1] == 21844, "State-count snapshot has the wrong producer or state.");
+        s_restoring = true;
+        var method = StateCountMethod(path, "StateCountAtLimit");
+        foreach (int state in new[] { 0, 10922, 21844 })
+            Require(MetadataLimitSchema(method, state)[6] == 0, "A fresh state-count method acquired a live slot.");
+        var over = StateCountMethod(path, "StateCountOver");
+        ExpectNotSupported(() => MetadataLimitSchema(over, 0), "fresh state-count metadata one-over",
+            "Checkpoint method has no checkpoint metadata.");
+        var bad = MetadataHostRecords(MetadataRejectedRecords(frames, over));
+        var restore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        var validate = Helpers.GetMethod("ValidateMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int codecs = 0, policies = 0;
+        Func<object, object> codec = value => { codecs++; return value; };
+        Action<int[]> policy = _ => policies++;
+        ExpectNotSupported(() => restore.Invoke(null, new object?[] { bad, new[] { over }, Task.FromResult(41), codec, policy }),
+            "state-count one-over restore", "Checkpoint method has no checkpoint metadata.");
+        ExpectNotSupported(() => validate.Invoke(null, new object?[] { bad, new[] { over }, Task.FromResult(41), true, policy }),
+            "state-count one-over preflight", "Checkpoint method has no checkpoint metadata.");
+        Require(codecs == 0 && policies == 0 && s_prefixCalls == 0 && s_metadataWaitCalls == 0,
+            "State-count one-over reached restore callbacks.");
+        var accepted = MetadataHostRecords(frames);
+        validate.Invoke(null, new object?[] { accepted, new[] { method }, Task.FromResult(41), true, policy });
+        policies = 0;
+        var restored = (Task<int>)restore.Invoke(null, new object?[] { accepted, new[] { method }, Task.FromResult(41), codec, policy })!;
+        Require(restored.IsCompleted && restored.GetAwaiter().GetResult() == 41 && policies == 1 &&
+            codecs == 0 && s_prefixCalls == 0 && s_metadataWaitCalls == 0, "State-count restore failed or replayed.");
+        Console.WriteLine($"PASS state count restart: producer={producer} restorer={Environment.ProcessId} acceptedStates=21845 rejectedStates=21846 result=41 preAwaitCalls=0 rejectedCallbacks=0 shadowedStateCap=65536");
+    }
+
+    private static int s_identityResumes;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void IdentityLimitResumed() => s_identityResumes++;
+
+    private static DynamicMethod CreateIdentityLimitProgram(int count, int padding)
+    {
+        var children = Enumerable.Range(1, count - 1).Select(i =>
+            new DynamicMethod("CheckpointIdentityChild" + i, typeof(int), Type.EmptyTypes, typeof(CheckpointProof).Module)).ToArray();
+        for (int i = children.Length - 1; i >= 0; i--)
+        {
+            var il = children[i].GetILGenerator();
+            if (i + 1 < children.Length) { il.Emit(OpCodes.Call, children[i + 1]); il.Emit(OpCodes.Ldc_I4_1); il.Emit(OpCodes.Add); }
+            else il.Emit(OpCodes.Ldc_I4_1);
+            il.Emit(OpCodes.Ret);
+        }
+        var root = CreateMethod("CheckpointIdentityLimit");
+        var body = root.GetILGenerator();
+        var saved = body.DeclareLocal(typeof(int));
+        body.Emit(OpCodes.Ldstr, root.Name);
+        body.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(Prefix))!);
+        body.Emit(OpCodes.Ldstr, new string('x', padding)); body.Emit(OpCodes.Pop);
+        if (children.Length == 0) body.Emit(OpCodes.Ldc_I4_0);
+        else
+        {
+            // Two references to the same child must not count as two distinct methods.
+            body.Emit(OpCodes.Call, children[0]); body.Emit(OpCodes.Pop);
+            body.Emit(OpCodes.Call, children[0]);
+        }
+        body.Emit(OpCodes.Stloc, saved);
+        body.Emit(OpCodes.Ldarg_0); body.Emit(OpCodes.Call, Await(typeof(ValueTask<>)));
+        body.Emit(OpCodes.Ldloc, saved); body.Emit(OpCodes.Add);
+        body.Emit(OpCodes.Ldarg_2); body.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(ReadLabel))!);
+        body.Emit(OpCodes.Add);
+        body.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(IdentityLimitResumed))!);
+        body.Emit(OpCodes.Ret);
+        root.CreateDelegate<Func<ValueTask<int>, int, object, Task<int>>>();
+        return root;
+    }
+
+    private static string IdentityOf(DynamicMethod method) => (string)Helpers.GetMethod(
+        "CheckpointMethodIdentity", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, new object[] { method })!;
+
+    private static Task<int> StartIdentityLimit(DynamicMethod method, PendingSource source) =>
+        method.CreateDelegate<Func<ValueTask<int>, int, object, Task<int>>>()(new ValueTask<int>(source, 0), 0, "hello");
+
+    private static void IdentityLimitProof(string path)
+    {
+        const int maximum = 1048576;
+        int baseline = IdentityOf(CreateIdentityLimitProgram(1, 0)).Length;
+        int padding = maximum - baseline;
+        padding -= padding.ToString(System.Globalization.CultureInfo.InvariantCulture).Length - 1;
+        foreach (var shape in new[] { (Name: "methods", Accepted: CreateIdentityLimitProgram(64, 0),
+                Rejected: CreateIdentityLimitProgram(65, 0), Expected: 109, Error: "Checkpoint method graph is too large."),
+            (Name: "characters", Accepted: CreateIdentityLimitProgram(1, padding),
+                Rejected: CreateIdentityLimitProgram(1, padding + 1), Expected: 46, Error: "Checkpoint method identity is too large.") })
+        {
+            s_restoring = false; s_identityResumes = 0;
+            string identity = IdentityOf(shape.Accepted);
+            if (shape.Name == "characters") Require(identity.Length == maximum, "Identity character boundary drifted.");
+            else Require(identity.Contains("9:reference", StringComparison.Ordinal), "Repeated dynamic method was not represented by reference.");
+            ExpectNotSupported(() => IdentityOf(shape.Rejected), shape.Name + " identity one-over", shape.Error);
+            var source = new PendingSource(); var pending = StartIdentityLimit(shape.Accepted, source);
+            Require(!pending.IsCompleted && ReferenceEquals(source.CallbackState, pending), "Identity-limit method did not park.");
+            var frames = (object[][])Capture.Invoke(null, new object[] { pending, new[] { shape.Accepted } })!;
+            var capture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!.MakeGenericMethod(typeof(int));
+            var restore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.NonPublic | BindingFlags.Static)!.MakeGenericMethod(typeof(int));
+            var validate = Helpers.GetMethod("ValidateMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!.MakeGenericMethod(typeof(int));
+            int codecs = 0, policies = 0, observers = 0;
+            Func<object, object> codec = value => { codecs++; return value; };
+            Action<int[]> policy = _ => policies++;
+            Action<object> observer = _ => observers++;
+            var hostFrames = (object[][])capture.Invoke(null, new object?[] { pending, new[] { shape.Accepted }, codec, policy })!;
+            Require(codecs == 1 && policies == 1, "Identity-limit host capture failed.");
+            var overSource = new PendingSource(); var over = StartIdentityLimit(shape.Rejected, overSource);
+            ExpectNotSupported(() => Capture.Invoke(null, new object[] { over, new[] { shape.Rejected } }),
+                shape.Name + " identity capture", shape.Error);
+            codecs = policies = 0;
+            ExpectNotSupported(() => capture.Invoke(null, new object?[] { over, new[] { shape.Rejected }, codec, policy }),
+                shape.Name + " identity host capture", shape.Error);
+            // Capture currently runs its read-only slot policy before building the
+            // canonical identity; value encoding remains deferred until all frames pass.
+            Require(codecs == 0 && policies == 1, "Identity capture rejection changed callback ordering.");
+            codecs = policies = 0;
+            ExpectNotSupported(() => RestoreFrames(frames, new[] { shape.Rejected }, 41, observer), shape.Name + " identity restore", shape.Error);
+            ExpectNotSupported(() => restore.Invoke(null, new object?[] { hostFrames, new[] { shape.Rejected }, Task.FromResult(41), codec, policy }),
+                shape.Name + " identity host restore", shape.Error);
+            ExpectNotSupported(() => validate.Invoke(null, new object?[] { hostFrames, new[] { shape.Rejected }, Task.FromResult(41), true, policy }),
+                shape.Name + " identity preflight", shape.Error);
+            Require(codecs == 0 && policies == 0 && observers == 0 && s_identityResumes == 0,
+                "Identity rejection reached decoding, policy, observation or resumed code.");
+            s_restoring = true; int prefixes = s_prefixCalls;
+            var accepted = RestoreFrames(frames, new[] { shape.Accepted }, 41, observer);
+            Require(accepted.GetAwaiter().GetResult() == shape.Expected && s_identityResumes == 1 && observers == 1,
+                "Identity-limit standalone restore failed.");
+            validate.Invoke(null, new object?[] { hostFrames, new[] { shape.Accepted }, Task.FromResult(41), true, policy });
+            policies = 0; s_identityResumes = 0;
+            var host = (Task<int>)restore.Invoke(null, new object?[] { hostFrames, new[] { shape.Accepted }, Task.FromResult(41), codec, policy })!;
+            Require(host.GetAwaiter().GetResult() == shape.Expected && codecs == 1 && policies == 1 &&
+                s_identityResumes == 1 && s_prefixCalls == prefixes, "Identity-limit host restore failed or replayed.");
+            Console.WriteLine($"PASS identity boundary: kind={shape.Name} identityCharacters={identity.Length} result={shape.Expected} rejectionChecks=5 rejectedCodecCalls=0 capturePolicyCallsBeforeRejection=1 restorePolicyCallsBeforeRejection=0 prefixReplay=0");
+            GC.KeepAlive(source); GC.KeepAlive(pending); GC.KeepAlive(over); GC.KeepAlive(overSource);
+        }
+        File.WriteAllText(path, $"methods=64/65;characters=1048576/1048577;padding={padding};stateBoundary=0;freshProcessRestore=false");
     }
 
     private static PendingSource? s_nextWait;

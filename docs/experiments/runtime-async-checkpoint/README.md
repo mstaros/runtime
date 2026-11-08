@@ -310,6 +310,51 @@ This extends the experiment, not the production durability API or DLL admission
 policy. Arbitrary existing DLLs, arbitrary serialization and general optimized-JIT
 portability remain unproved.
 
+
+## Remaining native boundary proofs
+
+The runner now also emits one saved DLL and uses ordinary metadata methods from
+that exact file in producer and restorer processes. Its 32-state, 818-slot
+method is accepted at 1,048,576 metadata bytes. After the producer is killed,
+host preflight and restore accept state 31, check 817 integers and the string,
+return 8,503,382 and execute no prefix or wait-factory code again.
+
+The nearest possible oversized x64 layout is 1,048,584 bytes: both native
+record sizes (48-byte frame headers and 40-byte slots) are multiples of eight.
+A 33-state method has 794 slots for its first six states and 793 thereafter.
+Its admitted control drops the extra slot after five states instead, measuring
+1,048,544 bytes. A second admitted 32-state control confirms the six-state
+lifetime and measures 1,016,816 bytes; adding the final 793-slot state gives
+1,048,584. Oversized metadata is not published, so that rejected size is
+calculated from measured controls, not read from a rejected native header.
+Real pending DynamicMethods and ordinary DLL methods are refused at capture;
+restore and preflight are refused before value codecs and policies.
+
+The 65,536-state header guard cannot be reached with well-formed metadata under
+the current byte cap: even zero-slot states need 48 bytes each. The effective
+maximum is floor(1,048,576 / 48) = **21,845 zero-slot states** (1,048,560 bytes).
+The proof reads every emitted schema at that maximum, captures the last state,
+kills its producer and restores 41 in a fresh process without prefix replay.
+A live 21,846-state method is refused because its calculated metadata size is
+1,048,608 bytes. Invalid state indices -1, 21,845, 65,535 and 65,536 are also
+refused. This tests the reachable limit without raising another guard.
+
+Identity cases use real pending DynamicMethods and exercise standalone and
+host capture, restore and preflight in-process. Exactly 64 distinct referenced
+methods and exactly 1,048,576 canonical identity characters are admitted;
+65 methods and 1,048,577 characters are refused. A repeated reference to one
+child does not count as another distinct method. Both limits reject before
+value codecs and resumed execution. Capture currently invokes its read-only
+slot policy once before identity construction; restore/preflight reject before
+that policy too. These identity tests do not claim a fresh-process restart:
+the exact-size identity plus frame/file headers exceeds the independent
+standalone-file cap.
+
+These additions change only proof code, runner checks and documentation.
+Runtime schemas, caps and production code remain unchanged. The receipt
+separately records native metadata, ordinary-method, state-count and identity
+evidence. Host object-graph budgets belong to the host codec.
+
 ## Limits
 
 - Windows x64, exact runtime/application builds, tiering/OSR/R2R disabled. Exact DLL
@@ -391,8 +436,9 @@ portability remain unproved.
   oversized native layout. No synthetic schema header establishes the accepted
   size. The runner retains raw schemas, hashes, process IDs and a separate
   `nativeMetadataLimit` receipt. This boundary proof uses DynamicMethods; the
-  ordinary-method publication boundary, 65,536-state cap, identity graphs and
-  host graph limits remain separate. Runtime caps and schemas are unchanged.
+  follow-up above also covers ordinary methods, the nearest oversized shape,
+  reachable state counts and identity bounds. Host graph limits remain separate.
+  Runtime caps and schemas are unchanged.
   The continuation-layout, native-metadata and standalone-file 1 MiB guards
   originated in `a66ca48dacfe51609d99bd42faa78715b754c11d`; the reviewed history
   supplies no sizing rationale. They are experimental limits, not general .NET limits.

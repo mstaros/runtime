@@ -86,6 +86,37 @@ function Invoke-CheckpointChild([string]$Mode, [string]$Path, [int]$TimeoutMilli
     }
 }
 
+
+function Invoke-CheckpointProducer([string]$Mode, [string]$Path, [string]$Ready, [int]$TimeoutSeconds = 60) {
+    Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    $stdout = Join-Path $output ($Mode + ".stdout.log")
+    $stderr = Join-Path $output ($Mode + ".stderr.log")
+    $child = Start-Process -FilePath $corerun -ArgumentList @(('"' + $worker + '"'), $Mode, ('"' + $Path + '"')) -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    $null = $child.Handle
+    $producerId = $child.Id
+    try {
+        $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+        do {
+            if ($child.HasExited) {
+                Get-Content -LiteralPath $stdout | ForEach-Object { Write-Host $_ }
+                Get-Content -LiteralPath $stderr | ForEach-Object { Write-Host $_ }
+                throw "Checkpoint producer exited before publication: $Mode ($($child.ExitCode))"
+            }
+            if ([DateTime]::UtcNow -gt $deadline) { throw "Checkpoint producer timed out: $Mode" }
+            Start-Sleep -Milliseconds 100
+        } while (-not (Test-Path -LiteralPath $Path) -or
+            -not ((Get-Content -LiteralPath $stdout -Raw) -match [regex]::Escape($Ready)))
+        $child.Kill()
+        $child.WaitForExit()
+    } finally {
+        if (-not $child.HasExited) { $child.Kill(); $child.WaitForExit() }
+        $child.Dispose()
+    }
+    Get-Content -LiteralPath $stdout | ForEach-Object { Write-Host $_ }
+    Get-Content -LiteralPath $stderr | ForEach-Object { Write-Host $_ }
+    return $producerId
+}
+
 $snapshot = Join-Path $output "checkpoint.bin"
 Remove-Item -LiteralPath $snapshot -Force -ErrorAction SilentlyContinue
 $producerOut = Join-Path $output "producer.stdout.log"
@@ -176,6 +207,45 @@ if (-not $nativeMetadataCapture.Success -or -not $nativeMetadataRestore.Success 
     [int]$nativeMetadataRestore.Groups[2].Value -eq $nativeMetadataProducer.Id -or
     -not ([IO.File]::ReadAllText($nativeMetadataOut).Contains("PASS native metadata capture limit: acceptedBytes=1048576 rejectedCalculatedBytes=1049856 states=32 slotsPerState=818 controlStates=31 controlSlots=819 controlBytes=1017048 rejectedEncoderCalls=0 rejectedPolicyCalls=0"))) {
     throw "Native metadata boundary evidence is missing or names the wrong producer."
+}
+
+
+$nearestSchemas = Join-Path $output "nearest-metadata.schemas.json"
+Invoke-CheckpointChild "nearest-metadata" $nearestSchemas 60000
+if (-not ([IO.File]::ReadAllText((Join-Path $output "nearest-metadata.stdout.log")).Contains(
+    "PASS nearest native metadata: controlBytes=1048544 shortenedBytes=1016816 rejectedCalculatedBytes=1048584 minimumGranularity=8 rejectionChecks=5 rejectedCallbacks=0"))) {
+    throw "Nearest oversized metadata evidence is missing."
+}
+$env:DOTNET_JitAsyncCheckpointProof = "4"
+$ordinaryMetadataSnapshot = Join-Path $output "ordinary-metadata.bin"
+Invoke-CheckpointChild "ordinary-metadata-emit" ($ordinaryMetadataSnapshot + ".dll")
+$ordinaryMetadataProducer = Invoke-CheckpointProducer "ordinary-metadata-produce" $ordinaryMetadataSnapshot "READY ordinary metadata producer="
+Invoke-CheckpointChild "ordinary-metadata-restore" $ordinaryMetadataSnapshot 60000
+$ordinaryMetadataRestore = [regex]::Match([IO.File]::ReadAllText((Join-Path $output "ordinary-metadata-restore.stdout.log")),
+    'PASS ordinary metadata restart: producer=(\d+) restorer=(\d+) acceptedBytes=1048576 controlBytes=1048544 rejectedCalculatedBytes=1048584 result=8503382 checkedIntegers=817 resumedStates=1 preAwaitCalls=0 rejectedDecoderCalls=0 rejectedPolicyCalls=0')
+if (-not $ordinaryMetadataRestore.Success -or [int]$ordinaryMetadataRestore.Groups[1].Value -ne $ordinaryMetadataProducer -or
+    [int]$ordinaryMetadataRestore.Groups[2].Value -eq $ordinaryMetadataProducer) {
+    throw "Ordinary metadata restart evidence is missing or names the wrong producer."
+}
+
+$stateCountSnapshot = Join-Path $output "state-count.bin"
+Copy-Item -LiteralPath ($ordinaryMetadataSnapshot + ".dll") -Destination ($stateCountSnapshot + ".dll") -Force
+$stateCountProducer = Invoke-CheckpointProducer "state-count-produce" $stateCountSnapshot "READY state count producer=" 180
+Invoke-CheckpointChild "state-count-restore" $stateCountSnapshot 180000
+$stateCountRestore = [regex]::Match([IO.File]::ReadAllText((Join-Path $output "state-count-restore.stdout.log")),
+    'PASS state count restart: producer=(\d+) restorer=(\d+) acceptedStates=21845 rejectedStates=21846 result=41 preAwaitCalls=0 rejectedCallbacks=0 shadowedStateCap=65536')
+if (-not $stateCountRestore.Success -or [int]$stateCountRestore.Groups[1].Value -ne $stateCountProducer -or
+    [int]$stateCountRestore.Groups[2].Value -eq $stateCountProducer) {
+    throw "Reachable state-count restart evidence is missing."
+}
+
+$env:DOTNET_JitAsyncCheckpointProof = "2"
+
+Invoke-CheckpointChild "identity-limits" (Join-Path $output "identity-limits.txt") 60000
+$identityOutput = [IO.File]::ReadAllText((Join-Path $output "identity-limits.stdout.log"))
+if (-not ($identityOutput -match 'PASS identity boundary: kind=methods identityCharacters=\d+ result=109 rejectionChecks=5 rejectedCodecCalls=0 capturePolicyCallsBeforeRejection=1 restorePolicyCallsBeforeRejection=0 prefixReplay=0') -or
+    -not $identityOutput.Contains("PASS identity boundary: kind=characters identityCharacters=1048576 result=46 rejectionChecks=5 rejectedCodecCalls=0 capturePolicyCallsBeforeRejection=1 restorePolicyCallsBeforeRejection=0 prefixReplay=0")) {
+    throw "Identity boundary evidence is missing."
 }
 
 # File-format limits are independent of native schema admission.
@@ -312,12 +382,46 @@ $receipt = [ordered]@{
         controlStates = 31; controlSlotsPerState = 819; measuredControlBytes = 1017048
         rejectedStates = 32; rejectedSlotsPerState = 819; rejectedCalculatedBytes = 1049856
         rejectedSizeMeasurement = "Calculated from the measured 31-state control plus one equal-size state; oversized metadata is not published."
-        nearestPossibleOverLimitSizeTested = $false
+        nearestPossibleOverLimitSizeTested = $true
         standaloneAndHostCaptureAtLimit = $true; standaloneAndHostRestoreAtLimit = $true; hostPreflightAtLimit = $true
         checkedIntegers = 817; result = 8503382; resumedStatesPerRestore = 1; preAwaitCalls = 0
         rejectedEncoderCalls = 0; rejectedDecoderCalls = 0; rejectedPolicyCalls = 0; rejectedObserverCalls = 0
         captureRestoreAndPreflightRejections = 5; oversizedLookupRejections = 2
-        mode = "DynamicMethod"; ordinaryMethodPublicationBoundaryTested = $false
+        mode = "DynamicMethod"; ordinaryMethodPublicationBoundaryTested = $true
+    }
+
+    nativeMetadataFollowUp = [ordered]@{
+        passed = $true; maximumLayoutBytes = 1048576; minimumLayoutGranularity = 8
+        nearestRejectedCalculatedBytes = 1048584; acceptedControlBytes = 1048544; shortenedControlBytes = 1016816
+        nearestShape = "33 states: six with 794 slots, then 27 with 793; control drops the extra slot after five states."
+        sizeEvidence = "Calculated from actual admitted control schemas; oversized native blobs are not published."
+        dynamicCaptureRestoreAndPreflightRejections = 5; rejectedDynamicCallbacks = 0
+        ordinaryMethodsFromSavedDll = $true; ordinaryProducerKilled = $true
+        ordinaryProducerPid = $ordinaryMetadataProducer; ordinaryRestorerPid = [int]$ordinaryMetadataRestore.Groups[2].Value
+        ordinarySnapshotBytes = (Get-Item -LiteralPath $ordinaryMetadataSnapshot).Length
+        ordinaryAssemblySha256 = (Get-FileHash -LiteralPath ($ordinaryMetadataSnapshot + ".dll") -Algorithm SHA256).Hash
+        ordinaryCaptureRestoreAndPreflightRejections = 3; rejectedOrdinaryCallbacks = 0
+        ordinaryExactCapResult = 8503382; ordinaryCheckedIntegers = 817; ordinaryResumedStates = 1; ordinaryPreAwaitCalls = 0
+        nearestRawSchemasSha256 = (Get-FileHash -LiteralPath $nearestSchemas -Algorithm SHA256).Hash
+        ordinaryRawSchemasSha256 = (Get-FileHash -LiteralPath ($ordinaryMetadataSnapshot + ".schemas.json") -Algorithm SHA256).Hash
+    }
+
+    stateCountLimit = [ordered]@{
+        passed = $true; acceptedStates = 21845; measuredLayoutBytes = 1048560; slotsPerState = 0
+        rejectedStates = 21846; rejectedCalculatedBytes = 1048608; advertisedStateCap = 65536
+        minimumBytesAtAdvertisedStateCap = 3145728; stateCapShadowedByMetadataBytes = $true
+        producerKilled = $true; producerPid = $stateCountProducer; restorerPid = [int]$stateCountRestore.Groups[2].Value
+        result = 41; preAwaitCalls = 0; rejectedCallbacks = 0; captureRestoreAndPreflightRejections = 3
+        outOfRangeStatesRejected = @(-1, 21845, 65535, 65536)
+        rawSchemasSha256 = (Get-FileHash -LiteralPath ($stateCountSnapshot + ".schemas.json") -Algorithm SHA256).Hash
+    }
+    identityLimits = [ordered]@{
+        passed = $true; acceptedDistinctMethods = 64; rejectedDistinctMethods = 65
+        acceptedCharacters = 1048576; rejectedCharacters = 1048577
+        repeatedMethodReferenceDeduplicated = $true; captureRestoreAndPreflightRejections = 10
+        rejectedCodecCalls = 0; capturePolicyCallsBeforeEachRejection = 1; restorePolicyCallsBeforeRejection = 0
+        prefixReplay = 0; freshProcessRestore = $false
+        scope = "Real pending DynamicMethods; in-process capture, restore and preflight. The exact identity exceeds the independent standalone-file cap once framed."
     }
     managedLayoutSizeGuard = [ordered]@{
         passed = $true; maximumBytes = 1048576; rejectedBytes = 1048577; hostModes = 2; rejectionChecks = 2
