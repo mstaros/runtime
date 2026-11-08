@@ -83,10 +83,10 @@ public static class CheckpointProof
         return new[] { inner, outer };
     }
 
-    private static DynamicMethod CreateMethod(string name)
+    private static DynamicMethod CreateMethod(string name, Type[]? parameters = null)
     {
         var method = new DynamicMethod(name, typeof(Task<int>),
-            new[] { typeof(ValueTask<int>), typeof(int), typeof(object) },
+            parameters ?? new[] { typeof(ValueTask<int>), typeof(int), typeof(object) },
             typeof(CheckpointProof).Module, skipVisibility: true);
         typeof(DynamicMethod).GetMethod("SetImplementationFlags",
             new[] { typeof(MethodImplAttributes) })!.Invoke(method,
@@ -208,6 +208,7 @@ public static class CheckpointProof
             "late restore rejection", "second frame");
         Require(codecCalls == 0, "The decoder ran before the second frame's policy.");
         ProduceFrameLimit(path + ".frames16");
+        ProduceSlotLimit(path + ".slots1024");
         Write(path, records);
         Console.WriteLine($"READY producer={Environment.ProcessId} frames={records.Length} bytes={new FileInfo(path).Length}");
         Console.Out.Flush();
@@ -274,6 +275,7 @@ public static class CheckpointProof
         ResumeReuse(path + ".reuse");
         ResumeScheduling(path + ".pool");
         ResumeFrameLimit(path + ".frames16");
+        ResumeSlotLimit(path + ".slots1024");
         Console.WriteLine($"PASS producer={producer} restorer={Environment.ProcessId} frames={records.Length} result={actual} preAwaitCalls={s_prefixCalls}");
     }
 
@@ -393,6 +395,182 @@ public static class CheckpointProof
             policyCalls == 16 && codecCalls > 0 && s_frameLimitResumes == 16 && s_prefixCalls == 0,
             "Exact-limit host restore failed, skipped bindings or replayed the prefix.");
         Console.WriteLine($"PASS runtime frame restore limit: producer={producer} restorer={Environment.ProcessId} accepted=16 rejected=0,17 rejectedDecoderCalls=0 rejectedPolicyCalls=0 result=-39 resumedFrames={s_frameLimitResumes} observerCalls={observed} preAwaitCalls={s_prefixCalls}");
+    }
+
+    private static int s_slotResumeCalls;
+    private static int s_slotValuesChecked;
+
+    public static void SlotLimitResumed(int checks)
+    {
+        Require(s_slotResumeCalls == 0 && checks == 1023, "Unexpected slot-limit resumed execution.");
+        s_slotResumeCalls++;
+        s_slotValuesChecked = checks;
+    }
+
+    private static DynamicMethod CreateSlotLimitProgram(int slotCount)
+    {
+        int scalarCount = slotCount - 1; // The label is the remaining live slot.
+        var method = CreateMethod("CheckpointSlotLimit" + slotCount,
+            new[] { typeof(ValueTask<int>), typeof(int[]), typeof(object) });
+        var il = method.GetILGenerator();
+        var saved = Enumerable.Range(0, scalarCount).Select(_ => il.DeclareLocal(typeof(int))).ToArray();
+        var sum = il.DeclareLocal(typeof(int));
+        Label invalid = il.DefineLabel();
+        il.Emit(OpCodes.Ldstr, method.Name);
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(Prefix))!);
+        for (int i = 0; i < scalarCount; i++)
+        {
+            il.Emit(OpCodes.Ldarg_1); il.Emit(OpCodes.Ldc_I4, i); il.Emit(OpCodes.Ldelem_I4);
+            il.Emit(OpCodes.Stloc, saved[i]);
+        }
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Call, Await(typeof(ValueTask<>)));
+        il.Emit(OpCodes.Stloc, sum);
+        for (int i = 0; i < scalarCount; i++)
+        {
+            // Check every saved value, not just an aggregate that could collide.
+            il.Emit(OpCodes.Ldloc, saved[i]); il.Emit(OpCodes.Ldc_I4, 10000 + i);
+            il.Emit(OpCodes.Bne_Un, invalid);
+            il.Emit(OpCodes.Ldloc, sum); il.Emit(OpCodes.Ldloc, saved[i]);
+            il.Emit(OpCodes.Add); il.Emit(OpCodes.Stloc, sum);
+        }
+        il.Emit(OpCodes.Ldc_I4, scalarCount);
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(SlotLimitResumed))!);
+        il.Emit(OpCodes.Ldloc, sum); il.Emit(OpCodes.Ldarg_2);
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(ReadLabel))!);
+        il.Emit(OpCodes.Add); il.Emit(OpCodes.Ret);
+        il.MarkLabel(invalid);
+        il.Emit(OpCodes.Ldstr, "A saved slot value changed across restart.");
+        il.Emit(OpCodes.Newobj, typeof(InvalidOperationException).GetConstructor(new[] { typeof(string) })!);
+        il.Emit(OpCodes.Throw);
+        return method;
+    }
+
+    private static Task<int> StartSlotLimit(DynamicMethod method, int slotCount, PendingSource source)
+    {
+        int before = s_prefixCalls;
+        var invoke = method.CreateDelegate<Func<ValueTask<int>, int[], object, Task<int>>>();
+        Task<int> pending = invoke(new ValueTask<int>(source, 0),
+            Enumerable.Range(10000, slotCount - 1).ToArray(), new string("hello".ToCharArray()));
+        Require(!pending.IsCompleted && ReferenceEquals(source.CallbackState, pending) &&
+            s_prefixCalls == before + 1 && s_slotResumeCalls == 0, "Slot-limit program did not park.");
+        return pending;
+    }
+
+    private static int[] SlotLimitSchema(DynamicMethod method, int slotCount)
+    {
+        var lookup = Helpers.GetMethod("GetCheckpointInfo", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var schema = (int[])lookup.Invoke(null, new object?[] {
+            method, 0, null, IntPtr.Zero, IntPtr.Zero, null, null, IntPtr.Zero, IntPtr.Zero, 0, false, IntPtr.Zero })!;
+        Require(schema[0] == 6 && schema[5] == 1 && schema[6] == slotCount &&
+            schema.Length == 11 + 7 * slotCount && schema[3] < 1024 * 1024,
+            $"Expected {slotCount} slots, got {schema[6]} in {schema[3]} layout bytes.");
+        return schema;
+    }
+
+    private static void ProduceSlotLimit(string path)
+    {
+        var method = CreateSlotLimitProgram(1024);
+        var methods = new[] { method };
+        var source = new PendingSource();
+        Task<int> pending = StartSlotLimit(method, 1024, source);
+        int[] schema = SlotLimitSchema(method, 1024);
+        var records = (object[][])Capture.Invoke(null, new object[] { pending, methods })!;
+        Require(records.Length == 1 && ((int[])records[0][2]).SequenceEqual(schema) &&
+            ((object[])records[0][3]).OfType<int>().OrderBy(v => v).SequenceEqual(Enumerable.Range(10000, 1023)) &&
+            ((object[])records[0][3]).OfType<string>().Single() == "hello", "Capture lost a boundary slot.");
+        var hostCapture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int codecs = 0, policies = 0;
+        Func<object, object> codec = value => { codecs++; return value; };
+        Action<int[]> policy = _ => policies++;
+        var hostRecords = (object[][])hostCapture.Invoke(null, new object?[] { pending, methods, codec, policy })!;
+        Require(codecs == 1 && policies == 1 && hostRecords.Single()[4] == null,
+            "Exact-slot host capture did not encode its one context-free label.");
+
+        // This isolates the managed schema-size guard; it is not a real 1 MiB continuation.
+        var validate = Helpers.GetMethod("ValidateCheckpointSchema", BindingFlags.NonPublic | BindingFlags.Static)!;
+        foreach (bool host in new[] { false, true })
+        {
+            var boundary = (int[])schema.Clone();
+            boundary[3] = 1024 * 1024;
+            validate.Invoke(null, new object[] { boundary, host });
+            boundary[3]++;
+            ExpectNotSupported(() => validate.Invoke(null, new object[] { boundary, host }),
+                "managed layout one-over (host=" + host + ")", "Unsupported checkpoint frame layout.");
+        }
+        Console.WriteLine("PASS managed layout size guard: accepted=1048576 rejected=1048577 modes=2");
+
+        var overMethod = CreateSlotLimitProgram(1025);
+        var overSource = new PendingSource();
+        Task<int> over = StartSlotLimit(overMethod, 1025, overSource);
+        SlotLimitSchema(overMethod, 1025);
+        ExpectNotSupported(() => Capture.Invoke(null, new object[] { over, new[] { overMethod } }),
+            "1025-slot capture", "Unsupported checkpoint frame layout.");
+        codecs = policies = 0;
+        ExpectNotSupported(() => hostCapture.Invoke(null, new object?[] { over, new[] { overMethod }, codec, policy }),
+            "1025-slot host capture", "Unsupported checkpoint frame layout.");
+        Require(codecs == 0 && policies == 0, "Over-limit slots reached capture policy or codec.");
+        Write(path, records);
+        Console.WriteLine($"PASS runtime slot capture limit: accepted=1024 rejected=1025 schemaIntegers=7179 rejectedEncoderCalls=0 layoutBytes={schema[3]}");
+        GC.KeepAlive(pending); GC.KeepAlive(source); GC.KeepAlive(over); GC.KeepAlive(overSource);
+    }
+
+    private static void ResumeSlotLimit(string path)
+    {
+        var records = Read(path, out int producer);
+        Require(producer != Environment.ProcessId && records.Length == 1 && ((int[])records[0][2])[6] == 1024,
+            "Slot-limit snapshot must come from the killed producer.");
+        var method = CreateSlotLimitProgram(1024);
+        var methods = new[] { method };
+        var hostRestore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        var hostValidate = Helpers.GetMethod("ValidateMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        var overMethod = CreateSlotLimitProgram(1025);
+        int[] overSchema = SlotLimitSchema(overMethod, 1025);
+        string overIdentity = (string)Helpers.GetMethod("CheckpointMethodIdentity", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, new object[] { overMethod })!;
+        string savedIdentity = (string)records[0][4];
+        string prefix = savedIdentity.Substring(0, savedIdentity.IndexOf(':') + 1);
+        var overValues = new object[1025];
+        var overTypes = new string?[1025];
+        string stringType = ((string?[])records[0][5]).Single(v => v != null)!;
+        for (int i = 0; i < overValues.Length; i++)
+        {
+            bool reference = overSchema[11 + 7 * i + 1] == 2;
+            overValues[i] = reference ? "hello" : 10000;
+            overTypes[i] = reference ? stringType : null;
+        }
+        var bad = new[] { new object[] { 0, 0, overSchema, overValues, prefix + overIdentity, overTypes } };
+        object[][] HostRecords(object[][] frames) => frames.Select(r =>
+            new object[] { r[0], r[1], r[2], r[3], null!, r[4], r[5] }).ToArray();
+        int observed = 0, codecs = 0, policies = 0;
+        Action<object> observer = _ => observed++;
+        Func<object, object> codec = value => { codecs++; return value; };
+        Action<int[]> policy = _ => policies++;
+        ExpectNotSupported(() => RestoreFrames(bad, new[] { overMethod }, 41, observer),
+            "1025-slot restore", "Unsupported checkpoint frame layout.");
+        ExpectNotSupported(() => hostRestore.Invoke(null, new object?[] { HostRecords(bad), new[] { overMethod }, Task.FromResult(41), codec, policy }),
+            "1025-slot host restore", "Unsupported checkpoint frame layout.");
+        ExpectNotSupported(() => hostValidate.Invoke(null, new object?[] { HostRecords(bad), new[] { overMethod }, Task.FromResult(41), true, policy }),
+            "1025-slot host preflight", "Unsupported checkpoint frame layout.");
+        Require(observed == 0 && codecs == 0 && policies == 0 && s_slotResumeCalls == 0,
+            "Over-limit slots reached observation, decoding, policy or dispatch.");
+
+        Task<int> restored = RestoreFrames(records, methods, 41, observer);
+        const int expected = 41 + 5 + 1023 * 10000 + 1023 * 1022 / 2;
+        Require(restored.IsCompleted && restored.GetAwaiter().GetResult() == expected &&
+            observed == 1 && s_slotResumeCalls == 1 && s_slotValuesChecked == 1023, "Maximum-slot restore lost state.");
+        var hostRecords = HostRecords(records);
+        hostValidate.Invoke(null, new object?[] { hostRecords, methods, Task.FromResult(41), true, policy });
+        Require(policies == 1 && codecs == 0, "Maximum-slot host preflight did not complete.");
+        policies = s_slotResumeCalls = s_slotValuesChecked = 0;
+        var hostResult = (Task<int>)hostRestore.Invoke(null, new object?[] { hostRecords, methods, Task.FromResult(41), codec, policy })!;
+        Require(hostResult.IsCompleted && hostResult.GetAwaiter().GetResult() == expected &&
+            policies == 1 && codecs == 1 && s_slotResumeCalls == 1 && s_slotValuesChecked == 1023 && s_prefixCalls == 0,
+            "Maximum-slot host restore failed or replayed pre-await work.");
+        Console.WriteLine($"PASS runtime slot restore limit: producer={producer} restorer={Environment.ProcessId} accepted=1024 rejected=1025 result={expected} checkedIntegers={s_slotValuesChecked} rejectedDecoderCalls=0 rejectedPolicyCalls=0 preAwaitCalls={s_prefixCalls}");
     }
 
     private static PendingSource? s_nextWait;

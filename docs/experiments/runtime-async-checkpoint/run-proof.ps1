@@ -127,6 +127,17 @@ if (-not $frameLimitRestore.Success -or [int]$frameLimitRestore.Groups[1].Value 
 }
 
 
+$slotLimitCapture = [regex]::Match([IO.File]::ReadAllText($producerOut),
+    'PASS runtime slot capture limit: accepted=1024 rejected=1025 schemaIntegers=7179 rejectedEncoderCalls=0 layoutBytes=(\d+)')
+$slotLimitRestore = [regex]::Match([IO.File]::ReadAllText($restoreLog),
+    'PASS runtime slot restore limit: producer=(\d+) restorer=(\d+) accepted=1024 rejected=1025 result=10752799 checkedIntegers=1023 rejectedDecoderCalls=0 rejectedPolicyCalls=0 preAwaitCalls=0')
+if (-not $slotLimitCapture.Success -or -not $slotLimitRestore.Success -or
+    [int]$slotLimitRestore.Groups[1].Value -ne $producer.Id -or
+    [int]$slotLimitRestore.Groups[2].Value -ne [int]$frameLimitRestore.Groups[2].Value -or
+    -not ([IO.File]::ReadAllText($producerOut).Contains("PASS managed layout size guard: accepted=1048576 rejected=1048577 modes=2"))) {
+    throw "Runtime slot-limit or managed layout-guard evidence is missing."
+}
+
 # File-format limits are independent of native schema admission.
 Invoke-CheckpointChild "format-limits" (Join-Path $output "format-limits.bin")
 $formatLimitsMarker = "PASS proof format limits: frames=16 schemaIntegers=7179 referenceTypes=1024 values=1024 bytes=1048576 rejectionCases=18"
@@ -239,6 +250,18 @@ $receipt = [ordered]@{
         hostPreflightAtLimit = $true; rejectedCaptureCounts = @(17); rejectedRestoreCounts = @(0, 17)
         rejectedEncoderCalls = 0; rejectedDecoderCalls = 0; rejectedPolicyCallsOnRestore = 0
         rejectionChecks = 8; slotLayoutStateAndIdentityLimitsTested = $false
+    }
+    runtimeSlotLimit = [ordered]@{
+        passed = $true; maximumSlots = 1024; schemaIntegers = 7179; checkedIntegers = 1023; labelBindings = 1
+        result = 10752799; preAwaitCalls = 0; layoutBytes = [int]$slotLimitCapture.Groups[1].Value
+        producerPid = $producer.Id; producerKilled = $true; restorerPid = [int]$slotLimitRestore.Groups[2].Value
+        snapshotBytes = (Get-Item -LiteralPath ($snapshot + ".slots1024")).Length
+        standaloneAndHostCaptureAtLimit = $true; standaloneAndHostRestoreAtLimit = $true; hostPreflightAtLimit = $true
+        rejectedSlots = 1025; rejectedEncoderCalls = 0; rejectedDecoderCalls = 0; rejectedPolicyCalls = 0; rejectionChecks = 5
+    }
+    managedLayoutSizeGuard = [ordered]@{
+        passed = $true; maximumBytes = 1048576; rejectedBytes = 1048577; hostModes = 2; rejectionChecks = 2
+        syntheticSchema = $true; realMaximumLayoutCaptured = $false; nativeMetadataByteBoundaryTested = $false
     }
     proofFormatLimits = [ordered]@{
         passed = $true; frames = 16; schemaIntegers = 7179; referenceTypes = 1024; values = 1024

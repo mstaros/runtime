@@ -352,6 +352,14 @@ portability remain unproved.
   policy, decoding or frame-observer callbacks. The runner requires all eight
   rejection checks. Native slot/layout/state/identity and host graph limits still
   need separate boundary tests.
+  The separate slot-boundary fixture captures 1,023 live Int32 locals and one
+  string reference, then restores all 1,024 slots after killing the producer.
+  Every integer is checked individually before the final result of 10,752,799.
+  Both capture hooks reject a live 1,025-slot method, and the restore/preflight
+  hooks reject records naming that over-limit method before policies or codecs.
+  The managed schema validator also accepts a synthetic 1 MiB layout and rejects
+  1 MiB plus one byte in both host modes. This isolates that guard; it does not
+  prove capture/restore of a real 1 MiB continuation or the native metadata cap.
   File format v3 preserves string reference identity and frame positions. Recapture
   older standalone files with the same candidate build used for restore.
 - Frame count, position, method, suspension state and effective thread-pool
