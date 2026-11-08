@@ -351,7 +351,8 @@ portability remain unproved.
   encoding; zero/17-frame restore and host preflight requests are rejected before
   policy, decoding or frame-observer callbacks. The runner requires all eight
   rejection checks. The slot-boundary checks below use a separate single frame;
-  native metadata/state/identity and host graph limits need separate boundary tests.
+  aggregate native metadata is measured separately below; state/identity and host
+  graph limits need separate boundary tests.
   The separate slot-boundary fixture captures 1,023 live Int32 locals and one
   string reference, then restores all 1,024 slots after killing the producer.
   Every integer is checked individually before the final result of 10,752,799.
@@ -375,6 +376,23 @@ portability remain unproved.
   See MerkleCompiler's `NestedCheckpointSpike.md` real-layout section and
   `NestedCheckpointSpike.ValueSlots.receipt.json` (`layoutBoundaryFollowUp`) for
   raw schemas, process IDs and exact build evidence. Runtime caps are unchanged.
+  A separate native-metadata fixture measures all 32 emitted suspension schemas:
+  818 slots per state give 32 × (48 + 818 × 40) = 1,048,576 native layout bytes.
+  The 40-byte method header is excluded. Each frame's data layout is only 3,336
+  bytes, one frame is live, and every state stays below the 1,024-slot cap.
+  The first 31 awaits finish synchronously; state 31 is captured, the producer
+  is killed, and fresh standalone and host restores each check all 817 integers
+  and the string, return 8,503,382 and resume one state without prefix replay.
+  Both capture hooks, both restore hooks and host preflight reject a 32-state,
+  819-slot variant before policies, codecs, observers or resumed execution.
+  Its 1,049,856-byte size is calculated from a measured 31-state/819-slot control
+  (1,017,048 bytes), because the oversized native metadata is never published.
+  This tests the next size in this fixture family, not the nearest possible
+  oversized native layout. No synthetic schema header establishes the accepted
+  size. The runner retains raw schemas, hashes, process IDs and a separate
+  `nativeMetadataLimit` receipt. This boundary proof uses DynamicMethods; the
+  ordinary-method publication boundary, 65,536-state cap, identity graphs and
+  host graph limits remain separate. Runtime caps and schemas are unchanged.
   The continuation-layout, native-metadata and standalone-file 1 MiB guards
   originated in `a66ca48dacfe51609d99bd42faa78715b754c11d`; the reviewed history
   supplies no sizing rationale. They are experimental limits, not general .NET limits.

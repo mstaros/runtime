@@ -67,7 +67,7 @@ $env:COMPlus_TieredCompilation = "0"
 $env:COMPlus_ReadyToRun = "0"
 $corerun = Join-Path $coreRoot "corerun.exe"
 # A wait bug in a new regression must fail promptly, not stall the whole build gate.
-function Invoke-CheckpointChild([string]$Mode, [string]$Path) {
+function Invoke-CheckpointChild([string]$Mode, [string]$Path, [int]$TimeoutMilliseconds = 30000) {
     $stdout = Join-Path $output ($Mode + ".stdout.log")
     $stderr = Join-Path $output ($Mode + ".stderr.log")
     $child = Start-Process -FilePath $corerun -ArgumentList @(('"' + $worker + '"'), $Mode, ('"' + $Path + '"')) -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
@@ -75,7 +75,7 @@ function Invoke-CheckpointChild([string]$Mode, [string]$Path) {
     # so ExitCode is available after a fast child exits.
     $null = $child.Handle
     try {
-        if (-not $child.WaitForExit(30000)) { throw "Checkpoint child timed out: $Mode" }
+        if (-not $child.WaitForExit($TimeoutMilliseconds)) { throw "Checkpoint child timed out: $Mode" }
         $child.WaitForExit()
         Get-Content -LiteralPath $stdout
         Get-Content -LiteralPath $stderr
@@ -136,6 +136,46 @@ if (-not $slotLimitCapture.Success -or -not $slotLimitRestore.Success -or
     [int]$slotLimitRestore.Groups[2].Value -ne [int]$frameLimitRestore.Groups[2].Value -or
     -not ([IO.File]::ReadAllText($producerOut).Contains("PASS managed layout size guard: accepted=1048576 rejected=1048577 modes=2"))) {
     throw "Runtime slot-limit or managed layout-guard evidence is missing."
+}
+
+
+# A real aggregate native-metadata boundary, independent of per-frame limits.
+# This producer has three large multi-state methods; bound its own deadline.
+$nativeMetadataSnapshot = Join-Path $output "native-metadata.bin"
+Remove-Item -LiteralPath $nativeMetadataSnapshot -Force -ErrorAction SilentlyContinue
+$nativeMetadataOut = Join-Path $output "native-metadata-produce.stdout.log"
+$nativeMetadataErr = Join-Path $output "native-metadata-produce.stderr.log"
+$nativeMetadataProducer = Start-Process -FilePath $corerun -ArgumentList @(('"' + $worker + '"'), "native-metadata-produce", ('"' + $nativeMetadataSnapshot + '"')) -PassThru -NoNewWindow -RedirectStandardOutput $nativeMetadataOut -RedirectStandardError $nativeMetadataErr
+$null = $nativeMetadataProducer.Handle
+try {
+    $deadline = [DateTime]::UtcNow.AddSeconds(60)
+    do {
+        if ($nativeMetadataProducer.HasExited) {
+            Get-Content -LiteralPath $nativeMetadataOut
+            Get-Content -LiteralPath $nativeMetadataErr
+            throw "Native metadata producer exited before publishing: $($nativeMetadataProducer.ExitCode)"
+        }
+        if ([DateTime]::UtcNow -gt $deadline) { throw "Native metadata producer timed out." }
+        Start-Sleep -Milliseconds 100
+    } while (-not (Test-Path -LiteralPath $nativeMetadataSnapshot) -or
+        -not ((Get-Content -LiteralPath $nativeMetadataOut -Raw) -match "READY metadata producer="))
+    $nativeMetadataProducer.Kill()
+    $nativeMetadataProducer.WaitForExit()
+} finally {
+    if (-not $nativeMetadataProducer.HasExited) { $nativeMetadataProducer.Kill(); $nativeMetadataProducer.WaitForExit() }
+}
+Get-Content -LiteralPath $nativeMetadataOut
+Get-Content -LiteralPath $nativeMetadataErr
+Invoke-CheckpointChild "native-metadata-restore" $nativeMetadataSnapshot 60000
+$nativeMetadataCapture = [regex]::Match([IO.File]::ReadAllText($nativeMetadataOut),
+    'MEASURE native metadata: states=32 slotsPerState=818 layoutBytes=1048576 maximumFrameDataBytes=(\d+)')
+$nativeMetadataRestore = [regex]::Match([IO.File]::ReadAllText((Join-Path $output "native-metadata-restore.stdout.log")),
+    'PASS native metadata restore limit: producer=(\d+) restorer=(\d+) acceptedBytes=1048576 rejectedCalculatedBytes=1049856 state=31 result=8503382 checkedIntegers=817 rejectedDecoderCalls=0 rejectedPolicyCalls=0 resumedStates=1 preAwaitCalls=0')
+if (-not $nativeMetadataCapture.Success -or -not $nativeMetadataRestore.Success -or
+    [int]$nativeMetadataRestore.Groups[1].Value -ne $nativeMetadataProducer.Id -or
+    [int]$nativeMetadataRestore.Groups[2].Value -eq $nativeMetadataProducer.Id -or
+    -not ([IO.File]::ReadAllText($nativeMetadataOut).Contains("PASS native metadata capture limit: acceptedBytes=1048576 rejectedCalculatedBytes=1049856 states=32 slotsPerState=818 controlStates=31 controlSlots=819 controlBytes=1017048 rejectedEncoderCalls=0 rejectedPolicyCalls=0"))) {
+    throw "Native metadata boundary evidence is missing or names the wrong producer."
 }
 
 # File-format limits are independent of native schema admission.
@@ -258,6 +298,26 @@ $receipt = [ordered]@{
         snapshotBytes = (Get-Item -LiteralPath ($snapshot + ".slots1024")).Length
         standaloneAndHostCaptureAtLimit = $true; standaloneAndHostRestoreAtLimit = $true; hostPreflightAtLimit = $true
         rejectedSlots = 1025; rejectedEncoderCalls = 0; rejectedDecoderCalls = 0; rejectedPolicyCalls = 0; rejectionChecks = 5
+    }
+
+    nativeMetadataLimit = [ordered]@{
+        passed = $true; maximumLayoutBytes = 1048576; nativeFrameRecordBytes = 48; nativeSlotRecordBytes = 40
+        measurement = "Sum of actual native schema slot counts; excludes the 40-byte method header."
+        states = 32; slotsPerState = 818; totalSlots = 26176
+        maximumFrameDataBytes = [int]$nativeMetadataCapture.Groups[1].Value; liveFrames = 1; resumedState = 31
+        producerPid = $nativeMetadataProducer.Id; producerKilled = $true; restorerPid = [int]$nativeMetadataRestore.Groups[2].Value
+        snapshotBytes = (Get-Item -LiteralPath $nativeMetadataSnapshot).Length
+        rawSchemas = "native-metadata.bin.schemas.json"
+        rawSchemasSha256 = (Get-FileHash -LiteralPath ($nativeMetadataSnapshot + ".schemas.json") -Algorithm SHA256).Hash
+        controlStates = 31; controlSlotsPerState = 819; measuredControlBytes = 1017048
+        rejectedStates = 32; rejectedSlotsPerState = 819; rejectedCalculatedBytes = 1049856
+        rejectedSizeMeasurement = "Calculated from the measured 31-state control plus one equal-size state; oversized metadata is not published."
+        nearestPossibleOverLimitSizeTested = $false
+        standaloneAndHostCaptureAtLimit = $true; standaloneAndHostRestoreAtLimit = $true; hostPreflightAtLimit = $true
+        checkedIntegers = 817; result = 8503382; resumedStatesPerRestore = 1; preAwaitCalls = 0
+        rejectedEncoderCalls = 0; rejectedDecoderCalls = 0; rejectedPolicyCalls = 0; rejectedObserverCalls = 0
+        captureRestoreAndPreflightRejections = 5; oversizedLookupRejections = 2
+        mode = "DynamicMethod"; ordinaryMethodPublicationBoundaryTested = $false
     }
     managedLayoutSizeGuard = [ordered]@{
         passed = $true; maximumBytes = 1048576; rejectedBytes = 1048577; hostModes = 2; rejectionChecks = 2
