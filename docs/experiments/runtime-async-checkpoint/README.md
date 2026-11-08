@@ -351,7 +351,7 @@ portability remain unproved.
   encoding; zero/17-frame restore and host preflight requests are rejected before
   policy, decoding or frame-observer callbacks. The runner requires all eight
   rejection checks. The slot-boundary checks below use a separate single frame;
-  layout/state/identity and host graph limits need separate boundary tests.
+  native metadata/state/identity and host graph limits need separate boundary tests.
   The separate slot-boundary fixture captures 1,023 live Int32 locals and one
   string reference, then restores all 1,024 slots after killing the producer.
   Every integer is checked individually before the final result of 10,752,799.
@@ -362,6 +362,22 @@ portability remain unproved.
   The managed schema validator also accepts a synthetic 1 MiB layout and rejects
   1 MiB plus one byte in both host modes. This isolates that guard; it does not
   prove capture/restore of a real 1 MiB continuation or the native metadata cap.
+  A later Merkle `DLL_value_slots_checkpoint_survives_restart` case captures a real
+  1,048,576-byte layout using one 1,048,528-byte inline value at offset 48, kills
+  its producer and restores it in a fresh process. Every payload byte is checked;
+  the result is 1,048,628 with zero prefix replay and one resume. Raw JIT schemas
+  also confirm the next emitted size, 1,048,584 bytes. Capture of that live frame
+  and restore/preflight records using its real method/schema/identity are refused
+  before policy, codec or resumed code (three checks); the rejected records have
+  synthetic values because no oversized snapshot was captured. The bounded host
+  codec admits only this exact value type and the separate fresh execution-context
+  binding. Its JSON snapshot exceeds 1 MiB; the standalone file cap is independent.
+  See MerkleCompiler's `NestedCheckpointSpike.md` real-layout section and
+  `NestedCheckpointSpike.ValueSlots.receipt.json` (`layoutBoundaryFollowUp`) for
+  raw schemas, process IDs and exact build evidence. Runtime caps are unchanged.
+  The continuation-layout, native-metadata and standalone-file 1 MiB guards
+  originated in `a66ca48dacfe51609d99bd42faa78715b754c11d`; the reviewed history
+  supplies no sizing rationale. They are experimental limits, not general .NET limits.
   File format v3 preserves string reference identity and frame positions. Recapture
   older standalone files with the same candidate build used for restore.
 - Frame count, position, method, suspension state and effective thread-pool
