@@ -350,11 +350,13 @@ portability remain unproved.
   host hooks both admit 16 frames. A live 17-frame task is rejected before
   encoding; zero/17-frame restore and host preflight requests are rejected before
   policy, decoding or frame-observer callbacks. The runner requires all eight
-  rejection checks. Native slot/layout/state/identity and host graph limits still
-  need separate boundary tests.
+  rejection checks. The slot-boundary checks below use a separate single frame;
+  layout/state/identity and host graph limits need separate boundary tests.
   The separate slot-boundary fixture captures 1,023 live Int32 locals and one
   string reference, then restores all 1,024 slots after killing the producer.
   Every integer is checked individually before the final result of 10,752,799.
+  The raw JIT schema must report exactly 1,024 slots. Assertion code stays in a
+  non-inlined helper so its temporaries do not change the measured layout.
   Both capture hooks reject a live 1,025-slot method, and the restore/preflight
   hooks reject records naming that over-limit method before policies or codecs.
   The managed schema validator also accepts a synthetic 1 MiB layout and rejects
