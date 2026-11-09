@@ -14,6 +14,14 @@
       <method name="CaptureVoidMethodCheckpointForTesting" />
       <method name="RestoreVoidMethodCheckpointForTesting" />
       <method name="InitializeCheckpointTypedOutcome" />
+      <!-- Host checkpoint entry points, bound by name by the script platform. -->
+      <method name="GetCheckpointContractVersion" />
+      <method name="CaptureCheckpoint" />
+      <method name="CaptureVoidCheckpoint" />
+      <method name="ValidateCheckpoint" />
+      <method name="ValidateVoidCheckpoint" />
+      <method name="RestoreCheckpoint" />
+      <method name="RestoreVoidCheckpoint" />
     </type>
     <type fullname="System.GC">
       <!-- Methods are used to register and unregister frozen segments. They are private and experimental. -->
