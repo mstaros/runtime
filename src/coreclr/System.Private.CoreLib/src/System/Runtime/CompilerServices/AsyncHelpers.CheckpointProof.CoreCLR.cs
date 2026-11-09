@@ -16,6 +16,68 @@ namespace System.Runtime.CompilerServices
     {
         private const int CheckpointHeaderSize = 11;
         private const int CheckpointSlotSize = 7;
+        // Host entry points, bound by name by a trusted host. The *MethodCheckpointForTesting wrappers forward
+        // here. Methods are DynamicMethods or closed metadata methods. A frame record is
+        // { methodIndex, state, schema, values, executionContext, identity, referenceTypes }: methodIndex indexes
+        // the supplied methods, so validate and restore take them in the capture order. encodeBinding and
+        // decodeBinding run once per live reference or boxed value, and only after every frame has passed its
+        // layout and slot policy. Restore resumes the restored chain before it returns, inline or on the thread
+        // pool when the first frame requires it. Validate checks every frame's identity, layout, slot policy and
+        // order without decoding a value or creating a frame. For a first frame suspended at a void await,
+        // deliverVoidOutcome chooses between delivering the awaited task's outcome (true) and letting the frame
+        // read its result from a host-rebound awaiter (false).
+        internal static int GetCheckpointContractVersion() => 1;
+
+        internal static object[][] CaptureCheckpoint<T>(
+            Task<T> task, MethodInfo[] methods, Func<object, object> encodeBinding, Action<int[]>? validateSlots)
+        {
+            ArgumentNullException.ThrowIfNull(task);
+            ArgumentNullException.ThrowIfNull(methods);
+            ArgumentNullException.ThrowIfNull(encodeBinding);
+            return CaptureCheckpointCore(task, methods, encodeBinding, validateSlots, allowMultipleFrames: true);
+        }
+
+        internal static object[][] CaptureVoidCheckpoint(
+            Task task, MethodInfo[] methods, Func<object, object> encodeBinding, Action<int[]>? validateSlots)
+        {
+            ArgumentNullException.ThrowIfNull(task);
+            ArgumentNullException.ThrowIfNull(methods);
+            ArgumentNullException.ThrowIfNull(encodeBinding);
+            if (task is not RuntimeAsyncTask<VoidTaskResult> pending)
+                throw new NotSupportedException("Checkpoint capture requires a nongeneric runtime-async root.");
+            return CaptureCheckpointCore(pending, methods, encodeBinding, validateSlots, allowMultipleFrames: true);
+        }
+
+        internal static void ValidateCheckpoint<T>(
+            object[][] records, MethodInfo[] methods, Task awaited, bool deliverVoidOutcome, Action<int[]>? validateSlots)
+        {
+            ArgumentNullException.ThrowIfNull(records);
+            ArgumentNullException.ThrowIfNull(methods);
+            ArgumentNullException.ThrowIfNull(awaited);
+            _ = ValidateCheckpointFrames<T>(records, methods, awaited, validateSlots, true, deliverVoidOutcome, out _, out _);
+        }
+
+        internal static void ValidateVoidCheckpoint(
+            object[][] records, MethodInfo[] methods, Task awaited, bool deliverVoidOutcome, Action<int[]>? validateSlots)
+            => ValidateCheckpoint<VoidTaskResult>(records, methods, awaited, deliverVoidOutcome, validateSlots);
+
+        internal static Task<T> RestoreCheckpoint<T>(
+            object[][] records, MethodInfo[] methods, Task awaited, bool deliverVoidOutcome,
+            Func<object, object> decodeBinding, Action<int[]>? validateSlots)
+        {
+            ArgumentNullException.ThrowIfNull(records);
+            ArgumentNullException.ThrowIfNull(methods);
+            ArgumentNullException.ThrowIfNull(awaited);
+            ArgumentNullException.ThrowIfNull(decodeBinding);
+            return RestoreCheckpointCore<T>(records, methods, awaited, decodeBinding, validateSlots: validateSlots,
+                deliverVoidOutcome: deliverVoidOutcome);
+        }
+
+        internal static Task RestoreVoidCheckpoint(
+            object[][] records, MethodInfo[] methods, Task awaited, bool deliverVoidOutcome,
+            Func<object, object> decodeBinding, Action<int[]>? validateSlots)
+            => RestoreCheckpoint<VoidTaskResult>(records, methods, awaited, deliverVoidOutcome, decodeBinding, validateSlots);
+
         // Deliberately internal and opt-in. The caller must own a quiescent, never-completing
         // IValueTaskSource<int>. This is an exact-build experiment, not a persistence API.
         // Records also contain a canonical method identity and captured reference types.
@@ -39,7 +101,7 @@ namespace System.Runtime.CompilerServices
             Task<T> task, MethodInfo[] methods, Func<object, object> encodeBinding, Action<int[]>? validateSlots = null)
         {
             ArgumentNullException.ThrowIfNull(encodeBinding);
-            return CaptureCheckpointCore(task, methods, encodeBinding, validateSlots, allowMultipleFrames: true);
+            return CaptureCheckpoint(task, methods, encodeBinding, validateSlots);
         }
 
         internal static object[][] CaptureVoidMethodCheckpointForTesting(
@@ -48,7 +110,7 @@ namespace System.Runtime.CompilerServices
             ArgumentNullException.ThrowIfNull(encodeBinding);
             if (task is not RuntimeAsyncTask<VoidTaskResult> pending)
                 throw new NotSupportedException("Checkpoint capture requires a nongeneric runtime-async root.");
-            return CaptureCheckpointCore(pending, methods, encodeBinding, validateSlots, allowMultipleFrames: true);
+            return CaptureVoidCheckpoint(pending, methods, encodeBinding, validateSlots);
         }
 
         private static unsafe object[][] CaptureCheckpointCore<T>(
@@ -225,14 +287,14 @@ namespace System.Runtime.CompilerServices
             ArgumentNullException.ThrowIfNull(decodeBinding);
             if (records.Length != 1)
                 throw new NotSupportedException("Host checkpoint proof requires exactly one script frame.");
-            return RestoreCheckpointCore<T>(records, methods, Task.FromResult(awaitedResult), decodeBinding, validateSlots: validateSlots);
+            return RestoreCheckpoint<T>(records, methods, Task.FromResult(awaitedResult), false, decodeBinding, validateSlots);
         }
 
         internal static Task<T> RestoreMethodCheckpointForTesting<T>(
             object[][] records, MethodInfo[] methods, int awaitedResult, Func<object, object> decodeBinding, Action<int[]>? validateSlots = null)
         {
             ArgumentNullException.ThrowIfNull(decodeBinding);
-            return RestoreCheckpointCore<T>(records, methods, Task.FromResult(awaitedResult), decodeBinding, validateSlots: validateSlots);
+            return RestoreCheckpoint<T>(records, methods, Task.FromResult(awaitedResult), false, decodeBinding, validateSlots);
         }
 
         // Restores a node whose first frame resumes from a completed awaited outcome: a result, a fault or a
@@ -244,7 +306,7 @@ namespace System.Runtime.CompilerServices
         {
             ArgumentNullException.ThrowIfNull(awaited);
             ArgumentNullException.ThrowIfNull(decodeBinding);
-            return RestoreCheckpointCore<T>(records, methods, awaited, decodeBinding, validateSlots: validateSlots, deliverVoidOutcome: true);
+            return RestoreCheckpoint<T>(records, methods, awaited, true, decodeBinding, validateSlots);
         }
 
         internal static Task RestoreVoidMethodCheckpointForTesting(
@@ -252,7 +314,7 @@ namespace System.Runtime.CompilerServices
         {
             ArgumentNullException.ThrowIfNull(awaited);
             ArgumentNullException.ThrowIfNull(decodeBinding);
-            return RestoreCheckpointCore<VoidTaskResult>(records, methods, awaited, decodeBinding, validateSlots: validateSlots, deliverVoidOutcome: true);
+            return RestoreVoidCheckpoint(records, methods, awaited, true, decodeBinding, validateSlots);
         }
 
         // A host can validate every task node while its graph is sealed, before decoding
@@ -261,7 +323,7 @@ namespace System.Runtime.CompilerServices
             object[][] records, MethodInfo[] methods, Task awaited, bool deliverVoidOutcome, Action<int[]>? validateSlots = null)
         {
             ArgumentNullException.ThrowIfNull(awaited);
-            _ = ValidateCheckpointFrames<T>(records, methods, awaited, validateSlots, true, deliverVoidOutcome, out _, out _);
+            ValidateCheckpoint<T>(records, methods, awaited, deliverVoidOutcome, validateSlots);
         }
 
         private static unsafe (object KeepAlive, IntPtr Type, IntPtr Resume, IntPtr MethodContext, IntPtr ClassContext,
