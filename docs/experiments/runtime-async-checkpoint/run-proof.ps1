@@ -421,7 +421,7 @@ $receipt = [ordered]@{
         repeatedMethodReferenceDeduplicated = $true; captureRestoreAndPreflightRejections = 10
         rejectedCodecCalls = 0; capturePolicyCallsBeforeEachRejection = 1; restorePolicyCallsBeforeRejection = 0
         prefixReplay = 0; freshProcessRestore = $false
-        scope = "Real pending DynamicMethods; in-process capture, restore and preflight. The exact identity exceeds the independent standalone-file cap once framed."
+        scope = "Real pending DynamicMethods; in-process capture, restore and preflight. The character limit is on the manifest the identity is the hash of."
     }
     managedLayoutSizeGuard = [ordered]@{
         passed = $true; maximumBytes = 1048576; rejectedBytes = 1048577; hostModes = 2; rejectionChecks = 2

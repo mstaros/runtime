@@ -899,12 +899,22 @@ namespace System.Reflection.Emit
             return text.ToString();
         }
 
+        // The identity is the hash of a canonical manifest, and the manifest itself is not kept. The hash is over
+        // the manifest's UTF-16 code units: a string literal of the method can hold half of a surrogate pair, which
+        // UTF-8 has no form for.
+        internal string GetCheckpointIdentity()
+        {
+            Span<byte> hash = stackalloc byte[20];
+            Sha1ForNonSecretPurposes.HashData(MemoryMarshal.AsBytes(GetCheckpointIdentityText().AsSpan()), hash);
+            return Convert.ToHexString(hash);
+        }
+
         // Compare a canonical manifest rather than a collision-prone short method name.
         // Dynamic local signatures can contain process-local type handles: normalize them.
         // Types and members are told by name, so the manifest is the same against another build of an assembly that
-        // still has them. The scope has an entry for every place the code names one, so each is written once, as a
-        // hash of what it is called with a number, and every later use gives the number. The IL is written as its hash.
-        internal unsafe string GetCheckpointIdentity()
+        // still has them. The scope has an entry for every place the code names one, so each is described once, with
+        // a number, and every later use gives the number. The IL is written as its hash.
+        internal unsafe string GetCheckpointIdentityText()
         {
             var text = new System.Text.StringBuilder();
             var methods = new Dictionary<DynamicMethod, int>();
@@ -912,17 +922,17 @@ namespace System.Reflection.Emit
             void Add(string value) => text.Append(value.Length).Append(':').Append(value);
             void Number(int value) => Add(value.ToString(System.Globalization.CultureInfo.InvariantCulture));
             // SHA-1 gives the same value in every process, which a string's own hash code does not.
-            static string Hash(ReadOnlySpan<byte> bytes, int length)
+            static string Hash(ReadOnlySpan<byte> bytes)
             {
                 Span<byte> hash = stackalloc byte[20];
                 Sha1ForNonSecretPurposes.HashData(bytes, hash);
-                return Convert.ToHexString(hash.Slice(0, length));
+                return Convert.ToHexString(hash);
             }
             void Entry(string description)
             {
                 if (entries.TryGetValue(description, out int known)) { Number(known); return; }
                 Number(entries.Count); entries.Add(description, entries.Count);
-                Add(Hash(System.Text.Encoding.UTF8.GetBytes(description), 8));
+                Add(description);
             }
             void TypeName(Type type) => Entry(CheckpointTypeIdentity(type));
             void Member(MemberInfo member)
@@ -1048,7 +1058,7 @@ namespace System.Reflection.Emit
                 TypeName(method.ReturnType);
                 foreach (ParameterInfo parameter in method.GetParameters()) TypeName(parameter.ParameterType);
                 Number((int)method.GetMethodImplementationFlags());
-                Add(Hash(resolver.GetCodeInfo(out int stack, out int init, out int clauses), 20));
+                Add(Hash(resolver.GetCodeInfo(out int stack, out int init, out int clauses)));
                 Number(stack); Number(init); Number(clauses);
                 Signature(resolver.m_localSignature);
                 if (resolver.m_exceptionHeader != null) Add(Convert.ToHexString(resolver.m_exceptionHeader));

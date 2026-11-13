@@ -1152,6 +1152,14 @@ public static class CheckpointProof
     private static string IdentityOf(DynamicMethod method) => (string)Helpers.GetMethod(
         "CheckpointMethodIdentity", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, new object[] { method })!;
 
+    // The manifest the identity is the hash of. Only this proof reads it, to measure the limits on it.
+    private static string IdentityTextOf(DynamicMethod method)
+    {
+        object resolver = typeof(DynamicMethod).GetField("_resolver", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(method)!;
+        return (string)resolver.GetType().GetMethod("GetCheckpointIdentityText", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(resolver, null)!;
+    }
+
     private static Task<int> StartIdentityLimit(DynamicMethod method, PendingSource source) =>
         method.CreateDelegate<Func<ValueTask<int>, int, object, Task<int>>>()(new ValueTask<int>(source, 0), 0, "hello");
 
@@ -1193,11 +1201,99 @@ public static class CheckpointProof
         Console.WriteLine("PASS identity overloads: byTypeParameter=distinct byMethodParameter=distinct");
     }
 
+    // One helper assembly, built anew at every call. Each build has its own module version ID, and "reversed"
+    // defines the types and members in the opposite order, which gives them other metadata tokens.
+    private static Assembly BuildIdentityHelper(bool reversed, bool addReturnsLong = false)
+    {
+        var assembly = new PersistedAssemblyBuilder(new AssemblyName("CheckpointIdentityHelper"), typeof(object).Assembly);
+        var module = assembly.DefineDynamicModule("CheckpointIdentityHelper");
+        void Calculator()
+        {
+            var type = module.DefineType("Identity.Calculator", TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed);
+            void Sum(Type operand, Type result)
+            {
+                var il = type.DefineMethod("Add", MethodAttributes.Public | MethodAttributes.Static, result, new[] { operand, operand }).GetILGenerator();
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldarg_1);
+                il.Emit(OpCodes.Add);
+                if (result != operand) il.Emit(OpCodes.Conv_I8);
+                il.Emit(OpCodes.Ret);
+            }
+            var members = new List<Action>
+            {
+                () => type.DefineField("Scale", typeof(int), FieldAttributes.Public | FieldAttributes.Static),
+                () => type.DefineField("Offset", typeof(int), FieldAttributes.Public | FieldAttributes.Static),
+                () => Sum(typeof(int), addReturnsLong ? typeof(long) : typeof(int)),
+                () => Sum(typeof(long), typeof(long)),
+            };
+            if (reversed) members.Reverse();
+            foreach (Action define in members) define();
+            type.CreateType();
+        }
+        void Box()
+        {
+            var type = module.DefineType("Identity.Box`1", TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed);
+            type.DefineGenericParameters("T");
+            var il = type.DefineMethod("Twice", MethodAttributes.Public | MethodAttributes.Static, typeof(int), new[] { typeof(int) }).GetILGenerator();
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ldc_I4_2);
+            il.Emit(OpCodes.Mul);
+            il.Emit(OpCodes.Ret);
+            type.CreateType();
+        }
+        var types = new List<Action> { Calculator, Box };
+        if (reversed) types.Reverse();
+        foreach (Action define in types) define();
+        using var image = new MemoryStream();
+        assembly.Save(image);
+        return Assembly.Load(image.ToArray());
+    }
+
+    // A method, a field, a method of a generic type and a type of the helper. It returns 6.
+    private static DynamicMethod CreateHelperProgram(Assembly helper)
+    {
+        Type calculator = helper.GetType("Identity.Calculator", throwOnError: true)!;
+        Type box = helper.GetType("Identity.Box`1", throwOnError: true)!.MakeGenericType(typeof(int));
+        var method = new DynamicMethod("CheckpointIdentityAcrossBuilds", typeof(int), Type.EmptyTypes, typeof(CheckpointProof).Module);
+        var il = method.GetILGenerator();
+        il.Emit(OpCodes.Ldc_I4_1);
+        il.Emit(OpCodes.Ldc_I4_2);
+        il.Emit(OpCodes.Call, calculator.GetMethod("Add", new[] { typeof(int), typeof(int) })!);
+        il.Emit(OpCodes.Ldsfld, calculator.GetField("Scale")!);
+        il.Emit(OpCodes.Add);
+        il.Emit(OpCodes.Call, box.GetMethod("Twice")!);
+        il.Emit(OpCodes.Ldtoken, calculator);
+        il.Emit(OpCodes.Pop);
+        il.Emit(OpCodes.Ret);
+        method.CreateDelegate<Func<int>>();
+        return method;
+    }
+
+    // The identity goes by name, so one program has one identity against two builds of an assembly.
+    private static void IdentityAcrossBuildsProof()
+    {
+        Assembly first = BuildIdentityHelper(reversed: false), second = BuildIdentityHelper(reversed: true);
+        static MethodInfo Add(Assembly helper) => helper.GetType("Identity.Calculator", throwOnError: true)!
+            .GetMethod("Add", new[] { typeof(int), typeof(int) })!;
+        Require(first.ManifestModule.ModuleVersionId != second.ManifestModule.ModuleVersionId &&
+            Add(first).MetadataToken != Add(second).MetadataToken, "The two builds do not differ by module version ID and token.");
+        DynamicMethod onFirst = CreateHelperProgram(first), onSecond = CreateHelperProgram(second);
+        Require(onFirst.CreateDelegate<Func<int>>()() == 6 && onSecond.CreateDelegate<Func<int>>()() == 6, "The helper program failed.");
+        Require(IdentityTextOf(onFirst) == IdentityTextOf(onSecond) && IdentityOf(onFirst) == IdentityOf(onSecond),
+            "One program has two identities against two builds of an assembly.");
+        // A build the program no longer fits: its Add returns another type. The program is not run against it.
+        DynamicMethod onChanged = CreateHelperProgram(BuildIdentityHelper(reversed: false, addReturnsLong: true));
+        Require(IdentityOf(onChanged) != IdentityOf(onFirst), "A changed member did not change the identity.");
+        Console.WriteLine("PASS identity across builds: moduleVersionIds=distinct tokens=distinct identities=equal changedMember=distinct");
+    }
+
     private static void IdentityLimitProof(string path)
     {
         IdentityOverloadProof();
+        IdentityAcrossBuildsProof();
+        // Both limits are on the manifest, the text the identity is the hash of.
         const int maximum = 1048576;
-        int baseline = IdentityOf(CreateIdentityLimitProgram(1, 0)).Length;
+        int baseline = IdentityTextOf(CreateIdentityLimitProgram(1, 0)).Length;
         int padding = maximum - baseline;
         padding -= padding.ToString(System.Globalization.CultureInfo.InvariantCulture).Length - 1;
         foreach (var shape in new[] { (Name: "methods", Accepted: CreateIdentityLimitProgram(64, 0),
@@ -1206,7 +1302,8 @@ public static class CheckpointProof
                 Rejected: CreateIdentityLimitProgram(1, padding + 1), Expected: 46, Error: "Checkpoint method identity is too large.") })
         {
             s_restoring = false; s_identityResumes = 0;
-            string identity = IdentityOf(shape.Accepted);
+            string identity = IdentityTextOf(shape.Accepted);
+            Require(IdentityOf(shape.Accepted).Length == 40, "The identity is not the hash of its manifest.");
             if (shape.Name == "characters") Require(identity.Length == maximum, "Identity character boundary drifted.");
             else Require(identity.Contains("9:reference", StringComparison.Ordinal), "Repeated dynamic method was not represented by reference.");
             ExpectNotSupported(() => IdentityOf(shape.Rejected), shape.Name + " identity one-over", shape.Error);

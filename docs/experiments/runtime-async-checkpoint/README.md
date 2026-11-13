@@ -35,11 +35,15 @@ The ScriptMcp companion must understand checkpoint record version 6.
 - Each frame records the root IL offset of its logical await. Checkpoint builds do
   not merge different suspension points into one state. Ambiguous root offsets
   from multiple inlined awaits are rejected. Continuation-object reuse is enabled.
-- The record includes a canonical identity for the method: IL, signature, local
-  signature with native type handles normalized, EH clauses, implementation flags,
-  and resolved token identities. Method/field tokens include module MVID and token;
-  constructed generic contexts and referenced DynamicMethods are included.
-  Full manifests are compared; names or slot shapes alone are insufficient.
+- The record includes an identity for the method: the SHA-1 of a canonical manifest
+  of its IL, signature, local signature with native type handles normalized, EH
+  clauses, implementation flags, string literals and resolved token identities. A
+  referenced type is told by its full name and the simple name of its assembly; a
+  referenced method or field by its name, its definition's signature and its
+  declaring type. The identity is therefore the same against another build of an
+  assembly that still has them. Constructed generic contexts and referenced
+  DynamicMethods are included. The manifest itself is not kept; names or slot
+  shapes alone are insufficient.
 - The schema includes the effective cached JIT configuration, VM compilation flags,
   and instruction-set flags. A change is rejected before resumption. This hash is
   a compatibility discriminator for trusted fixtures, not an authentication code.
@@ -341,14 +345,16 @@ refused. This tests the reachable limit without raising another guard.
 
 Identity cases use real pending DynamicMethods and exercise standalone and
 host capture, restore and preflight in-process. Exactly 64 distinct referenced
-methods and exactly 1,048,576 canonical identity characters are admitted;
+methods and exactly 1,048,576 characters of the identity's manifest are admitted;
 65 methods and 1,048,577 characters are refused. A repeated reference to one
 child does not count as another distinct method. Both limits reject before
 value codecs and resumed execution. Capture currently invokes its read-only
 slot policy once before identity construction; restore/preflight reject before
-that policy too. These identity tests do not claim a fresh-process restart:
-the exact-size identity plus frame/file headers exceeds the independent
-standalone-file cap.
+that policy too. These identity tests do not claim a fresh-process restart.
+Two further cases compare identities only: overloads that read the same once a
+type argument is put in have different identities, and one program has one
+identity against two builds of an assembly whose module version IDs and tokens
+differ.
 
 These additions change only proof code, runner checks and documentation.
 Runtime schemas, caps and production code remain unchanged. The receipt
@@ -372,8 +378,8 @@ evidence. Host object-graph budgets belong to the host codec.
   the same compilation order/IDs in each process and perturbs native allocations
   independently. Rebinding different IDs requires an explicit relocation contract;
   matching source text alone is insufficient.
-- Full canonical manifests are retained per frame for this bounded proof. The
-  MessagePack value codec is unchanged, but identity metadata increases snapshot size.
+- Each frame retains the 40-character hash of its canonical manifest. The
+  MessagePack value codec is unchanged.
 - Each task node admits at most 16 frames. The managed schema gate permits 1,024
   slots and 1 MiB of continuation data; the native lookup permits 65,536 states
   and 1 MiB of layout metadata. Schema 6 uses 11 header integers and seven per
