@@ -935,17 +935,24 @@ namespace System.Reflection.Emit
                 }
                 // What the member is called and what its signature is, in place of its module and token. Static or
                 // instance is part of it: the code that uses the member is valid for one of them only.
+                // The signature is the definition's, written with the type's and the method's own parameters: with
+                // the arguments put in, two overloads can read the same. The arguments follow as parts of their own.
+                MemberInfo definition = member;
+                if (member is MethodInfo constructed && constructed.IsGenericMethod && !constructed.IsGenericMethodDefinition)
+                    definition = constructed.GetGenericMethodDefinition();
+                if (definition.DeclaringType is { IsConstructedGenericType: true } closed)
+                    definition = closed.GetGenericTypeDefinition().GetMemberWithSameMetadataDefinitionAs(definition);
                 var described = new System.Text.StringBuilder();
                 void Part(string value) => described.Append(value.Length).Append(':').Append(value);
-                Part(member.Name);
-                if (member is FieldInfo fieldInfo)
+                Part(definition.Name);
+                if (definition is FieldInfo fieldInfo)
                 {
                     Part(fieldInfo.IsStatic ? "static-field" : "field");
                     Part(CheckpointTypeIdentity(fieldInfo.FieldType));
                 }
                 else
                 {
-                    var methodBase = (MethodBase)member;
+                    var methodBase = (MethodBase)definition;
                     Part(methodBase.IsStatic ? "static-method" : "method");
                     Part(CheckpointTypeIdentity(methodBase is MethodInfo returning ? returning.ReturnType : typeof(void)));
                     ParameterInfo[] parameters = methodBase.GetParameters();
@@ -953,6 +960,12 @@ namespace System.Reflection.Emit
                     foreach (ParameterInfo parameter in parameters) Part(CheckpointTypeIdentity(parameter.ParameterType));
                 }
                 if (member.DeclaringType != null) Part(CheckpointTypeIdentity(member.DeclaringType));
+                else
+                {
+                    // A member of a module has no type to tell its assembly.
+                    Part("module");
+                    Part(member.Module.Assembly.GetName().Name ?? string.Empty);
+                }
                 if (member is MethodInfo mi && mi.IsGenericMethod)
                     foreach (Type argument in mi.GetGenericArguments()) Part(CheckpointTypeIdentity(argument));
                 Entry(described.ToString());

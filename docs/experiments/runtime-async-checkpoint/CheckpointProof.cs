@@ -1155,8 +1155,47 @@ public static class CheckpointProof
     private static Task<int> StartIdentityLimit(DynamicMethod method, PendingSource source) =>
         method.CreateDelegate<Func<ValueTask<int>, int, object, Task<int>>>()(new ValueTask<int>(source, 0), 0, "hello");
 
+    // Two overloads that read the same once the type argument is put in: the identity must still tell them apart.
+    public static class IdentityOverloads<T>
+    {
+        public static int Pick(T value) => 1;
+        public static int Pick(int value) => 2;
+        public static int Choose<U>(U value) => 3;
+        public static int Choose<U>(int value) => 4;
+    }
+
+    private static DynamicMethod CreateOverloadProgram(MethodInfo callee)
+    {
+        var method = new DynamicMethod("CheckpointIdentityOverload", typeof(int), Type.EmptyTypes, typeof(CheckpointProof).Module);
+        var il = method.GetILGenerator();
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Call, callee);
+        il.Emit(OpCodes.Ret);
+        method.CreateDelegate<Func<int>>();
+        return method;
+    }
+
+    private static void IdentityOverloadProof()
+    {
+        foreach (string name in new[] { "Pick", "Choose" })
+        {
+            MethodInfo[] callees = typeof(IdentityOverloads<>).GetMethods().Where(m => m.Name == name)
+                .OrderBy(m => m.GetParameters()[0].ParameterType.IsGenericParameter ? 0 : 1)
+                .Select(m => (MethodInfo)typeof(IdentityOverloads<int>).GetMemberWithSameMetadataDefinitionAs(m))
+                .Select(m => m.IsGenericMethodDefinition ? m.MakeGenericMethod(typeof(int)) : m).ToArray();
+            Require(callees.Length == 2 && callees[0].ToString() == callees[1].ToString(), "The overloads do not read the same: " + name);
+            DynamicMethod[] programs = callees.Select(CreateOverloadProgram).ToArray();
+            int[] results = programs.Select(program => program.CreateDelegate<Func<int>>()()).ToArray();
+            Require(results[0] != results[1], "The overload programs call one method: " + name);
+            Require(IdentityOf(programs[0]) == IdentityOf(CreateOverloadProgram(callees[0])), "One overload gave two identities: " + name);
+            Require(IdentityOf(programs[0]) != IdentityOf(programs[1]), "Overloads that read the same share an identity: " + name);
+        }
+        Console.WriteLine("PASS identity overloads: byTypeParameter=distinct byMethodParameter=distinct");
+    }
+
     private static void IdentityLimitProof(string path)
     {
+        IdentityOverloadProof();
         const int maximum = 1048576;
         int baseline = IdentityOf(CreateIdentityLimitProgram(1, 0)).Length;
         int padding = maximum - baseline;
