@@ -868,9 +868,8 @@ namespace System.Reflection.Emit
                 {
                     Part(value.DeclaringMethod == null ? "type-parameter" : "method-parameter");
                     Part(value.GenericParameterPosition.ToString(System.Globalization.CultureInfo.InvariantCulture));
-                    MemberInfo owner = (MemberInfo?)value.DeclaringMethod ?? value.DeclaringType!;
-                    Part(owner.Module.ModuleVersionId.ToString());
-                    Part(owner.MetadataToken.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    // The owner by name: its module and its token are other ones in another build.
+                    Part(value.DeclaringMethod?.Name ?? value.DeclaringType!.FullName ?? value.DeclaringType!.Name);
                     return;
                 }
                 if (value.HasElementType)
@@ -889,8 +888,10 @@ namespace System.Reflection.Emit
                     return;
                 }
                 Type definition = value.IsGenericType ? value.GetGenericTypeDefinition() : value;
-                Part(definition.AssemblyQualifiedName ?? throw new NotSupportedException("Unnamed checkpoint type."));
-                Part(definition.Module.ModuleVersionId.ToString());
+                // By full name and the simple name of the assembly. A version, a key token or a module version ID
+                // would tie the text to one build of that assembly.
+                Part(definition.FullName ?? throw new NotSupportedException("Unnamed checkpoint type."));
+                Part(definition.Assembly.GetName().Name ?? string.Empty);
                 if (value.IsGenericType)
                     foreach (Type argument in value.GetGenericArguments()) Add(argument);
             }
@@ -900,13 +901,30 @@ namespace System.Reflection.Emit
 
         // Compare a canonical manifest rather than a collision-prone short method name.
         // Dynamic local signatures can contain process-local type handles: normalize them.
+        // Types and members are told by name, so the manifest is the same against another build of an assembly that
+        // still has them. The scope has an entry for every place the code names one, so each is written once, as a
+        // hash of what it is called with a number, and every later use gives the number. The IL is written as its hash.
         internal unsafe string GetCheckpointIdentity()
         {
             var text = new System.Text.StringBuilder();
             var methods = new Dictionary<DynamicMethod, int>();
+            var entries = new Dictionary<string, int>();
             void Add(string value) => text.Append(value.Length).Append(':').Append(value);
             void Number(int value) => Add(value.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            void TypeName(Type type) => Add(CheckpointTypeIdentity(type));
+            // SHA-1 gives the same value in every process, which a string's own hash code does not.
+            static string Hash(ReadOnlySpan<byte> bytes, int length)
+            {
+                Span<byte> hash = stackalloc byte[20];
+                Sha1ForNonSecretPurposes.HashData(bytes, hash);
+                return Convert.ToHexString(hash.Slice(0, length));
+            }
+            void Entry(string description)
+            {
+                if (entries.TryGetValue(description, out int known)) { Number(known); return; }
+                Number(entries.Count); entries.Add(description, entries.Count);
+                Add(Hash(System.Text.Encoding.UTF8.GetBytes(description), 8));
+            }
+            void TypeName(Type type) => Entry(CheckpointTypeIdentity(type));
             void Member(MemberInfo member)
             {
                 if (member is DynamicMethod dynamicMethod)
@@ -915,12 +933,29 @@ namespace System.Reflection.Emit
                     Method(dynamicMethod._resolver!);
                     return;
                 }
-                Add(member.Module.ModuleVersionId.ToString());
-                Number(member.MetadataToken);
-                Add(member.Name);
-                if (member.DeclaringType != null) TypeName(member.DeclaringType);
+                // What the member is called and what its signature is, in place of its module and token. Static or
+                // instance is part of it: the code that uses the member is valid for one of them only.
+                var described = new System.Text.StringBuilder();
+                void Part(string value) => described.Append(value.Length).Append(':').Append(value);
+                Part(member.Name);
+                if (member is FieldInfo fieldInfo)
+                {
+                    Part(fieldInfo.IsStatic ? "static-field" : "field");
+                    Part(CheckpointTypeIdentity(fieldInfo.FieldType));
+                }
+                else
+                {
+                    var methodBase = (MethodBase)member;
+                    Part(methodBase.IsStatic ? "static-method" : "method");
+                    Part(CheckpointTypeIdentity(methodBase is MethodInfo returning ? returning.ReturnType : typeof(void)));
+                    ParameterInfo[] parameters = methodBase.GetParameters();
+                    Part(parameters.Length.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    foreach (ParameterInfo parameter in parameters) Part(CheckpointTypeIdentity(parameter.ParameterType));
+                }
+                if (member.DeclaringType != null) Part(CheckpointTypeIdentity(member.DeclaringType));
                 if (member is MethodInfo mi && mi.IsGenericMethod)
-                    foreach (Type argument in mi.GetGenericArguments()) TypeName(argument);
+                    foreach (Type argument in mi.GetGenericArguments()) Part(CheckpointTypeIdentity(argument));
+                Entry(described.ToString());
             }
             void Signature(byte[] bytes)
             {
@@ -996,11 +1031,11 @@ namespace System.Reflection.Emit
                 Number(methods.Count); methods.Add(resolver.m_method, methods.Count);
                 DynamicMethod method = resolver.m_method;
                 Add(method.Name);
-                if (!method.Module.Assembly.IsDynamic) Add(method.Module.ModuleVersionId.ToString());
+                if (!method.Module.Assembly.IsDynamic) Add(method.Module.Assembly.GetName().Name ?? string.Empty);
                 TypeName(method.ReturnType);
                 foreach (ParameterInfo parameter in method.GetParameters()) TypeName(parameter.ParameterType);
                 Number((int)method.GetMethodImplementationFlags());
-                Add(Convert.ToHexString(resolver.GetCodeInfo(out int stack, out int init, out int clauses)));
+                Add(Hash(resolver.GetCodeInfo(out int stack, out int init, out int clauses), 20));
                 Number(stack); Number(init); Number(clauses);
                 Signature(resolver.m_localSignature);
                 if (resolver.m_exceptionHeader != null) Add(Convert.ToHexString(resolver.m_exceptionHeader));
