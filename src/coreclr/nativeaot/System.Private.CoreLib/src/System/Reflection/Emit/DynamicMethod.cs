@@ -184,6 +184,10 @@ namespace System.Reflection.Emit
             return default;
         }
 
+        public void SetImplementationFlags(MethodImplAttributes attributes)
+        {
+        }
+
         public override MethodImplAttributes GetMethodImplementationFlags()
         {
             return default;

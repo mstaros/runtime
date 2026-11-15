@@ -24,10 +24,14 @@ namespace System.Reflection.Emit
 
         internal void GetCallableMethod(RuntimeModule module, DynamicMethod dm)
         {
+            byte[] asyncMethodSignature = dm.GetRuntimeAsyncMethodSignature(out bool isRuntimeAsyncValueTask);
             dm._methodHandle = ModuleHandle.GetDynamicMethod(
                                           module,
                                           m_methodBuilder.Name,
                                           (byte[])m_scope[m_methodSigToken]!,
+                                          asyncMethodSignature,
+                                          dm.GetMethodImplementationFlags(),
+                                          isRuntimeAsyncValueTask,
                                           new DynamicResolver(this));
         }
 
@@ -884,8 +888,15 @@ namespace System.Reflection.Emit
         #region Internal Methods
         internal void GetCallableMethod(RuntimeModule module, DynamicMethod dm)
         {
+            byte[] asyncMethodSignature = dm.GetRuntimeAsyncMethodSignature(out bool isRuntimeAsyncValueTask);
             dm._methodHandle = ModuleHandle.GetDynamicMethod(
-                module, m_method.Name, (byte[])m_scope[m_methodSignature]!, new DynamicResolver(this));
+                module,
+                m_method.Name,
+                (byte[])m_scope[m_methodSignature]!,
+                asyncMethodSignature,
+                dm.GetMethodImplementationFlags(),
+                isRuntimeAsyncValueTask,
+                new DynamicResolver(this));
         }
 
         internal byte[] LocalSignature => m_localSignature ??= SignatureHelper.GetLocalVarSigHelper().InternalGetSignatureArray();
