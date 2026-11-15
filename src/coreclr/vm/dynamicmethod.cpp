@@ -3,6 +3,7 @@
 
 #include "common.h"
 #include "dynamicmethod.h"
+#include "clrconfignocache.h"
 #include "object.h"
 #include "method.hpp"
 #include "comdelegate.h"
@@ -80,6 +81,25 @@ void DynamicMethodTable::CreateDynamicMethodTable(DynamicMethodTable **ppLocatio
     pDynMT->m_Crst.Init(CrstDynamicMT);
     pDynMT->m_Module = pModule;
     pDynMT->m_pDomain = pDomain;
+    pDynMT->m_NextMethodRid = 0;
+    pDynMT->m_MaxMethodRid = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_DynamicMethodMaxRid);
+    pDynMT->m_Used = 0;
+    pDynMT->m_MaxUsedDescriptors = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_DynamicMethodMaxUsedDescriptors);
+    pDynMT->m_ConstructionFailureStages = 0;
+    pDynMT->m_ConstructionFailureStagesInitialized = false;
+#ifdef FEATURE_PORTABLE_ENTRYPOINTS
+    // Test-only: simulate pending portable-entrypoint state on both pair descriptors and
+    // make stale state observable when those descriptors are checked out again.
+    CLRConfigNoCache portableEntrypointCleanupTest =
+        CLRConfigNoCache::Get("DynamicMethodPortableEntrypointCleanupTest");
+    DWORD portableEntrypointCleanupTestEnabled = 0;
+    pDynMT->m_PortableEntrypointCleanupTest =
+        portableEntrypointCleanupTest.IsSet() &&
+        portableEntrypointCleanupTest.TryAsInteger(10, portableEntrypointCleanupTestEnabled) &&
+        portableEntrypointCleanupTestEnabled != 0;
+#endif // FEATURE_PORTABLE_ENTRYPOINTS
+    if (pDynMT->m_MaxMethodRid > MaxMethodRid)
+        pDynMT->m_MaxMethodRid = MaxMethodRid;
     pDynMT->MakeMethodTable(&amt);
 
     if (*ppLocation) return;
@@ -157,7 +177,7 @@ void DynamicMethodTable::AddMethodsToList()
     // allocate as many chunks as needed to hold the methods
     //
     MethodDescChunk* pChunk = MethodDescChunk::CreateChunk(pHeap, 0 /* one chunk of maximum size */,
-        mcDynamic, TRUE /* fNonVtableSlot */, TRUE /* fNativeCodeSlot */, FALSE /* HasAsyncMethodData */, m_pMethodTable, &amt);
+        mcDynamic, TRUE /* fNonVtableSlot */, TRUE /* fNativeCodeSlot */, TRUE /* HasAsyncMethodData */, m_pMethodTable, &amt);
     if (m_DynamicMethodList) return;
 
     int methodCount = pChunk->GetCount();
@@ -212,7 +232,7 @@ void DynamicMethodTable::AddMethodsToList()
     amt.SuppressRelease();
 }
 
-DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSize, PTR_CUTF8 name)
+DynamicMethodDesc* DynamicMethodTable::GetFreeDynamicMethod()
 {
     CONTRACTL
     {
@@ -221,12 +241,8 @@ DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSiz
         GC_TRIGGERS;
         MODE_PREEMPTIVE;
         INJECT_FAULT(COMPlusThrowOM());
-        PRECONDITION(CheckPointer(psig));
-        PRECONDITION(sigSize > 0);
     }
     CONTRACTL_END;
-
-    LOG((LF_BCL, LL_INFO10000, "Level4 - Getting DynamicMethod\n"));
 
     DynamicMethodDesc *pNewMD = NULL;
 
@@ -234,13 +250,23 @@ DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSiz
     {
         {
             LockHolder lh(this);
+            if (m_MaxUsedDescriptors != 0 && m_Used >= m_MaxUsedDescriptors)
+                COMPlusThrowOM();
+
             pNewMD = m_DynamicMethodList;
             if (pNewMD)
             {
+#ifdef FEATURE_PORTABLE_ENTRYPOINTS
+                // A finalized descriptor must have been removed from pending resolution before reuse.
+                if (m_PortableEntrypointCleanupTest &&
+                    pNewMD->IsPendingThunkResolution())
+                {
+                    COMPlusThrow(kInvalidOperationException);
+                }
+#endif // FEATURE_PORTABLE_ENTRYPOINTS
+
                 m_DynamicMethodList = pNewMD->GetLCGMethodResolver()->GetNextFreeDynamicMethodDesc();
-#ifdef _DEBUG
                 m_Used++;
-#endif
                 break;
             }
         }
@@ -250,20 +276,40 @@ DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSiz
         // need to create more methoddescs
         AddMethodsToList();
     }
-    _ASSERTE(pNewMD != NULL);
+
+    return pNewMD;
+}
+
+void DynamicMethodTable::InitializeDynamicMethodDesc(DynamicMethodDesc* pNewMD, BYTE* psig, DWORD sigSize, PTR_CUTF8 name, mdMethodDef memberDef, AsyncMethodFlags asyncFlags, Signature asyncSig)
+{
+    CONTRACTL
+    {
+        INSTANCE_CHECK;
+        THROWS;
+        GC_TRIGGERS;
+        MODE_PREEMPTIVE;
+        INJECT_FAULT(COMPlusThrowOM());
+        PRECONDITION(CheckPointer(pNewMD));
+        PRECONDITION(CheckPointer(psig));
+        PRECONDITION(sigSize > 0);
+    }
+    CONTRACTL_END;
 
     // Reset the method desc into pristine state
+    LOG((LF_BCL, LL_INFO1000, "Level3 - DynamicMethod obtained {0x%p}\n", pNewMD));
 
-    LOG((LF_BCL, LL_INFO1000, "Level3 - DynamicMethod obtained {0x%p} (used %d)\n", pNewMD, m_Used));
-
-    // the store sig part of the method desc
     pNewMD->SetStoredMethodSig((PCCOR_SIGNATURE)psig, sigSize);
-    // the dynamic part of the method desc
     pNewMD->m_pszMethodName = name;
+    pNewMD->SetMemberDef(memberDef);
+    pNewMD->SetSlot(MethodTable::NO_SLOT);
+    pNewMD->SetStatic();
     pNewMD->InitializeFlags(DynamicMethodDesc::FlagPublic
                     | DynamicMethodDesc::FlagStatic
                     | DynamicMethodDesc::FlagIsLCGMethod);
 
+    AsyncMethodData* pAsyncMethodData = pNewMD->GetAddrOfAsyncMethodData();
+    pAsyncMethodData->flags = asyncFlags;
+    pAsyncMethodData->sig = hasAsyncFlags(asyncFlags, AsyncMethodFlags::IsAsyncVariant) ? asyncSig : Signature();
 
     // Note: Reset has THROWS contract since it may allocate jump stub and on WASM parses the signature
     // It will never throw here for jump stubs since it will always reuse the existing jump stub,
@@ -285,7 +331,112 @@ DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSiz
     pNewMD->SetNotInline(TRUE);
     pNewMD->GetLCGMethodResolver()->Reset();
 
+}
+
+DynamicMethodDesc* DynamicMethodTable::GetDynamicMethod(BYTE *psig, DWORD sigSize, PTR_CUTF8 name, BYTE *pAsyncSig, DWORD asyncSigSize, PTR_CUTF8 asyncName, DWORD implFlags, BOOL isAsyncValueTask, DynamicMethodDesc** ppILMethod)
+{
+    CONTRACTL
+    {
+        INSTANCE_CHECK;
+        THROWS;
+        GC_TRIGGERS;
+        MODE_PREEMPTIVE;
+        INJECT_FAULT(COMPlusThrowOM());
+        PRECONDITION(CheckPointer(psig));
+        PRECONDITION(sigSize > 0);
+    }
+    CONTRACTL_END;
+
+    LOG((LF_BCL, LL_INFO10000, "Level4 - Getting DynamicMethod\n"));
+
+    bool isRuntimeAsync = IsMiAsync(implFlags) && asyncSigSize > 0;
+    mdMethodDef memberDef = mdMethodDefNil;
+    if (isRuntimeAsync)
+    {
+        LockHolder lh(this);
+        if (m_NextMethodRid >= m_MaxMethodRid)
+            COMPlusThrow(kOverflowException);
+
+        memberDef = TokenFromRid(++m_NextMethodRid, mdtMethodDef);
+    }
+
+    DynamicMethodDesc *pNewMD = GetFreeDynamicMethod();
+    _ASSERTE(pNewMD != NULL);
+    DynamicMethodDescBackoutHolder newMethodBackout(this, pNewMD);
+    DynamicMethodDesc *pILMD = pNewMD;
+
+    if (isRuntimeAsync)
+    {
+        DynamicMethodDesc *pAsyncMD = GetFreeDynamicMethod();
+        _ASSERTE(pAsyncMD != NULL);
+        DynamicMethodDescBackoutHolder asyncMethodBackout(this, pAsyncMD);
+        pILMD = pAsyncMD;
+
+        AsyncMethodFlags asyncVariantFlags = AsyncMethodFlags::AsyncCall | AsyncMethodFlags::IsAsyncVariant;
+        if (isAsyncValueTask)
+            asyncVariantFlags |= AsyncMethodFlags::IsAsyncVariantForValueTask;
+
+        InitializeDynamicMethodDesc(pAsyncMD, pAsyncSig, asyncSigSize, asyncName, memberDef, asyncVariantFlags, Signature(pAsyncSig, asyncSigSize));
+        InitializeDynamicMethodDesc(pNewMD, psig, sigSize, name, memberDef, AsyncMethodFlags::ReturnsTaskOrValueTask | AsyncMethodFlags::Thunk, Signature());
+        asyncMethodBackout.SuppressRelease();
+    }
+    else
+    {
+        InitializeDynamicMethodDesc(pNewMD, psig, sigSize, name, memberDef, AsyncMethodFlags::None, Signature());
+    }
+
+#ifdef FEATURE_PORTABLE_ENTRYPOINTS
+    // The test sets only the descriptor flags. Normal finalization must clear both flags
+    // before either descriptor is returned to and checked out from the free list.
+    if (isRuntimeAsync &&
+        m_PortableEntrypointCleanupTest)
+    {
+        pNewMD->SetPendingThunkResolution(true);
+        pILMD->SetPendingThunkResolution(true);
+    }
+#endif // FEATURE_PORTABLE_ENTRYPOINTS
+
+    if (ppILMethod != NULL)
+        *ppILMethod = pILMD;
+
+    newMethodBackout.SuppressRelease();
     return pNewMD;
+}
+
+void DynamicMethodTable::ThrowIfConstructionFailureRequested(DWORD stage)
+{
+    CONTRACTL
+    {
+        INSTANCE_CHECK;
+        THROWS;
+        GC_TRIGGERS;
+        MODE_ANY;
+    }
+    CONTRACTL_END;
+
+    bool shouldThrow = false;
+    {
+        LockHolder lh(this);
+        if (!m_ConstructionFailureStagesInitialized)
+        {
+            CLRConfigNoCache config = CLRConfigNoCache::Get("DynamicMethodConstructionFailureStages");
+            DWORD configuredStages = 0;
+            if (config.IsSet() && config.TryAsInteger(10, configuredStages))
+                m_ConstructionFailureStages = configuredStages;
+
+            m_ConstructionFailureStagesInitialized = true;
+        }
+
+        if ((m_ConstructionFailureStages & stage) != 0)
+        {
+            m_ConstructionFailureStages &= ~stage;
+            shouldThrow = true;
+        }
+    }
+
+    if (shouldThrow)
+        COMPlusThrowOM();
+
 }
 
 void DynamicMethodTable::AddToFreeList(DynamicMethodDesc *pMethod)
@@ -299,14 +450,13 @@ void DynamicMethodTable::AddToFreeList(DynamicMethodDesc *pMethod)
     }
     CONTRACTL_END;
 
-    LOG((LF_BCL, LL_INFO10000, "Level4 - Returning DynamicMethod to free list {%p} (used %d)\n", pMethod, m_Used));
+    LOG((LF_BCL, LL_INFO10000, "Level4 - Returning DynamicMethod to free list {%p}\n", pMethod));
     {
         LockHolder lh(this);
         pMethod->GetLCGMethodResolver()->SetNextFreeDynamicMethod(m_DynamicMethodList);
         m_DynamicMethodList = pMethod;
-#ifdef _DEBUG
+        _ASSERTE(m_Used > 0);
         m_Used--;
-#endif
     }
 }
 
@@ -880,6 +1030,21 @@ void HostCodeHeap::FreeMemForCode(void * codeStart)
 //
 // Implementation for DynamicMethodDesc declared in method.hpp
 //
+DynamicMethodDesc* DynamicMethodDesc::GetPairedLCGMethodNoCreate()
+{
+    WRAPPER_NO_CONTRACT;
+
+    if (!IsAsyncThunkMethod())
+        return NULL;
+
+    MethodDesc* pPairedMethod = IsAsyncMethod() ? GetOrdinaryVariantNoCreate() : GetAsyncVariantNoCreate();
+    if (pPairedMethod == NULL || pPairedMethod == this || !pPairedMethod->IsDynamicMethod())
+        return NULL;
+
+    DynamicMethodDesc* pPairedDynamicMethod = pPairedMethod->AsDynamicMethodDesc();
+    return pPairedDynamicMethod->IsLCGMethod() ? pPairedDynamicMethod : NULL;
+}
+
 bool DynamicMethodDesc::TryDestroy()
 {
     STANDARD_VM_CONTRACT;
@@ -888,7 +1053,10 @@ bool DynamicMethodDesc::TryDestroy()
     LoaderAllocator *pLoaderAllocator = GetLoaderAllocator();
     LOG((LF_BCL, LL_INFO1000, "Level3 - Destroying DynamicMethodDesc {%p}\n", this));
 
+    DynamicMethodDesc* pPairedDynamicMethodToDestroy = GetPairedLCGMethodNoCreate();
+
     PTR_LCGMethodResolver methodResolver = GetLCGMethodResolver();
+    PTR_LCGMethodResolver pairedMethodResolver = pPairedDynamicMethodToDestroy != NULL ? pPairedDynamicMethodToDestroy->GetLCGMethodResolver() : NULL;
 
     // Destroy the code heap memory associated with this method first.
     // This is done before any other destruction to ensure that CodeHeap
@@ -899,15 +1067,36 @@ bool DynamicMethodDesc::TryDestroy()
         return false;
     }
 
+    if (pairedMethodResolver != NULL && !pairedMethodResolver->TryDestroyCodeHeapMemory())
+    {
+        // We failed to destroy the paired dynamic method code heap memory, so we cannot continue
+        // with descriptor destruction. The code heaps already released above are skipped
+        // by a later cleanup attempt.
+        return false;
+    }
+
     // See ModuleHandle_GetDynamicMethod() for allocation of these DynamicMethodDesc members.
     // Free the member field memory here prior to storage reclamation below.
     delete[] m_pszMethodName;
     delete[] (BYTE*)m_pSig;
 
+    if (pPairedDynamicMethodToDestroy != NULL)
+    {
+        delete[] pPairedDynamicMethodToDestroy->m_pszMethodName;
+        delete[] (BYTE*)pPairedDynamicMethodToDestroy->m_pSig;
+    }
+
     methodResolver->DestroyResolver();
     // The current DynamicMethodDesc storage is destroyed at this point
 
-    // If the LoaderAllocator is collectible, we release it.
+    if (pairedMethodResolver != NULL)
+    {
+        pairedMethodResolver->DestroyResolver();
+        // The paired dynamic method DynamicMethodDesc storage is destroyed at this point
+    }
+
+    // ModuleHandle_GetDynamicMethod acquires one collectible LoaderAllocator reference per
+    // managed DynamicMethod. A runtime-async descriptor pair shares that single ownership.
     if (pLoaderAllocator->IsCollectible())
     {
         if (pLoaderAllocator->Release())

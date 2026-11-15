@@ -717,6 +717,7 @@ enum CorInfoOptions
     CORINFO_GENERICS_CTXT_KEEP_ALIVE        = 0x00000100, // Keep the generics context alive throughout the method even if there is no explicit use, and report its location to the CLR
     CORINFO_ASYNC_SAVE_CONTEXTS             = 0x00000200, // Runtime async method must save and restore contexts
     CORINFO_ASYNC_VERSION                   = 0x00000400, // This is an async version whose IL belongs to a non-async method
+    CORINFO_LCG_METHOD                      = 0x00000800, // Method is a dynamically generated LCG (DynamicMethod) method; its lifetime is controlled by its managed resolver
 };
 
 //

@@ -17,7 +17,7 @@ bool MethodDesc::TryGenerateAsyncThunk(DynamicResolver** resolver, COR_ILMETHOD_
     _ASSERTE(resolver != NULL);
     _ASSERTE(methodILDecoder != NULL);
     _ASSERTE(*resolver == NULL && *methodILDecoder == NULL);
-    _ASSERTE(IsIL());
+    _ASSERTE(IsIL() || IsDynamicMethod());
     _ASSERTE(!HasILHeader());
 
     if (!IsAsyncThunkMethod())
@@ -279,7 +279,11 @@ SigPointer MethodDesc::GetAsyncThunkResultTypeSig()
     _ASSERTE(IsAsyncThunkMethod());
     PCCOR_SIGNATURE pSigRaw;
     DWORD cSig;
-    if (FAILED(GetMDImport()->GetSigOfMethodDef(GetMemberDef(), &cSig, &pSigRaw)))
+    if (IsDynamicMethod())
+    {
+        GetSig(&pSigRaw, &cSig);
+    }
+    else if (FAILED(GetMDImport()->GetSigOfMethodDef(GetMemberDef(), &cSig, &pSigRaw)))
     {
         _ASSERTE(!"Loaded MethodDesc should not fail to get signature");
         pSigRaw = NULL;
@@ -367,6 +371,17 @@ int MethodDesc::GetTokenForGenericMethodCallWithAsyncReturnType(ILCodeStream* pC
 int MethodDesc::GetTokenForThunkTarget(ILCodeStream* pCode, MethodDesc* md)
 {
     _ASSERTE(!md->IsWrapperStub());
+    if (md->IsDynamicMethod() && !md->HasClassOrMethodInstantiation())
+    {
+        SigBuilder typeSigBuilder;
+        typeSigBuilder.AppendElementType(ELEMENT_TYPE_INTERNAL);
+        typeSigBuilder.AppendPointer(md->GetMethodTable());
+
+        DWORD typeSigLen;
+        PCCOR_SIGNATURE typeSig = (PCCOR_SIGNATURE)typeSigBuilder.GetSignature(&typeSigLen);
+        int typeSigToken = pCode->GetSigToken(typeSig, typeSigLen);
+        return pCode->GetToken(md, typeSigToken);
+    }
 
     if (!md->HasClassOrMethodInstantiation())
     {
