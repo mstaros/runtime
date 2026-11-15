@@ -5339,7 +5339,14 @@ protected:
                                     GenTree**                 instParam,
                                     NamedIntrinsic            ni);
 
-    void impSetupAsyncCall(GenTreeCall* call, CORINFO_METHOD_HANDLE methHnd, OPCODE opcode, unsigned prefixFlags, NamedIntrinsic ni, const DebugInfo& callDI, bool* usesOwnContexts);
+    void impSetupAsyncCall(GenTreeCall*            call,
+                           CORINFO_METHOD_HANDLE   methHnd,
+                           const CORINFO_SIG_INFO* sig,
+                           OPCODE                  opcode,
+                           unsigned                prefixFlags,
+                           NamedIntrinsic          ni,
+                           const DebugInfo&        callDI,
+                           bool*                   usesOwnContexts);
 
     void impInsertAsyncArgsForLdvirtftnCall(GenTreeCall* call, bool usesOwnContexts);
     void impInheritAsyncContextsFromInliner(GenTreeCall* call);
@@ -9928,6 +9935,7 @@ public:
 
     jitstd::vector<ICorDebugInfo::AsyncSuspensionPoint>*     compSuspensionPoints = nullptr;
     jitstd::vector<ICorDebugInfo::AsyncContinuationVarInfo>* compAsyncVars        = nullptr;
+    jitstd::vector<uint8_t>* compAsyncCheckpointLayout = nullptr;
 
     // Managed RetVal - A side hash table meant to record the mapping from a
     // GT_CALL node to its debug info.  This info is used to emit sequence points
@@ -12022,6 +12030,13 @@ public:
     }
 
     // Is this the async version of a non-async method? IL belongs to non-async method.
+    // Mode 4 extends the bounded checkpoint experiment to metadata methods.
+    bool compIsAsyncCheckpointProof() const
+    {
+        int mode = JitConfig.JitAsyncCheckpointProof();
+        return mode != 0 && (((info.compMethodInfo->options & CORINFO_LCG_METHOD) != 0) || mode == 4);
+    }
+
     bool compIsAsyncVersion() const
     {
         return (info.compMethodInfo->options & CORINFO_ASYNC_VERSION) != 0;

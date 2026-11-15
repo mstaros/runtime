@@ -1,0 +1,2003 @@
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+
+#nullable enable
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
+using System.Runtime.Loader;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Threading.Tasks.Sources;
+
+// The emitted workers and the metadata initializer fixture suspend with runtime-async IL.
+public static class CheckpointProof
+{
+    private static readonly Type Helpers = typeof(RuntimeHelpers).Assembly.GetType(
+        "System.Runtime.CompilerServices.AsyncHelpers", throwOnError: true)!;
+    private static readonly MethodInfo Capture = Helpers.GetMethod(
+        "CaptureCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!;
+    private static readonly MethodInfo Restore = Helpers.GetMethod(
+        "RestoreCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!;
+    // Standalone file-format bounds, shared by its writer and reader. Native
+    // restore independently validates frame semantics and its own layout limits.
+    private const int MaxProofFrames = 16;
+    private const int MaxProofSlots = 1024;
+    private const int MaxProofSchemaIntegers = 11 + 7 * MaxProofSlots;
+    private const int MaxProofFileBytes = 1024 * 1024;
+    private static bool s_restoring;
+    private static int s_prefixCalls;
+
+    public static int Main(string[] args)
+    {
+        try
+        {
+            Require(args.Length == 2, "Expected mode and snapshot path.");
+            string actualRoot = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
+            Console.WriteLine("Loaded CoreLib: " + typeof(object).Assembly.Location);
+            Require(string.Equals(actualRoot, Environment.GetEnvironmentVariable("CHECKPOINT_PROOF_CORE_ROOT"),
+                StringComparison.OrdinalIgnoreCase), "Proof did not load the isolated candidate CoreLib.");
+            Require(Capture != null && Restore != null, "Candidate CoreLib hooks are missing.");
+            if (args[0] == "produce")
+                Produce(args[1]);
+            else if (args[0] is "restore" or "config")
+                Resume(args[1], args[0] == "config");
+            else if (args[0] == "metadata-initializer-produce") ProduceMetadataInitializer(args[1]);
+            else if (args[0] == "metadata-initializer-restore") RestoreMetadataInitializer(args[1]);
+            else if (args[0].StartsWith("statics-", StringComparison.Ordinal))
+                ClassInitializationProof(args[1], args[0].Contains("produce"), args[0].EndsWith("-hot", StringComparison.Ordinal));
+            else if (args[0] == "state-count-produce") ProduceStateCount(args[1]);
+            else if (args[0] == "state-count-restore") ResumeStateCount(args[1]);
+            else if (args[0] == "identity-limits") IdentityLimitProof(args[1]);
+            else if (args[0] == "ordinary-metadata-emit") EmitOrdinaryMetadataAssembly(args[1]);
+            else if (args[0] == "ordinary-metadata-produce") ProduceOrdinaryMetadata(args[1]);
+            else if (args[0] == "ordinary-metadata-restore") ResumeOrdinaryMetadata(args[1]);
+            else if (args[0] == "nearest-metadata") NearestMetadataProof(args[1]);
+            else if (args[0] == "native-metadata-produce") ProduceMetadataLimit(args[1]);
+            else if (args[0] == "native-metadata-restore") ResumeMetadataLimit(args[1]);
+            else if (args[0] == "format-limits") FormatLimitsProof(args[1]);
+            else if (args[0] is "publication" or "disabled")
+                PublicationProof(args[0] == "disabled");
+            else
+                throw new ArgumentException("Unknown proof mode.");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex);
+            return 1;
+        }
+    }
+
+    public static void Prefix(string frame)
+    {
+        if (s_restoring)
+            throw new InvalidOperationException("REPLAY DETECTED before await in " + frame);
+        Interlocked.Increment(ref s_prefixCalls);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int ReadLabel(object value) => ((string)value).Length;
+
+    private static DynamicMethod[] CreateProgram()
+    {
+        var inner = CreateMethod("CheckpointInner");
+        EmitBody(inner, null, 2, multiply: true);
+        var outer = CreateMethod("CheckpointOuter");
+        EmitBody(outer, inner, 3, multiply: false);
+        return new[] { inner, outer };
+    }
+
+    private static DynamicMethod CreateMethod(string name, Type[]? parameters = null)
+    {
+        var method = new DynamicMethod(name, typeof(Task<int>),
+            parameters ?? new[] { typeof(ValueTask<int>), typeof(int), typeof(object) },
+            typeof(CheckpointProof).Module, skipVisibility: true);
+        typeof(DynamicMethod).GetMethod("SetImplementationFlags",
+            new[] { typeof(MethodImplAttributes) })!.Invoke(method,
+                new object[] { Enum.Parse<MethodImplAttributes>("Async") | MethodImplAttributes.NoInlining });
+        return method;
+    }
+
+    private static MethodInfo Await(Type taskType) => Helpers.GetMethods(BindingFlags.Public | BindingFlags.Static)
+        .Single(m => m.Name == "Await" && m.IsGenericMethodDefinition &&
+            m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType.IsGenericType &&
+            m.GetParameters()[0].ParameterType.GetGenericTypeDefinition() == taskType)
+        .MakeGenericMethod(typeof(int));
+
+    private static void EmitBody(DynamicMethod method, DynamicMethod? callee, int constant, bool multiply, int? frameIndex = null)
+    {
+        ILGenerator il = method.GetILGenerator();
+        LocalBuilder saved = il.DeclareLocal(typeof(int));
+        il.Emit(OpCodes.Ldstr, method.Name);
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(Prefix))!);
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldc_I4, constant);
+        il.Emit(multiply ? OpCodes.Mul : OpCodes.Add);
+        il.Emit(OpCodes.Stloc, saved);
+        il.Emit(OpCodes.Ldarg_0);
+        if (callee != null)
+        {
+            il.Emit(OpCodes.Ldarg_1);
+            il.Emit(OpCodes.Ldarg_2);
+            il.Emit(OpCodes.Call, callee);
+            il.Emit(OpCodes.Call, Await(typeof(Task<>)));
+        }
+        else
+        {
+            il.Emit(OpCodes.Call, Await(typeof(ValueTask<>)));
+        }
+        if (frameIndex is int index)
+        {
+            il.Emit(OpCodes.Ldc_I4, index);
+            il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(FrameLimitResumed))!);
+        }
+        il.Emit(OpCodes.Ldloc, saved);
+        il.Emit(multiply ? OpCodes.Sub : OpCodes.Mul);
+        il.Emit(OpCodes.Ldarg_2);
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(ReadLabel))!);
+        il.Emit(OpCodes.Add);
+        il.Emit(OpCodes.Ret);
+    }
+
+    private sealed class PendingSource : IValueTaskSource<int>
+    {
+        public object? CallbackState;
+        public Action? Registered;
+        public ValueTaskSourceStatus GetStatus(short token) => ValueTaskSourceStatus.Pending;
+        public int GetResult(short token) => throw new InvalidOperationException("Source must never complete.");
+        public void OnCompleted(Action<object?> continuation, object? state, short token,
+            ValueTaskSourceOnCompletedFlags flags)
+        {
+            Require(CallbackState == null, "Source subscribed more than once.");
+            CallbackState = state;
+            Registered?.Invoke();
+        }
+    }
+
+    private static Task<int> Start(DynamicMethod[] methods, PendingSource source, object label)
+    {
+        var invoke = methods[1].CreateDelegate<Func<ValueTask<int>, int, object, Task<int>>>();
+        Task<int> result = invoke(new ValueTask<int>(source, 0), 10, label);
+        Require(!result.IsCompleted && ReferenceEquals(source.CallbackState, result),
+            "Did not reach the controlled, quiescent await.");
+        return result;
+    }
+
+    private static void Produce(string path)
+    {
+        DynamicMethod[] methods = CreateProgram();
+        var source = new PendingSource();
+        Task<int> pending = Start(methods, source, new string("hello".ToCharArray()));
+        Require(s_prefixCalls == 2, "Expected two pre-await calls.");
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        object[][] records = (object[][])Capture.Invoke(null, new object[] { pending, methods })!;
+        Require(records.Length == 2, "Expected exactly two generated continuation frames.");
+        Require(records.All(r => ((object?[])r[3]).Any(v => v is int)),
+            "Each frame must preserve an integer.");
+        Require(records.All(r => ((object?[])r[3]).Any(v => v is string)),
+            "Each frame must preserve the label reference.");
+
+        // A real heap object in a live slot must fail explicitly rather than disappear.
+        Task<int> unsupported = Start(methods, new PendingSource(), new object());
+        ExpectNotSupported(() => Capture.Invoke(null, new object[] { unsupported, methods }),
+            "unsupported live object");
+
+        var concurrentMethods = CreateProgram();
+        Task.WaitAll(Enumerable.Range(0, 16).Select(_ => Task.Run(() =>
+        {
+            var waiting = Start(concurrentMethods, new PendingSource(), "parallel");
+            var captured = (object[][])Capture.Invoke(null, new object[] { waiting, concurrentMethods })!;
+            Require(captured.Length == 2, "Concurrent publication lost checkpoint metadata.");
+        })).ToArray());
+        ProduceReuse(path + ".reuse");
+        ProduceScheduling(path + ".pool");
+        if (Environment.GetEnvironmentVariable("DOTNET_JitAsyncCheckpointProof") == "2")
+            Require(records.All(r => ((int[])r[2])[10] == 1), "Forced JIT retry did not reach the installed metadata.");
+        var hostCapture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        var hostRestore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int policyCalls = 0, codecCalls = 0;
+        Func<object, object> codec = value => { codecCalls++; return value; };
+        Action<int[]> rejectSecond = _ => { if (++policyCalls == 2) throw new NotSupportedException("second frame"); };
+        ExpectNotSupported(() => hostCapture.Invoke(null, new object?[] { pending, methods, codec, rejectSecond }),
+            "late capture rejection", "second frame");
+        Require(codecCalls == 0, "The encoder ran before the second frame's policy.");
+        object[][] hostRecords = (object[][])hostCapture.Invoke(null, new object?[] { pending, methods, codec, null })!;
+        Require(codecCalls > 0, "The negative test needs an encodable first frame.");
+        codecCalls = 0;
+        policyCalls = 0;
+        ExpectNotSupported(() => hostRestore.Invoke(null, new object?[] { hostRecords, methods, Task.FromResult(41), codec, rejectSecond }),
+            "late restore rejection", "second frame");
+        Require(codecCalls == 0, "The decoder ran before the second frame's policy.");
+        ProduceFrameLimit(path + ".frames16");
+        ProduceSlotLimit(path + ".slots1024");
+        Write(path, records);
+        Console.WriteLine($"READY producer={Environment.ProcessId} frames={records.Length} bytes={new FileInfo(path).Length}");
+        Console.Out.Flush();
+        Thread.Sleep(Timeout.Infinite); // The runner forcibly kills this process.
+        GC.KeepAlive(pending);
+        GC.KeepAlive(source);
+        GC.KeepAlive(methods);
+    }
+
+    private static void Resume(string path, bool changedConfig)
+    {
+        object[][] records = Read(path, out int producer);
+        Require(producer != Environment.ProcessId, "Restore must run in a different process.");
+        // Deliberately perturb runtime descriptor/code allocation before rebuilding the program.
+        for (int i = 0; i < 64; i++)
+        {
+            var noise = new DynamicMethod("Unrelated" + i, typeof(int), Type.EmptyTypes);
+            var il = noise.GetILGenerator();
+            il.Emit(OpCodes.Ldc_I4, i);
+            il.Emit(OpCodes.Ret);
+            Require(noise.CreateDelegate<Func<int>>()() == i, "Noise method failed.");
+        }
+        DynamicMethod[] methods = CreateProgram();
+        s_restoring = true;
+        if (changedConfig)
+        {
+            ExpectNotSupported(() => Restore.Invoke(null, new object?[] { records, methods, 41, null }), "effective JIT configuration", "Checkpoint JIT configuration differs.");
+            return;
+        }
+        ExpectNotSupported(() => Restore.Invoke(null, new object?[] { records.Reverse().ToArray(), methods, 41, null }),
+            "same-signature frames reversed", "Checkpoint frame order, count or suspension state differs from capture.");
+        ExpectNotSupported(() => Restore.Invoke(null, new object?[] { records.Skip(1).ToArray(), methods, 41, null }),
+            "same-signature chain truncated", "Checkpoint frame order, count or suspension state differs from capture.");
+        var sharedLabels = records.SelectMany(record => ((object?[])record[3]).OfType<string>()).Where(label => label == "hello").ToArray();
+        Require(sharedLabels.Length >= 2 && sharedLabels.All(label => ReferenceEquals(label, sharedLabels[0])),
+            "The file round trip split the shared label.");
+        var swapped = records.Select(r => (object[])r.Clone()).ToArray();
+        swapped[0][0] = 1 - (int)swapped[0][0];
+        ExpectNotSupported(() => Restore.Invoke(null, new object?[] { swapped, methods, 41, null }), "swapped method index");
+        ExpectNotSupported(() => Restore.Invoke(null, new object?[] { records, methods.Reverse().ToArray(), 41, null }), "swapped method table");
+        var altered = CreateProgram();
+        altered[0] = CreateMethod("CheckpointInner");
+        EmitBody(altered[0], null, 7, multiply: true);
+        ExpectNotSupported(() => Restore.Invoke(null, new object?[] { records, altered, 41, null }), "changed method IL");
+
+        object[][] changed = records.Select(r => (object[])r.Clone()).ToArray();
+        changed[0][2] = ((int[])changed[0][2]).Clone();
+        ((int[])changed[0][2])[0]++;
+        ExpectNotSupported(() => Restore.Invoke(null, new object?[] { changed, methods, 41, null }),
+            "changed schema");
+        changed = records.Select(r => (object[])r.Clone()).ToArray();
+        changed[0][3] = ((object?[])changed[0][3]).Clone();
+        ((object?[])changed[0][3])[0] = new object();
+        ExpectNotSupported(() => Restore.Invoke(null, new object?[] { changed, methods, 41, null }),
+            "changed value type");
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        Task<int> resumed = (Task<int>)Restore.Invoke(null, new object?[] { records, methods, 41, null })!;
+        Require(resumed.IsCompleted, "Proof should finish synchronously after result injection.");
+        int actual = resumed.GetAwaiter().GetResult();
+        Require(actual == 343, $"Expected 343, got {actual}.");
+        Require(s_prefixCalls == 0, "Pre-await code was reexecuted.");
+        ResumeReuse(path + ".reuse");
+        ResumeScheduling(path + ".pool");
+        ResumeFrameLimit(path + ".frames16");
+        ResumeSlotLimit(path + ".slots1024");
+        Console.WriteLine($"PASS producer={producer} restorer={Environment.ProcessId} frames={records.Length} result={actual} preAwaitCalls={s_prefixCalls}");
+    }
+
+
+    private static int s_frameLimitResumes;
+
+    public static void FrameLimitResumed(int index)
+    {
+        Require(index == s_frameLimitResumes, "A boundary frame resumed out of order or more than once.");
+        s_frameLimitResumes++;
+    }
+
+    private static DynamicMethod[] CreateFrameLimitProgram(int count)
+    {
+        var methods = new DynamicMethod[count];
+        for (int i = 0; i < count; i++)
+        {
+            methods[i] = CreateMethod("CheckpointFrameLimit" + i.ToString("D2", System.Globalization.CultureInfo.InvariantCulture));
+            EmitBody(methods[i], i == 0 ? null : methods[i - 1], 1, multiply: true, frameIndex: i);
+        }
+        return methods;
+    }
+
+    private static Task<int> StartFrameLimit(DynamicMethod[] methods, PendingSource source)
+    {
+        int prefixCalls = s_prefixCalls;
+        var invoke = methods[^1].CreateDelegate<Func<ValueTask<int>, int, object, Task<int>>>();
+        Task<int> pending = invoke(new ValueTask<int>(source, 0), 10, new string("hello".ToCharArray()));
+        Require(!pending.IsCompleted && ReferenceEquals(source.CallbackState, pending) &&
+            s_prefixCalls - prefixCalls == methods.Length && s_frameLimitResumes == 0, "Frame-limit program did not park every caller.");
+        return pending;
+    }
+
+    private static void ProduceFrameLimit(string path)
+    {
+        var methods = CreateFrameLimitProgram(16);
+        var source = new PendingSource();
+        Task<int> pending = StartFrameLimit(methods, source);
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        var records = (object[][])Capture.Invoke(null, new object[] { pending, methods })!;
+        Require(records.Length == 16 && records.Select((r, i) => (int)r[0] == i).All(v => v),
+            "The exact-limit chain was not captured in order.");
+        var hostCapture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int codecCalls = 0, policyCalls = 0;
+        Func<object, object> codec = value => { codecCalls++; return value; };
+        Action<int[]> policy = _ => policyCalls++;
+        var hostRecords = (object[][])hostCapture.Invoke(null, new object?[] { pending, methods, codec, policy })!;
+        Require(hostRecords.Length == 16 && policyCalls == 16 && codecCalls > 0 &&
+            hostRecords.All(r => r[4] == null), "Host capture did not admit the context-free exact-limit chain.");
+
+        var tooManyMethods = CreateFrameLimitProgram(17);
+        var tooManySource = new PendingSource();
+        Task<int> tooMany = StartFrameLimit(tooManyMethods, tooManySource);
+        ExpectNotSupported(() => Capture.Invoke(null, new object[] { tooMany, tooManyMethods }),
+            "17-frame capture", "Checkpoint proof supports at most 16 frames.");
+        codecCalls = 0;
+        policyCalls = 0;
+        ExpectNotSupported(() => hostCapture.Invoke(null, new object?[] { tooMany, tooManyMethods, codec, policy }),
+            "17-frame host capture", "Checkpoint proof supports at most 16 frames.");
+        Require(codecCalls == 0, "The encoder ran for an over-limit task node.");
+        Write(path, records);
+        Console.WriteLine("PASS runtime frame capture limit: accepted=16 rejected=17 rejectedEncoderCalls=0");
+        GC.KeepAlive(pending);
+        GC.KeepAlive(source);
+        GC.KeepAlive(tooMany);
+        GC.KeepAlive(tooManySource);
+    }
+
+    private static void ResumeFrameLimit(string path)
+    {
+        var records = Read(path, out int producer);
+        Require(producer != Environment.ProcessId && records.Length == 16,
+            "The exact-limit chain must come from the killed producer.");
+        var methods = CreateFrameLimitProgram(16);
+        var hostRestore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        var hostValidate = Helpers.GetMethod("ValidateMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int observed = 0, codecCalls = 0, policyCalls = 0;
+        // The hook supplies the chain head once; continuation objects do not
+        // support GetType. Count actual post-await execution in the emitted IL.
+        Action<object> observer = _ => observed++;
+        Func<object, object> codec = value => { codecCalls++; return value; };
+        Action<int[]> policy = _ => policyCalls++;
+        // This fixture captured no ExecutionContext and its codec is identity.
+        // Add the host record's context field to the saved standalone records.
+        object[][] HostRecords(object[][] frames) => frames.Select(r =>
+            new object[] { r[0], r[1], r[2], r[3], null!, r[4], r[5] }).ToArray();
+        foreach (object[][] bad in new[] { Array.Empty<object[]>(), records.Concat(new[] { records[^1] }).ToArray() })
+        {
+            ExpectNotSupported(() => RestoreFrames(bad, methods, 41, observer),
+                bad.Length + "-frame restore", "Invalid checkpoint frame count.");
+            object[][] hostBad = HostRecords(bad);
+            ExpectNotSupported(() => hostRestore.Invoke(null, new object?[] { hostBad, methods, Task.FromResult(41), codec, policy }),
+                bad.Length + "-frame host restore", "Invalid checkpoint frame count.");
+            ExpectNotSupported(() => hostValidate.Invoke(null, new object?[] { hostBad, methods, Task.FromResult(41), true, policy }),
+                bad.Length + "-frame host preflight", "Invalid checkpoint frame count.");
+            Require(observed == 0 && codecCalls == 0 && policyCalls == 0 && s_frameLimitResumes == 0,
+                "An invalid frame count reached observation, policy, decoding or dispatch.");
+        }
+
+        Task<int> restored = RestoreFrames(records, methods, 41, observer);
+        // Each of the 16 callers subtracts 10, then adds the five-character label.
+        Require(restored.IsCompleted, "The exact-limit chain did not complete synchronously.");
+        int actual = restored.GetAwaiter().GetResult();
+        Require(actual == -39 && observed == 1 && s_frameLimitResumes == 16,
+            $"The exact-limit chain resumed {s_frameLimitResumes} frames with result {actual}.");
+        var hostRecords = HostRecords(records);
+        hostValidate.Invoke(null, new object?[] { hostRecords, methods, Task.FromResult(41), true, policy });
+        Require(policyCalls == 16 && codecCalls == 0, "Exact-limit host preflight did not visit each frame.");
+        policyCalls = 0;
+        s_frameLimitResumes = 0;
+        var hostRestored = (Task<int>)hostRestore.Invoke(null, new object?[] { hostRecords, methods, Task.FromResult(41), codec, policy })!;
+        Require(hostRestored.IsCompleted && hostRestored.GetAwaiter().GetResult() == -39 &&
+            policyCalls == 16 && codecCalls > 0 && s_frameLimitResumes == 16 && s_prefixCalls == 0,
+            "Exact-limit host restore failed, skipped bindings or replayed the prefix.");
+        Console.WriteLine($"PASS runtime frame restore limit: producer={producer} restorer={Environment.ProcessId} accepted=16 rejected=0,17 rejectedDecoderCalls=0 rejectedPolicyCalls=0 result=-39 resumedFrames={s_frameLimitResumes} observerCalls={observed} preAwaitCalls={s_prefixCalls}");
+    }
+
+    private static int s_slotResumeCalls;
+    private static int s_slotValuesChecked;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void SlotLimitResumed(int checks)
+    {
+        Require(s_slotResumeCalls == 0 && checks == 1023, "Unexpected slot-limit resumed execution.");
+        s_slotResumeCalls++;
+        s_slotValuesChecked = checks;
+    }
+
+    private static DynamicMethod CreateSlotLimitProgram(int slotCount)
+    {
+        int scalarCount = slotCount - 1; // The label is the remaining live slot.
+        var method = CreateMethod("CheckpointSlotLimit" + slotCount,
+            new[] { typeof(ValueTask<int>), typeof(int[]), typeof(object) });
+        var il = method.GetILGenerator();
+        var saved = Enumerable.Range(0, scalarCount).Select(_ => il.DeclareLocal(typeof(int))).ToArray();
+        var sum = il.DeclareLocal(typeof(int));
+        Label invalid = il.DefineLabel();
+        il.Emit(OpCodes.Ldstr, method.Name);
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(Prefix))!);
+        for (int i = 0; i < scalarCount; i++)
+        {
+            il.Emit(OpCodes.Ldarg_1); il.Emit(OpCodes.Ldc_I4, i); il.Emit(OpCodes.Ldelem_I4);
+            il.Emit(OpCodes.Stloc, saved[i]);
+        }
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Call, Await(typeof(ValueTask<>)));
+        il.Emit(OpCodes.Stloc, sum);
+        for (int i = 0; i < scalarCount; i++)
+        {
+            // Check every saved value, not just an aggregate that could collide.
+            il.Emit(OpCodes.Ldloc, saved[i]); il.Emit(OpCodes.Ldc_I4, 10000 + i);
+            il.Emit(OpCodes.Bne_Un, invalid);
+            il.Emit(OpCodes.Ldloc, sum); il.Emit(OpCodes.Ldloc, saved[i]);
+            il.Emit(OpCodes.Add); il.Emit(OpCodes.Stloc, sum);
+        }
+        il.Emit(OpCodes.Ldc_I4, scalarCount);
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(SlotLimitResumed))!);
+        il.Emit(OpCodes.Ldloc, sum); il.Emit(OpCodes.Ldarg_2);
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(ReadLabel))!);
+        il.Emit(OpCodes.Add); il.Emit(OpCodes.Ret);
+        il.MarkLabel(invalid);
+        // Keep assertion machinery out of the measured frame's JIT slot layout.
+        il.Emit(OpCodes.Ldc_I4_M1);
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(SlotLimitResumed))!);
+        il.Emit(OpCodes.Ldc_I4_0); il.Emit(OpCodes.Ret);
+        return method;
+    }
+
+    private static Task<int> StartSlotLimit(DynamicMethod method, int slotCount, PendingSource source)
+    {
+        int before = s_prefixCalls;
+        var invoke = method.CreateDelegate<Func<ValueTask<int>, int[], object, Task<int>>>();
+        Task<int> pending = invoke(new ValueTask<int>(source, 0),
+            Enumerable.Range(10000, slotCount - 1).ToArray(), new string("hello".ToCharArray()));
+        Require(!pending.IsCompleted && ReferenceEquals(source.CallbackState, pending) &&
+            s_prefixCalls == before + 1 && s_slotResumeCalls == 0, "Slot-limit program did not park.");
+        return pending;
+    }
+
+    private static int[] SlotLimitSchema(DynamicMethod method, int slotCount)
+    {
+        var lookup = Helpers.GetMethod("GetCheckpointInfo", BindingFlags.NonPublic | BindingFlags.Static)!;
+        object?[] arguments = { method, 0, null, IntPtr.Zero, IntPtr.Zero, null, null, IntPtr.Zero, IntPtr.Zero, 0, false, IntPtr.Zero };
+        var schema = (int[])lookup.Invoke(null, arguments)!;
+        var slotTypes = (Type?[])arguments[5]!;
+        if (schema[6] != slotCount)
+            Console.WriteLine("Slot-count mismatch: " + string.Join("; ", Enumerable.Range(0, schema[6])
+                .Where(i => schema[12 + 7 * i] != 1 || schema[15 + 7 * i] != 1 || i < 3 || i >= schema[6] - 3)
+                .Select(i => i + ":" + string.Join(",", schema.Skip(11 + 7 * i).Take(7)) + ":" + slotTypes[i])));
+        Require(schema[0] == 6 && schema[5] == 1 && schema[6] == slotCount &&
+            schema.Length == 11 + 7 * slotCount && schema[3] < 1024 * 1024,
+            $"Expected {slotCount} slots, got {schema[6]} in {schema[3]} layout bytes.");
+        return schema;
+    }
+
+    private static void ProduceSlotLimit(string path)
+    {
+        var method = CreateSlotLimitProgram(1024);
+        var methods = new[] { method };
+        var source = new PendingSource();
+        Task<int> pending = StartSlotLimit(method, 1024, source);
+        int[] schema = SlotLimitSchema(method, 1024);
+        var records = (object[][])Capture.Invoke(null, new object[] { pending, methods })!;
+        Require(records.Length == 1 && ((int[])records[0][2]).SequenceEqual(schema) &&
+            ((object[])records[0][3]).OfType<int>().OrderBy(v => v).SequenceEqual(Enumerable.Range(10000, 1023)) &&
+            ((object[])records[0][3]).OfType<string>().Single() == "hello", "Capture lost a boundary slot.");
+        var hostCapture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int codecs = 0, policies = 0;
+        Func<object, object> codec = value => { codecs++; return value; };
+        Action<int[]> policy = _ => policies++;
+        var hostRecords = (object[][])hostCapture.Invoke(null, new object?[] { pending, methods, codec, policy })!;
+        Require(codecs == 1 && policies == 1 && hostRecords.Single()[4] == null,
+            "Exact-slot host capture did not encode its one context-free label.");
+
+        // This isolates the managed schema-size guard; it is not a real 1 MiB continuation.
+        var validate = Helpers.GetMethod("ValidateCheckpointSchema", BindingFlags.NonPublic | BindingFlags.Static)!;
+        foreach (bool host in new[] { false, true })
+        {
+            var boundary = (int[])schema.Clone();
+            boundary[3] = 1024 * 1024;
+            validate.Invoke(null, new object[] { boundary, host });
+            boundary[3]++;
+            ExpectNotSupported(() => validate.Invoke(null, new object[] { boundary, host }),
+                "managed layout one-over (host=" + host + ")", "Unsupported checkpoint frame layout.");
+        }
+        Console.WriteLine("PASS managed layout size guard: accepted=1048576 rejected=1048577 modes=2");
+
+        var overMethod = CreateSlotLimitProgram(1025);
+        var overSource = new PendingSource();
+        Task<int> over = StartSlotLimit(overMethod, 1025, overSource);
+        SlotLimitSchema(overMethod, 1025);
+        ExpectNotSupported(() => Capture.Invoke(null, new object[] { over, new[] { overMethod } }),
+            "1025-slot capture", "Unsupported checkpoint frame layout.");
+        codecs = policies = 0;
+        ExpectNotSupported(() => hostCapture.Invoke(null, new object?[] { over, new[] { overMethod }, codec, policy }),
+            "1025-slot host capture", "Unsupported checkpoint frame layout.");
+        Require(codecs == 0 && policies == 0, "Over-limit slots reached capture policy or codec.");
+        Write(path, records);
+        Console.WriteLine($"PASS runtime slot capture limit: accepted=1024 rejected=1025 schemaIntegers=7179 rejectedEncoderCalls=0 layoutBytes={schema[3]}");
+        GC.KeepAlive(pending); GC.KeepAlive(source); GC.KeepAlive(over); GC.KeepAlive(overSource);
+    }
+
+    private static void ResumeSlotLimit(string path)
+    {
+        var records = Read(path, out int producer);
+        Require(producer != Environment.ProcessId && records.Length == 1 && ((int[])records[0][2])[6] == 1024,
+            "Slot-limit snapshot must come from the killed producer.");
+        var method = CreateSlotLimitProgram(1024);
+        var methods = new[] { method };
+        var hostRestore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        var hostValidate = Helpers.GetMethod("ValidateMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        var overMethod = CreateSlotLimitProgram(1025);
+        int[] overSchema = SlotLimitSchema(overMethod, 1025);
+        string overIdentity = (string)Helpers.GetMethod("CheckpointMethodIdentity", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, new object[] { overMethod })!;
+        string savedIdentity = (string)records[0][4];
+        string prefix = savedIdentity.Substring(0, savedIdentity.IndexOf(':') + 1);
+        var overValues = new object[1025];
+        var overTypes = new string?[1025];
+        string stringType = ((string?[])records[0][5]).Single(v => v != null)!;
+        for (int i = 0; i < overValues.Length; i++)
+        {
+            bool reference = overSchema[11 + 7 * i + 1] == 2;
+            overValues[i] = reference ? "hello" : 10000;
+            overTypes[i] = reference ? stringType : null;
+        }
+        var bad = new[] { new object[] { 0, 0, overSchema, overValues, prefix + overIdentity, overTypes } };
+        object[][] HostRecords(object[][] frames) => frames.Select(r =>
+            new object[] { r[0], r[1], r[2], r[3], null!, r[4], r[5] }).ToArray();
+        int observed = 0, codecs = 0, policies = 0;
+        Action<object> observer = _ => observed++;
+        Func<object, object> codec = value => { codecs++; return value; };
+        Action<int[]> policy = _ => policies++;
+        ExpectNotSupported(() => RestoreFrames(bad, new[] { overMethod }, 41, observer),
+            "1025-slot restore", "Unsupported checkpoint frame layout.");
+        ExpectNotSupported(() => hostRestore.Invoke(null, new object?[] { HostRecords(bad), new[] { overMethod }, Task.FromResult(41), codec, policy }),
+            "1025-slot host restore", "Unsupported checkpoint frame layout.");
+        ExpectNotSupported(() => hostValidate.Invoke(null, new object?[] { HostRecords(bad), new[] { overMethod }, Task.FromResult(41), true, policy }),
+            "1025-slot host preflight", "Unsupported checkpoint frame layout.");
+        Require(observed == 0 && codecs == 0 && policies == 0 && s_slotResumeCalls == 0,
+            "Over-limit slots reached observation, decoding, policy or dispatch.");
+
+        Task<int> restored = RestoreFrames(records, methods, 41, observer);
+        const int expected = 41 + 5 + 1023 * 10000 + 1023 * 1022 / 2;
+        Require(restored.IsCompleted && restored.GetAwaiter().GetResult() == expected &&
+            observed == 1 && s_slotResumeCalls == 1 && s_slotValuesChecked == 1023, "Maximum-slot restore lost state.");
+        var hostRecords = HostRecords(records);
+        hostValidate.Invoke(null, new object?[] { hostRecords, methods, Task.FromResult(41), true, policy });
+        Require(policies == 1 && codecs == 0, "Maximum-slot host preflight did not complete.");
+        policies = s_slotResumeCalls = s_slotValuesChecked = 0;
+        var hostResult = (Task<int>)hostRestore.Invoke(null, new object?[] { hostRecords, methods, Task.FromResult(41), codec, policy })!;
+        Require(hostResult.IsCompleted && hostResult.GetAwaiter().GetResult() == expected &&
+            policies == 1 && codecs == 1 && s_slotResumeCalls == 1 && s_slotValuesChecked == 1023 && s_prefixCalls == 0,
+            "Maximum-slot host restore failed or replayed pre-await work.");
+        Console.WriteLine($"PASS runtime slot restore limit: producer={producer} restorer={Environment.ProcessId} accepted=1024 rejected=1025 result={expected} checkedIntegers={s_slotValuesChecked} rejectedDecoderCalls=0 rejectedPolicyCalls=0 preAwaitCalls={s_prefixCalls}");
+    }
+
+
+    // Native x64 layout records are 48 bytes per state and 40 bytes per slot
+    // (CORINFO_AsyncCheckpointFrame/Slot in corinfo.h). LayoutBytes excludes
+    // the 40-byte method header and is independent of continuation DataSize.
+    private const int MetadataLimitStates = 32;
+    private const int MetadataLimitSlots = 818;
+    private static PendingSource? s_metadataWait;
+    private static int s_metadataWaitCalls;
+    private static int s_metadataOutcomeCalls;
+    private static int s_metadataCompleted;
+    private static int s_metadataChecked;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static ValueTask<int> MetadataLimitWait(int state, int states)
+    {
+        Require(!s_restoring && state == s_metadataWaitCalls++, "Metadata-limit prefix replayed or skipped an await.");
+        return state == states - 1
+            ? new ValueTask<int>(s_metadataWait ?? throw new Exception("Missing metadata-limit wait."), 0)
+            : new ValueTask<int>(100 + state);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void MetadataLimitOutcome(int value, int state, int states)
+    {
+        Require(value == (state == states - 1 ? 41 : 100 + state), "Metadata-limit await outcome changed.");
+        Require(!s_restoring || state == states - 1, "Metadata-limit restore replayed an earlier state.");
+        s_metadataOutcomeCalls++;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void MetadataLimitCompleted(int checkedIntegers)
+    {
+        Require(checkedIntegers == MetadataLimitSlots - 1 && s_metadataCompleted++ == 0,
+            "Metadata-limit restore lost a value or resumed twice.");
+        s_metadataChecked = checkedIntegers;
+    }
+
+    private static DynamicMethod CreateMetadataLimitProgram(int states, int slots, int dropAfter = 0)
+    {
+        var method = CreateMethod($"CheckpointMetadataLimit{states}x{slots}d{dropAfter}",
+            new[] { typeof(int[]), typeof(object) });
+        EmitMetadataLimitBody(method.GetILGenerator(), method.Name, states, slots, dropAfter);
+        return method;
+    }
+
+    private static void EmitMetadataLimitBody(ILGenerator il, string name, int states, int slots, int dropAfter)
+    {
+        var saved = Enumerable.Range(0, slots - 1).Select(_ => il.DeclareLocal(typeof(int))).ToArray();
+        var sum = il.DeclareLocal(typeof(int));
+        Label invalid = il.DefineLabel();
+        il.Emit(OpCodes.Ldstr, name);
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(Prefix))!);
+        for (int i = 0; i < saved.Length; i++)
+        {
+            il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldc_I4, i); il.Emit(OpCodes.Ldelem_I4);
+            il.Emit(OpCodes.Stloc, saved[i]);
+        }
+        // Distinct unrolled await sites, with the same scalars and label live at
+        // every site. No pending ValueTask is itself kept across an await.
+        for (int state = 0; state < states; state++)
+        {
+            il.Emit(OpCodes.Ldc_I4, state); il.Emit(OpCodes.Ldc_I4, states);
+            il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(MetadataLimitWait))!);
+            il.Emit(OpCodes.Call, Await(typeof(ValueTask<>)));
+            if (state == states - 1)
+            {
+                il.Emit(OpCodes.Stloc, sum); il.Emit(OpCodes.Ldloc, sum);
+            }
+            il.Emit(OpCodes.Ldc_I4, state); il.Emit(OpCodes.Ldc_I4, states);
+            il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(MetadataLimitOutcome))!);
+            if (state + 1 == dropAfter)
+            {
+                il.Emit(OpCodes.Ldloc, saved[^1]); il.Emit(OpCodes.Ldc_I4, 10000 + saved.Length - 1);
+                il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(MetadataLimitEarlyValue))!);
+            }
+        }
+        int retained = saved.Length - (dropAfter == 0 ? 0 : 1);
+        for (int i = 0; i < retained; i++)
+        {
+            il.Emit(OpCodes.Ldloc, saved[i]); il.Emit(OpCodes.Ldc_I4, 10000 + i);
+            il.Emit(OpCodes.Bne_Un, invalid);
+            il.Emit(OpCodes.Ldloc, sum); il.Emit(OpCodes.Ldloc, saved[i]);
+            il.Emit(OpCodes.Add); il.Emit(OpCodes.Stloc, sum);
+        }
+        il.Emit(OpCodes.Ldc_I4, retained);
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(MetadataLimitCompleted))!);
+        il.Emit(OpCodes.Ldloc, sum); il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(ReadLabel))!);
+        il.Emit(OpCodes.Add); il.Emit(OpCodes.Ret);
+        il.MarkLabel(invalid);
+        il.Emit(OpCodes.Ldc_I4_M1);
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(MetadataLimitCompleted))!);
+        il.Emit(OpCodes.Ldc_I4_0); il.Emit(OpCodes.Ret);
+    }
+
+    private static int[] MetadataLimitSchema(MethodInfo method, int state)
+    {
+        var lookup = Helpers.GetMethod("GetCheckpointInfo", BindingFlags.NonPublic | BindingFlags.Static)!;
+        object?[] arguments = { method, state, null, IntPtr.Zero, IntPtr.Zero, null, null, IntPtr.Zero, IntPtr.Zero, 0, false, IntPtr.Zero };
+        return (int[])lookup.Invoke(null, arguments)!;
+    }
+
+    private static int[][] MeasureMetadataLimit(MethodInfo method, int states, int slots, int expectedBytes, int dropAfter = 0)
+    {
+        Require(IntPtr.Size == 8, "This native layout measurement is x64-only.");
+        var schemas = Enumerable.Range(0, states).Select(state => MetadataLimitSchema(method, state)).ToArray();
+        Require(schemas.Select((s, state) => s[0] == 6 && s[1] == state && s[5] == 1 &&
+            s[6] == slots - (dropAfter != 0 && state >= dropAfter ? 1 : 0) &&
+            s.Length == 11 + 7 * s[6] && s[3] < 1024 * 1024).All(v => v),
+            "Measured native metadata has an unexpected state, slot count or data layout.");
+        Require(schemas.Select(s => s[7]).Distinct().Count() == states &&
+            schemas.Sum(s => 48 + 40 * s[6]) == expectedBytes, "Native metadata byte measurement changed.");
+        ExpectNotSupported(() => MetadataLimitSchema(method, states), "metadata state count",
+            "Checkpoint state is outside the method's states.");
+        if (dropAfter == 0)
+            Console.WriteLine($"MEASURE native metadata: states={states} slotsPerState={slots} layoutBytes={expectedBytes} maximumFrameDataBytes={schemas.Max(s => s[3])}");
+        else
+            Console.WriteLine($"MEASURE native metadata: states={states} firstSlots={slots} laterSlots={slots - 1} dropAfter={dropAfter} layoutBytes={expectedBytes} maximumFrameDataBytes={schemas.Max(s => s[3])}");
+        return schemas;
+    }
+
+    private static Task<int> StartMetadataLimit(MethodInfo method, int states, int slots, PendingSource source)
+    {
+        s_metadataWait = source;
+        s_metadataWaitCalls = s_metadataOutcomeCalls = 0;
+        int before = s_prefixCalls;
+        var invoke = method.CreateDelegate<Func<int[], object, Task<int>>>();
+        Task<int> pending = invoke(Enumerable.Range(10000, slots - 1).ToArray(), new string("hello".ToCharArray()));
+        Require(!pending.IsCompleted && ReferenceEquals(source.CallbackState, pending) &&
+            s_prefixCalls == before + 1 && s_metadataWaitCalls == states && s_metadataOutcomeCalls == states - 1 &&
+            s_metadataCompleted == 0, "Metadata-limit program did not park at its last state.");
+        return pending;
+    }
+
+    private static void ProduceMetadataLimit(string path)
+    {
+        var method = CreateMetadataLimitProgram(MetadataLimitStates, MetadataLimitSlots);
+        var methods = new[] { method };
+        var source = new PendingSource();
+        Task<int> pending = StartMetadataLimit(method, MetadataLimitStates, MetadataLimitSlots, source);
+        int[][] schemas = MeasureMetadataLimit(method, MetadataLimitStates, MetadataLimitSlots, 1048576);
+        var records = (object[][])Capture.Invoke(null, new object[] { pending, methods })!;
+        Require(records.Length == 1 && (int)records[0][1] == 31 && ((int[])records[0][2]).SequenceEqual(schemas[31]) &&
+            ((object[])records[0][3]).OfType<int>().OrderBy(v => v).SequenceEqual(Enumerable.Range(10000, 817)) &&
+            ((object[])records[0][3]).OfType<string>().Single() == "hello", "Native metadata boundary capture lost a value.");
+        var hostCapture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int codecs = 0, policies = 0;
+        Func<object, object> codec = value => { codecs++; return value; };
+        Action<int[]> policy = _ => policies++;
+        var hostRecords = (object[][])hostCapture.Invoke(null, new object?[] { pending, methods, codec, policy })!;
+        Require(codecs == 1 && policies == 1 && hostRecords.Single()[4] == null,
+            "Native metadata boundary host capture lost the context-free label.");
+
+        // The over-limit native blob is deliberately not published. Measure the
+        // same 819-slot shape at 31 states as a control; adding its 32nd state
+        // calculates 1049856 bytes. This is the next member of this fixture
+        // family, not a claim that 1049856 is the nearest possible native size.
+        var control = CreateMetadataLimitProgram(31, 819);
+        int[][] controlSchemas = MeasureMetadataLimit(control, 31, 819, 1017048);
+        var overMethod = CreateMetadataLimitProgram(32, 819);
+        var overSource = new PendingSource();
+        Task<int> over = StartMetadataLimit(overMethod, 32, 819, overSource);
+        ExpectNotSupported(() => MetadataLimitSchema(overMethod, 0), "oversized native metadata lookup",
+            "Checkpoint method has no checkpoint metadata.");
+        ExpectNotSupported(() => Capture.Invoke(null, new object[] { over, new[] { overMethod } }),
+            "oversized native metadata capture");
+        codecs = policies = 0;
+        ExpectNotSupported(() => hostCapture.Invoke(null, new object?[] { over, new[] { overMethod }, codec, policy }),
+            "oversized native metadata host capture");
+        Require(codecs == 0 && policies == 0 && s_metadataCompleted == 0,
+            "Oversized metadata reached capture codecs, policy or completed execution.");
+        File.WriteAllText(path + ".schemas.json", "{\"atLimit\":[" +
+            string.Join(",", schemas.Select(s => "[" + string.Join(",", s) + "]")) +
+            "],\"control\":[" + string.Join(",", controlSchemas.Select(s => "[" + string.Join(",", s) + "]")) + "]}");
+        Write(path, records);
+        Console.WriteLine($"PASS native metadata capture limit: acceptedBytes=1048576 rejectedCalculatedBytes=1049856 states=32 slotsPerState=818 controlStates=31 controlSlots=819 controlBytes=1017048 rejectedEncoderCalls=0 rejectedPolicyCalls=0");
+        Console.WriteLine($"READY metadata producer={Environment.ProcessId} state=31 bytes={new FileInfo(path).Length}");
+        Console.Out.Flush();
+        Thread.Sleep(Timeout.Infinite);
+        GC.KeepAlive(pending); GC.KeepAlive(source); GC.KeepAlive(over); GC.KeepAlive(overSource); GC.KeepAlive(control);
+    }
+
+    private static void ResumeMetadataLimit(string path)
+    {
+        var records = Read(path, out int producer);
+        Require(producer != Environment.ProcessId && records.Length == 1 && (int)records[0][1] == 31,
+            "Native metadata snapshot must come from the killed producer.");
+        s_restoring = true;
+        var method = CreateMetadataLimitProgram(32, 818);
+        var methods = new[] { method };
+        MeasureMetadataLimit(method, 32, 818, 1048576);
+        var overMethod = CreateMetadataLimitProgram(32, 819);
+        ExpectNotSupported(() => MetadataLimitSchema(overMethod, 0), "fresh oversized native metadata lookup",
+            "Checkpoint method has no checkpoint metadata.");
+        string overIdentity = (string)Helpers.GetMethod("CheckpointMethodIdentity", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, new object[] { overMethod })!;
+        string identity = (string)records[0][4];
+        var badRecord = (object[])records[0].Clone();
+        badRecord[4] = identity.Substring(0, identity.IndexOf(':') + 1) + overIdentity;
+        var bad = new[] { badRecord };
+        object[][] HostRecords(object[][] frames) => frames.Select(r =>
+            new object[] { r[0], r[1], r[2], r[3], null!, r[4], r[5] }).ToArray();
+        var hostRestore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        var hostValidate = Helpers.GetMethod("ValidateMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int observed = 0, codecs = 0, policies = 0;
+        Action<object> observer = _ => observed++;
+        Func<object, object> codec = value => { codecs++; return value; };
+        Action<int[]> policy = _ => policies++;
+        ExpectNotSupported(() => RestoreFrames(bad, new[] { overMethod }, 41, observer),
+            "oversized native metadata restore", "Checkpoint method has no checkpoint metadata.");
+        ExpectNotSupported(() => hostRestore.Invoke(null, new object?[] { HostRecords(bad), new[] { overMethod }, Task.FromResult(41), codec, policy }),
+            "oversized native metadata host restore", "Checkpoint method has no checkpoint metadata.");
+        ExpectNotSupported(() => hostValidate.Invoke(null, new object?[] { HostRecords(bad), new[] { overMethod }, Task.FromResult(41), true, policy }),
+            "oversized native metadata host preflight", "Checkpoint method has no checkpoint metadata.");
+        Require(observed == 0 && codecs == 0 && policies == 0 && s_metadataCompleted == 0 &&
+            s_metadataOutcomeCalls == 0 && s_prefixCalls == 0 && s_metadataWaitCalls == 0,
+            "Oversized metadata reached observation, decoding, policy or resumed execution.");
+        Task<int> restored = RestoreFrames(records, methods, 41, observer);
+        Require(restored.IsCompleted && restored.GetAwaiter().GetResult() == 8503382 &&
+            observed == 1 && s_metadataCompleted == 1 && s_metadataChecked == 817 && s_metadataOutcomeCalls == 1,
+            "Native metadata boundary restore lost state.");
+        var hostRecords = HostRecords(records);
+        hostValidate.Invoke(null, new object?[] { hostRecords, methods, Task.FromResult(41), true, policy });
+        Require(policies == 1 && codecs == 0, "Native metadata boundary host preflight failed.");
+        policies = s_metadataCompleted = s_metadataChecked = s_metadataOutcomeCalls = 0;
+        var hostResult = (Task<int>)hostRestore.Invoke(null, new object?[] { hostRecords, methods, Task.FromResult(41), codec, policy })!;
+        Require(hostResult.IsCompleted && hostResult.GetAwaiter().GetResult() == 8503382 &&
+            policies == 1 && codecs == 1 && s_metadataCompleted == 1 && s_metadataChecked == 817 &&
+            s_metadataOutcomeCalls == 1 && s_prefixCalls == 0 && s_metadataWaitCalls == 0,
+            "Native metadata boundary host restore failed or replayed a prefix.");
+        Console.WriteLine($"PASS native metadata restore limit: producer={producer} restorer={Environment.ProcessId} acceptedBytes=1048576 rejectedCalculatedBytes=1049856 state=31 result=8503382 checkedIntegers=817 rejectedDecoderCalls=0 rejectedPolicyCalls=0 resumedStates=1 preAwaitCalls=0");
+    }
+
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void MetadataLimitEarlyValue(int actual, int expected) =>
+        Require(actual == expected, "The metadata control lost its early-dead slot.");
+
+    private static object[][] MetadataHostRecords(object[][] frames) => frames.Select(r =>
+        new object[] { r[0], r[1], r[2], r[3], null!, r[4], r[5] }).ToArray();
+
+    private static object[][] MetadataStandaloneRecords(object[][] frames) => frames.Select(r =>
+        new object[] { r[0], r[1], r[2], r[3], r[5], r[6] }).ToArray();
+
+    private static object[][] MetadataRejectedRecords(object[][] frames, MethodInfo method)
+    {
+        var frame = (object[])frames.Single().Clone();
+        string saved = (string)frame[4];
+        string identity = (string)Helpers.GetMethod("CheckpointMethodIdentity", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, new object[] { method })!;
+        frame[4] = saved.Substring(0, saved.IndexOf(':') + 1) + identity;
+        return new[] { frame };
+    }
+
+    private static void EmitOrdinaryMetadataAssembly(string path)
+    {
+        var assembly = new PersistedAssemblyBuilder(new AssemblyName("CheckpointMetadataBoundary"), typeof(object).Assembly);
+        var module = assembly.DefineDynamicModule("CheckpointMetadataBoundary");
+        var type = module.DefineType("CheckpointMetadataBoundary", TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed);
+        foreach (var shape in new[] { (Name: "AtLimit", States: 32, Slots: 818, Drop: 0),
+            (Name: "NearControl", States: 33, Slots: 794, Drop: 5), (Name: "NearestOver", States: 33, Slots: 794, Drop: 6) })
+        {
+            var method = type.DefineMethod(shape.Name, MethodAttributes.Public | MethodAttributes.Static,
+                typeof(Task<int>), new[] { typeof(int[]), typeof(object) });
+            method.SetImplementationFlags(Enum.Parse<MethodImplAttributes>("Async") | MethodImplAttributes.NoInlining);
+            EmitMetadataLimitBody(method.GetILGenerator(), shape.Name, shape.States, shape.Slots, shape.Drop);
+        }
+        foreach (var stateShape in new[] { (Name: "StateCountAtLimit", Count: 21845), (Name: "StateCountOver", Count: 21846) })
+        {
+            var method = type.DefineMethod(stateShape.Name, MethodAttributes.Public | MethodAttributes.Static, typeof(Task<int>), Type.EmptyTypes);
+            method.SetImplementationFlags(Enum.Parse<MethodImplAttributes>("Async") | MethodImplAttributes.NoInlining);
+            EmitStateCountBody(method.GetILGenerator(), stateShape.Count);
+        }
+        type.CreateType();
+        assembly.Save(path);
+        Console.WriteLine("PASS ordinary metadata assembly emitted once");
+    }
+
+    private static MethodInfo[] OrdinaryMetadataMethods(string path)
+    {
+        var type = Assembly.LoadFile(Path.GetFullPath(path + ".dll")).GetType("CheckpointMetadataBoundary", throwOnError: true)!;
+        var methods = new[] { "AtLimit", "NearControl", "NearestOver" }.Select(name => type.GetMethod(name)!).ToArray();
+        Require(methods.All(m => m is not DynamicMethod && !m.Module.Assembly.IsDynamic),
+            "Expected saved ordinary metadata methods.");
+        return methods;
+    }
+
+    private static void ProduceOrdinaryMetadata(string path)
+    {
+        var methods = OrdinaryMetadataMethods(path);
+        var source = new PendingSource();
+        Task<int> pending = StartMetadataLimit(methods[0], 32, 818, source);
+        var exact = MeasureMetadataLimit(methods[0], 32, 818, 1048576);
+        var capture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int codecs = 0, policies = 0;
+        Func<object, object> codec = value => { codecs++; return value; };
+        Action<int[]> policy = _ => policies++;
+        var frames = (object[][])capture.Invoke(null, new object?[] { pending, new[] { methods[0] }, codec, policy })!;
+        Require(codecs == 1 && policies == 1 && frames.Single()[4] == null &&
+            ((int[])frames[0][2]).SequenceEqual(exact[31]), "Ordinary metadata boundary capture failed.");
+        var controlSource = new PendingSource();
+        Task<int> controlTask = StartMetadataLimit(methods[1], 33, 794, controlSource);
+        var control = MeasureMetadataLimit(methods[1], 33, 794, 1048544, 5);
+        var controlFrames = (object[][])capture.Invoke(null, new object?[] { controlTask, new[] { methods[1] }, codec, policy })!;
+        Require(controlFrames.Single()[4] == null && ((int[])controlFrames[0][2]).SequenceEqual(control[32]),
+            "Ordinary nearest-size control did not capture.");
+        var overSource = new PendingSource();
+        Task<int> over = StartMetadataLimit(methods[2], 33, 794, overSource);
+        ExpectNotSupported(() => MetadataLimitSchema(methods[2], 0), "ordinary nearest oversized metadata lookup",
+            "Checkpoint method has no checkpoint metadata.");
+        codecs = policies = 0;
+        ExpectNotSupported(() => capture.Invoke(null, new object?[] { over, new[] { methods[2] }, codec, policy }),
+            "ordinary nearest oversized metadata capture");
+        Require(codecs == 0 && policies == 0 && s_metadataCompleted == 0,
+            "Ordinary oversized metadata reached a callback.");
+        Write(path, MetadataStandaloneRecords(frames));
+        Write(path + ".control", MetadataStandaloneRecords(controlFrames));
+        File.WriteAllText(path + ".schemas.json", "{\"atLimit\":[" +
+            string.Join(",", exact.Select(s => "[" + string.Join(",", s) + "]")) +
+            "],\"control\":[" + string.Join(",", control.Select(s => "[" + string.Join(",", s) + "]")) + "]}");
+        Console.WriteLine($"READY ordinary metadata producer={Environment.ProcessId} acceptedBytes=1048576 controlBytes=1048544 rejectedCalculatedBytes=1048584 rejectedEncoderCalls=0 rejectedPolicyCalls=0");
+        Console.Out.Flush();
+        Thread.Sleep(Timeout.Infinite);
+        GC.KeepAlive(pending); GC.KeepAlive(source); GC.KeepAlive(controlTask); GC.KeepAlive(controlSource);
+        GC.KeepAlive(over); GC.KeepAlive(overSource);
+    }
+
+    private static void ResumeOrdinaryMetadata(string path)
+    {
+        var frames = Read(path, out int producer);
+        var control = Read(path + ".control", out int controlProducer);
+        Require(producer == controlProducer && producer != Environment.ProcessId, "Ordinary metadata producer was not replaced.");
+        s_restoring = true;
+        var methods = OrdinaryMetadataMethods(path);
+        MeasureMetadataLimit(methods[0], 32, 818, 1048576);
+        MeasureMetadataLimit(methods[1], 33, 794, 1048544, 5);
+        ExpectNotSupported(() => MetadataLimitSchema(methods[2], 0), "fresh ordinary nearest oversized metadata lookup",
+            "Checkpoint method has no checkpoint metadata.");
+        var bad = MetadataHostRecords(MetadataRejectedRecords(control, methods[2]));
+        var restore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        var validate = Helpers.GetMethod("ValidateMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int codecs = 0, policies = 0;
+        Func<object, object> codec = value => { codecs++; return value; };
+        Action<int[]> policy = _ => policies++;
+        ExpectNotSupported(() => restore.Invoke(null, new object?[] { bad, new[] { methods[2] }, Task.FromResult(41), codec, policy }),
+            "ordinary nearest oversized restore", "Checkpoint method has no checkpoint metadata.");
+        ExpectNotSupported(() => validate.Invoke(null, new object?[] { bad, new[] { methods[2] }, Task.FromResult(41), true, policy }),
+            "ordinary nearest oversized preflight", "Checkpoint method has no checkpoint metadata.");
+        Require(codecs == 0 && policies == 0 && s_metadataCompleted == 0 && s_prefixCalls == 0 &&
+            s_metadataWaitCalls == 0 && s_metadataOutcomeCalls == 0, "Ordinary oversized metadata reached restore callbacks.");
+        var hostFrames = MetadataHostRecords(frames);
+        validate.Invoke(null, new object?[] { hostFrames, new[] { methods[0] }, Task.FromResult(41), true, policy });
+        Require(policies == 1 && codecs == 0, "Ordinary exact metadata preflight failed.");
+        policies = 0;
+        var restored = (Task<int>)restore.Invoke(null, new object?[] { hostFrames, new[] { methods[0] }, Task.FromResult(41), codec, policy })!;
+        Require(restored.IsCompleted && restored.GetAwaiter().GetResult() == 8503382 && codecs == 1 && policies == 1 &&
+            s_metadataCompleted == 1 && s_metadataChecked == 817 && s_metadataOutcomeCalls == 1 &&
+            s_prefixCalls == 0 && s_metadataWaitCalls == 0, "Ordinary exact metadata restore failed or replayed.");
+        Console.WriteLine($"PASS ordinary metadata restart: producer={producer} restorer={Environment.ProcessId} acceptedBytes=1048576 controlBytes=1048544 rejectedCalculatedBytes=1048584 result=8503382 checkedIntegers=817 resumedStates=1 preAwaitCalls=0 rejectedDecoderCalls=0 rejectedPolicyCalls=0");
+    }
+
+    private static void NearestMetadataProof(string path)
+    {
+        var control = CreateMetadataLimitProgram(33, 794, 5);
+        var source = new PendingSource();
+        Task<int> pending = StartMetadataLimit(control, 33, 794, source);
+        var schemas = MeasureMetadataLimit(control, 33, 794, 1048544, 5);
+        var frames = (object[][])Capture.Invoke(null, new object[] { pending, new[] { control } })!;
+        Require(((int[])frames.Single()[2]).SequenceEqual(schemas[32]), "Nearest-size control capture failed.");
+        // A second accepted control verifies six early 794-slot states; its
+        // omitted final state has 793 slots. Adding it gives 1048584 bytes.
+        var shortened = CreateMetadataLimitProgram(32, 794, 6);
+        var shortSchemas = MeasureMetadataLimit(shortened, 32, 794, 1016816, 6);
+        var overMethod = CreateMetadataLimitProgram(33, 794, 6);
+        var overSource = new PendingSource();
+        Task<int> over = StartMetadataLimit(overMethod, 33, 794, overSource);
+        ExpectNotSupported(() => MetadataLimitSchema(overMethod, 0), "nearest oversized metadata lookup",
+            "Checkpoint method has no checkpoint metadata.");
+        var hostCapture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        var hostRestore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        var hostValidate = Helpers.GetMethod("ValidateMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int codecs = 0, policies = 0, observed = 0;
+        Func<object, object> codec = value => { codecs++; return value; };
+        Action<int[]> policy = _ => policies++;
+        Action<object> observer = _ => observed++;
+        ExpectNotSupported(() => Capture.Invoke(null, new object[] { over, new[] { overMethod } }), "nearest oversized capture");
+        ExpectNotSupported(() => hostCapture.Invoke(null, new object?[] { over, new[] { overMethod }, codec, policy }),
+            "nearest oversized host capture");
+        var bad = MetadataRejectedRecords(frames, overMethod);
+        ExpectNotSupported(() => RestoreFrames(bad, new[] { overMethod }, 41, observer), "nearest oversized restore",
+            "Checkpoint method has no checkpoint metadata.");
+        ExpectNotSupported(() => hostRestore.Invoke(null, new object?[] { MetadataHostRecords(bad), new[] { overMethod }, Task.FromResult(41), codec, policy }),
+            "nearest oversized host restore", "Checkpoint method has no checkpoint metadata.");
+        ExpectNotSupported(() => hostValidate.Invoke(null, new object?[] { MetadataHostRecords(bad), new[] { overMethod }, Task.FromResult(41), true, policy }),
+            "nearest oversized host preflight", "Checkpoint method has no checkpoint metadata.");
+        Require(codecs == 0 && policies == 0 && observed == 0 && s_metadataCompleted == 0,
+            "Nearest oversized metadata reached callbacks.");
+        File.WriteAllText(path, "{\"control\":[" + string.Join(",", schemas.Select(s => "[" + string.Join(",", s) + "]")) +
+            "],\"shortened\":[" + string.Join(",", shortSchemas.Select(s => "[" + string.Join(",", s) + "]")) + "]}");
+        Console.WriteLine("PASS nearest native metadata: controlBytes=1048544 shortenedBytes=1016816 rejectedCalculatedBytes=1048584 minimumGranularity=8 rejectionChecks=5 rejectedCallbacks=0");
+        GC.KeepAlive(pending); GC.KeepAlive(source); GC.KeepAlive(over); GC.KeepAlive(overSource);
+    }
+
+
+    private static void EmitStateCountBody(ILGenerator il, int states)
+    {
+        il.Emit(OpCodes.Ldstr, "CheckpointStateCount");
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(Prefix))!);
+        for (int state = 0; state < states; state++)
+        {
+            il.Emit(OpCodes.Ldc_I4, state); il.Emit(OpCodes.Ldc_I4, states);
+            il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(MetadataLimitWait))!);
+            il.Emit(OpCodes.Call, Await(typeof(ValueTask<>)));
+            if (state != states - 1) il.Emit(OpCodes.Pop);
+        }
+        il.Emit(OpCodes.Ret);
+    }
+
+    private static MethodInfo StateCountMethod(string path, string name) =>
+        Assembly.LoadFile(Path.GetFullPath(path + ".dll")).GetType("CheckpointMetadataBoundary", true)!.GetMethod(name)!;
+
+    private static Task<int> StartStateCount(MethodInfo method, int states, PendingSource source)
+    {
+        s_metadataWait = source; s_metadataWaitCalls = 0;
+        var pending = method.CreateDelegate<Func<Task<int>>>()();
+        Require(!pending.IsCompleted && ReferenceEquals(source.CallbackState, pending) && s_metadataWaitCalls == states,
+            "State-count method did not park at its last state.");
+        return pending;
+    }
+
+    private static void ProduceStateCount(string path)
+    {
+        const int states = 21845;
+        var method = StateCountMethod(path, "StateCountAtLimit");
+        var source = new PendingSource();
+        var pending = StartStateCount(method, states, source);
+        var offsets = new HashSet<int>();
+        int bytes = 0;
+        using (var writer = new StreamWriter(path + ".schemas.json"))
+        {
+            writer.Write('[');
+            for (int state = 0; state < states; state++)
+            {
+                var schema = MetadataLimitSchema(method, state);
+                Require(schema[0] == 6 && schema[1] == state && schema[6] == 0 && schema.Length == 11 &&
+                    offsets.Add(schema[7]), "The maximum-state method acquired slots or ambiguous states.");
+                bytes += 48;
+                if (state != 0) writer.Write(',');
+                writer.Write('['); writer.Write(string.Join(",", schema)); writer.Write(']');
+            }
+            writer.Write(']');
+        }
+        Require(bytes == 1048560, "The zero-slot state metadata measurement changed.");
+        foreach (int state in new[] { -1, states, 65535, 65536 })
+            ExpectNotSupported(() => MetadataLimitSchema(method, state), "out-of-range state " + state,
+                "Checkpoint state is outside the method's states.");
+        var capture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int codecs = 0, policies = 0;
+        Func<object, object> codec = value => { codecs++; return value; };
+        Action<int[]> policy = _ => policies++;
+        var frames = (object[][])capture.Invoke(null, new object?[] { pending, new[] { method }, codec, policy })!;
+        Require(codecs == 0 && policies == 1 && frames.Single()[4] == null, "State-count capture unexpectedly encoded a binding.");
+        var overMethod = StateCountMethod(path, "StateCountOver");
+        var overSource = new PendingSource();
+        var over = StartStateCount(overMethod, states + 1, overSource);
+        ExpectNotSupported(() => MetadataLimitSchema(overMethod, 0), "state-count metadata one-over",
+            "Checkpoint method has no checkpoint metadata.");
+        codecs = policies = 0;
+        ExpectNotSupported(() => capture.Invoke(null, new object?[] { over, new[] { overMethod }, codec, policy }),
+            "state-count one-over capture");
+        Require(codecs == 0 && policies == 0, "State-count one-over reached callbacks.");
+        Write(path, MetadataStandaloneRecords(frames));
+        Console.WriteLine($"READY state count producer={Environment.ProcessId} acceptedStates=21845 layoutBytes=1048560 rejectedStates=21846 rejectedCalculatedBytes=1048608 rejectedCallbacks=0");
+        Console.Out.Flush(); Thread.Sleep(Timeout.Infinite);
+        GC.KeepAlive(pending); GC.KeepAlive(source); GC.KeepAlive(over); GC.KeepAlive(overSource);
+    }
+
+    private static void ResumeStateCount(string path)
+    {
+        var frames = Read(path, out int producer);
+        Require(producer != Environment.ProcessId && (int)frames.Single()[1] == 21844, "State-count snapshot has the wrong producer or state.");
+        s_restoring = true;
+        var method = StateCountMethod(path, "StateCountAtLimit");
+        foreach (int state in new[] { 0, 10922, 21844 })
+            Require(MetadataLimitSchema(method, state)[6] == 0, "A fresh state-count method acquired a live slot.");
+        var over = StateCountMethod(path, "StateCountOver");
+        ExpectNotSupported(() => MetadataLimitSchema(over, 0), "fresh state-count metadata one-over",
+            "Checkpoint method has no checkpoint metadata.");
+        var bad = MetadataHostRecords(MetadataRejectedRecords(frames, over));
+        var restore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        var validate = Helpers.GetMethod("ValidateMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(typeof(int));
+        int codecs = 0, policies = 0;
+        Func<object, object> codec = value => { codecs++; return value; };
+        Action<int[]> policy = _ => policies++;
+        ExpectNotSupported(() => restore.Invoke(null, new object?[] { bad, new[] { over }, Task.FromResult(41), codec, policy }),
+            "state-count one-over restore", "Checkpoint method has no checkpoint metadata.");
+        ExpectNotSupported(() => validate.Invoke(null, new object?[] { bad, new[] { over }, Task.FromResult(41), true, policy }),
+            "state-count one-over preflight", "Checkpoint method has no checkpoint metadata.");
+        Require(codecs == 0 && policies == 0 && s_prefixCalls == 0 && s_metadataWaitCalls == 0,
+            "State-count one-over reached restore callbacks.");
+        var accepted = MetadataHostRecords(frames);
+        validate.Invoke(null, new object?[] { accepted, new[] { method }, Task.FromResult(41), true, policy });
+        policies = 0;
+        var restored = (Task<int>)restore.Invoke(null, new object?[] { accepted, new[] { method }, Task.FromResult(41), codec, policy })!;
+        Require(restored.IsCompleted && restored.GetAwaiter().GetResult() == 41 && policies == 1 &&
+            codecs == 0 && s_prefixCalls == 0 && s_metadataWaitCalls == 0, "State-count restore failed or replayed.");
+        Console.WriteLine($"PASS state count restart: producer={producer} restorer={Environment.ProcessId} acceptedStates=21845 rejectedStates=21846 result=41 preAwaitCalls=0 rejectedCallbacks=0 shadowedStateCap=65536");
+    }
+
+    private static int s_identityResumes;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void IdentityLimitResumed() => s_identityResumes++;
+
+    private static DynamicMethod CreateIdentityLimitProgram(int count, int padding)
+    {
+        var children = Enumerable.Range(1, count - 1).Select(i =>
+            new DynamicMethod("CheckpointIdentityChild" + i, typeof(int), Type.EmptyTypes, typeof(CheckpointProof).Module)).ToArray();
+        for (int i = children.Length - 1; i >= 0; i--)
+        {
+            var il = children[i].GetILGenerator();
+            if (i + 1 < children.Length) { il.Emit(OpCodes.Call, children[i + 1]); il.Emit(OpCodes.Ldc_I4_1); il.Emit(OpCodes.Add); }
+            else il.Emit(OpCodes.Ldc_I4_1);
+            il.Emit(OpCodes.Ret);
+        }
+        var root = CreateMethod("CheckpointIdentityLimit");
+        var body = root.GetILGenerator();
+        var saved = body.DeclareLocal(typeof(int));
+        body.Emit(OpCodes.Ldstr, root.Name);
+        body.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(Prefix))!);
+        body.Emit(OpCodes.Ldstr, new string('x', padding)); body.Emit(OpCodes.Pop);
+        if (children.Length == 0) body.Emit(OpCodes.Ldc_I4_0);
+        else
+        {
+            // Two references to the same child must not count as two distinct methods.
+            body.Emit(OpCodes.Call, children[0]); body.Emit(OpCodes.Pop);
+            body.Emit(OpCodes.Call, children[0]);
+        }
+        body.Emit(OpCodes.Stloc, saved);
+        body.Emit(OpCodes.Ldarg_0); body.Emit(OpCodes.Call, Await(typeof(ValueTask<>)));
+        body.Emit(OpCodes.Ldloc, saved); body.Emit(OpCodes.Add);
+        body.Emit(OpCodes.Ldarg_2); body.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(ReadLabel))!);
+        body.Emit(OpCodes.Add);
+        body.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(IdentityLimitResumed))!);
+        body.Emit(OpCodes.Ret);
+        root.CreateDelegate<Func<ValueTask<int>, int, object, Task<int>>>();
+        return root;
+    }
+
+    private static string IdentityOf(DynamicMethod method) => (string)Helpers.GetMethod(
+        "CheckpointMethodIdentity", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, new object[] { method })!;
+
+    // The manifest the identity is the hash of. Only this proof reads it, to measure the limits on it.
+    private static string IdentityTextOf(DynamicMethod method)
+    {
+        object resolver = typeof(DynamicMethod).GetField("_resolver", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(method)!;
+        return (string)resolver.GetType().GetMethod("GetCheckpointIdentityText", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(resolver, null)!;
+    }
+
+    private static Task<int> StartIdentityLimit(DynamicMethod method, PendingSource source) =>
+        method.CreateDelegate<Func<ValueTask<int>, int, object, Task<int>>>()(new ValueTask<int>(source, 0), 0, "hello");
+
+    // Two overloads that read the same once the type argument is put in: the identity must still tell them apart.
+    public static class IdentityOverloads<T>
+    {
+        public static int Pick(T value) => 1;
+        public static int Pick(int value) => 2;
+        public static int Choose<U>(U value) => 3;
+        public static int Choose<U>(int value) => 4;
+    }
+
+    private static DynamicMethod CreateOverloadProgram(MethodInfo callee)
+    {
+        var method = new DynamicMethod("CheckpointIdentityOverload", typeof(int), Type.EmptyTypes, typeof(CheckpointProof).Module);
+        var il = method.GetILGenerator();
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Call, callee);
+        il.Emit(OpCodes.Ret);
+        method.CreateDelegate<Func<int>>();
+        return method;
+    }
+
+    private static void IdentityOverloadProof()
+    {
+        foreach (string name in new[] { "Pick", "Choose" })
+        {
+            MethodInfo[] callees = typeof(IdentityOverloads<>).GetMethods().Where(m => m.Name == name)
+                .OrderBy(m => m.GetParameters()[0].ParameterType.IsGenericParameter ? 0 : 1)
+                .Select(m => (MethodInfo)typeof(IdentityOverloads<int>).GetMemberWithSameMetadataDefinitionAs(m))
+                .Select(m => m.IsGenericMethodDefinition ? m.MakeGenericMethod(typeof(int)) : m).ToArray();
+            Require(callees.Length == 2 && callees[0].ToString() == callees[1].ToString(), "The overloads do not read the same: " + name);
+            DynamicMethod[] programs = callees.Select(CreateOverloadProgram).ToArray();
+            int[] results = programs.Select(program => program.CreateDelegate<Func<int>>()()).ToArray();
+            Require(results[0] != results[1], "The overload programs call one method: " + name);
+            Require(IdentityOf(programs[0]) == IdentityOf(CreateOverloadProgram(callees[0])), "One overload gave two identities: " + name);
+            Require(IdentityOf(programs[0]) != IdentityOf(programs[1]), "Overloads that read the same share an identity: " + name);
+        }
+        Console.WriteLine("PASS identity overloads: byTypeParameter=distinct byMethodParameter=distinct");
+    }
+
+    // One helper assembly, built anew at every call. Each build has its own module version ID, and "reversed"
+    // defines the types and members in the opposite order, which gives them other metadata tokens.
+    private static Assembly BuildIdentityHelper(bool reversed, bool addReturnsLong = false)
+    {
+        var assembly = new PersistedAssemblyBuilder(new AssemblyName("CheckpointIdentityHelper"), typeof(object).Assembly);
+        var module = assembly.DefineDynamicModule("CheckpointIdentityHelper");
+        void Calculator()
+        {
+            var type = module.DefineType("Identity.Calculator", TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed);
+            void Sum(Type operand, Type result)
+            {
+                var il = type.DefineMethod("Add", MethodAttributes.Public | MethodAttributes.Static, result, new[] { operand, operand }).GetILGenerator();
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldarg_1);
+                il.Emit(OpCodes.Add);
+                if (result != operand) il.Emit(OpCodes.Conv_I8);
+                il.Emit(OpCodes.Ret);
+            }
+            var members = new List<Action>
+            {
+                () => type.DefineField("Scale", typeof(int), FieldAttributes.Public | FieldAttributes.Static),
+                () => type.DefineField("Offset", typeof(int), FieldAttributes.Public | FieldAttributes.Static),
+                () => Sum(typeof(int), addReturnsLong ? typeof(long) : typeof(int)),
+                () => Sum(typeof(long), typeof(long)),
+            };
+            if (reversed) members.Reverse();
+            foreach (Action define in members) define();
+            type.CreateType();
+        }
+        void Box()
+        {
+            var type = module.DefineType("Identity.Box`1", TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed);
+            type.DefineGenericParameters("T");
+            var il = type.DefineMethod("Twice", MethodAttributes.Public | MethodAttributes.Static, typeof(int), new[] { typeof(int) }).GetILGenerator();
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ldc_I4_2);
+            il.Emit(OpCodes.Mul);
+            il.Emit(OpCodes.Ret);
+            type.CreateType();
+        }
+        var types = new List<Action> { Calculator, Box };
+        if (reversed) types.Reverse();
+        foreach (Action define in types) define();
+        using var image = new MemoryStream();
+        assembly.Save(image);
+        return Assembly.Load(image.ToArray());
+    }
+
+    // A method, a field, a method of a generic type and a type of the helper. It returns 6.
+    private static DynamicMethod CreateHelperProgram(Assembly helper)
+    {
+        Type calculator = helper.GetType("Identity.Calculator", throwOnError: true)!;
+        Type box = helper.GetType("Identity.Box`1", throwOnError: true)!.MakeGenericType(typeof(int));
+        var method = new DynamicMethod("CheckpointIdentityAcrossBuilds", typeof(int), Type.EmptyTypes, typeof(CheckpointProof).Module);
+        var il = method.GetILGenerator();
+        il.Emit(OpCodes.Ldc_I4_1);
+        il.Emit(OpCodes.Ldc_I4_2);
+        il.Emit(OpCodes.Call, calculator.GetMethod("Add", new[] { typeof(int), typeof(int) })!);
+        il.Emit(OpCodes.Ldsfld, calculator.GetField("Scale")!);
+        il.Emit(OpCodes.Add);
+        il.Emit(OpCodes.Call, box.GetMethod("Twice")!);
+        il.Emit(OpCodes.Ldtoken, calculator);
+        il.Emit(OpCodes.Pop);
+        il.Emit(OpCodes.Ret);
+        method.CreateDelegate<Func<int>>();
+        return method;
+    }
+
+    // The identity goes by name, so one program has one identity against two builds of an assembly.
+    private static void IdentityAcrossBuildsProof()
+    {
+        Assembly first = BuildIdentityHelper(reversed: false), second = BuildIdentityHelper(reversed: true);
+        static MethodInfo Add(Assembly helper) => helper.GetType("Identity.Calculator", throwOnError: true)!
+            .GetMethod("Add", new[] { typeof(int), typeof(int) })!;
+        Require(first.ManifestModule.ModuleVersionId != second.ManifestModule.ModuleVersionId &&
+            Add(first).MetadataToken != Add(second).MetadataToken, "The two builds do not differ by module version ID and token.");
+        DynamicMethod onFirst = CreateHelperProgram(first), onSecond = CreateHelperProgram(second);
+        Require(onFirst.CreateDelegate<Func<int>>()() == 6 && onSecond.CreateDelegate<Func<int>>()() == 6, "The helper program failed.");
+        Require(IdentityTextOf(onFirst) == IdentityTextOf(onSecond) && IdentityOf(onFirst) == IdentityOf(onSecond),
+            "One program has two identities against two builds of an assembly.");
+        // A build the program no longer fits: its Add returns another type. The program is not run against it.
+        DynamicMethod onChanged = CreateHelperProgram(BuildIdentityHelper(reversed: false, addReturnsLong: true));
+        Require(IdentityOf(onChanged) != IdentityOf(onFirst), "A changed member did not change the identity.");
+        Console.WriteLine("PASS identity across builds: moduleVersionIds=distinct tokens=distinct identities=equal changedMember=distinct");
+    }
+
+    private static void IdentityLimitProof(string path)
+    {
+        IdentityOverloadProof();
+        IdentityAcrossBuildsProof();
+        // Both limits are on the manifest, the text the identity is the hash of.
+        const int maximum = 1048576;
+        int baseline = IdentityTextOf(CreateIdentityLimitProgram(1, 0)).Length;
+        int padding = maximum - baseline;
+        padding -= padding.ToString(System.Globalization.CultureInfo.InvariantCulture).Length - 1;
+        foreach (var shape in new[] { (Name: "methods", Accepted: CreateIdentityLimitProgram(64, 0),
+                Rejected: CreateIdentityLimitProgram(65, 0), Expected: 109, Error: "Checkpoint method graph is too large."),
+            (Name: "characters", Accepted: CreateIdentityLimitProgram(1, padding),
+                Rejected: CreateIdentityLimitProgram(1, padding + 1), Expected: 46, Error: "Checkpoint method identity is too large.") })
+        {
+            s_restoring = false; s_identityResumes = 0;
+            string identity = IdentityTextOf(shape.Accepted);
+            Require(IdentityOf(shape.Accepted).Length == 40, "The identity is not the hash of its manifest.");
+            if (shape.Name == "characters") Require(identity.Length == maximum, "Identity character boundary drifted.");
+            else Require(identity.Contains("9:reference", StringComparison.Ordinal), "Repeated dynamic method was not represented by reference.");
+            ExpectNotSupported(() => IdentityOf(shape.Rejected), shape.Name + " identity one-over", shape.Error);
+            var source = new PendingSource(); var pending = StartIdentityLimit(shape.Accepted, source);
+            Require(!pending.IsCompleted && ReferenceEquals(source.CallbackState, pending), "Identity-limit method did not park.");
+            var frames = (object[][])Capture.Invoke(null, new object[] { pending, new[] { shape.Accepted } })!;
+            var capture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!.MakeGenericMethod(typeof(int));
+            var restore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.NonPublic | BindingFlags.Static)!.MakeGenericMethod(typeof(int));
+            var validate = Helpers.GetMethod("ValidateMethodCheckpointForTesting", BindingFlags.NonPublic | BindingFlags.Static)!.MakeGenericMethod(typeof(int));
+            int codecs = 0, policies = 0, observers = 0;
+            Func<object, object> codec = value => { codecs++; return value; };
+            Action<int[]> policy = _ => policies++;
+            Action<object> observer = _ => observers++;
+            var hostFrames = (object[][])capture.Invoke(null, new object?[] { pending, new[] { shape.Accepted }, codec, policy })!;
+            Require(codecs == 1 && policies == 1, "Identity-limit host capture failed.");
+            var overSource = new PendingSource(); var over = StartIdentityLimit(shape.Rejected, overSource);
+            ExpectNotSupported(() => Capture.Invoke(null, new object[] { over, new[] { shape.Rejected } }),
+                shape.Name + " identity capture", shape.Error);
+            codecs = policies = 0;
+            ExpectNotSupported(() => capture.Invoke(null, new object?[] { over, new[] { shape.Rejected }, codec, policy }),
+                shape.Name + " identity host capture", shape.Error);
+            // Capture currently runs its read-only slot policy before building the
+            // canonical identity; value encoding remains deferred until all frames pass.
+            Require(codecs == 0 && policies == 1, "Identity capture rejection changed callback ordering.");
+            codecs = policies = 0;
+            ExpectNotSupported(() => RestoreFrames(frames, new[] { shape.Rejected }, 41, observer), shape.Name + " identity restore", shape.Error);
+            ExpectNotSupported(() => restore.Invoke(null, new object?[] { hostFrames, new[] { shape.Rejected }, Task.FromResult(41), codec, policy }),
+                shape.Name + " identity host restore", shape.Error);
+            ExpectNotSupported(() => validate.Invoke(null, new object?[] { hostFrames, new[] { shape.Rejected }, Task.FromResult(41), true, policy }),
+                shape.Name + " identity preflight", shape.Error);
+            Require(codecs == 0 && policies == 0 && observers == 0 && s_identityResumes == 0,
+                "Identity rejection reached decoding, policy, observation or resumed code.");
+            s_restoring = true; int prefixes = s_prefixCalls;
+            var accepted = RestoreFrames(frames, new[] { shape.Accepted }, 41, observer);
+            Require(accepted.GetAwaiter().GetResult() == shape.Expected && s_identityResumes == 1 && observers == 1,
+                "Identity-limit standalone restore failed.");
+            validate.Invoke(null, new object?[] { hostFrames, new[] { shape.Accepted }, Task.FromResult(41), true, policy });
+            policies = 0; s_identityResumes = 0;
+            var host = (Task<int>)restore.Invoke(null, new object?[] { hostFrames, new[] { shape.Accepted }, Task.FromResult(41), codec, policy })!;
+            Require(host.GetAwaiter().GetResult() == shape.Expected && codecs == 1 && policies == 1 &&
+                s_identityResumes == 1 && s_prefixCalls == prefixes, "Identity-limit host restore failed or replayed.");
+            Console.WriteLine($"PASS identity boundary: kind={shape.Name} identityCharacters={identity.Length} result={shape.Expected} rejectionChecks=5 rejectedCodecCalls=0 capturePolicyCallsBeforeRejection=1 restorePolicyCallsBeforeRejection=0 prefixReplay=0");
+            GC.KeepAlive(source); GC.KeepAlive(pending); GC.KeepAlive(over); GC.KeepAlive(overSource);
+        }
+        File.WriteAllText(path, $"methods=64/65;characters=1048576/1048577;padding={padding};stateBoundary=0;freshProcessRestore=false");
+    }
+
+    private static PendingSource? s_nextWait;
+    public static ValueTask<int> NextWait() => new(s_nextWait ?? throw new Exception("Missing wait"), 0);
+
+    private static DynamicMethod[] CreateReuseProgram()
+    {
+        DynamicMethod method = CreateMethod("CheckpointReuse");
+        var il = method.GetILGenerator();
+        var saved = il.DeclareLocal(typeof(int));
+        var unchanged = il.DeclareLocal(typeof(int));
+        il.Emit(OpCodes.Ldstr, "reuse");
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(Prefix))!);
+        il.Emit(OpCodes.Ldarg_1); il.Emit(OpCodes.Stloc, saved);
+        il.Emit(OpCodes.Ldarg_1); il.Emit(OpCodes.Ldc_I4, 7); il.Emit(OpCodes.Add);
+        il.Emit(OpCodes.Stloc, unchanged);
+        for (int i = 0; i < 3; i++)
+        {
+            il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(NextWait))!);
+            il.Emit(OpCodes.Call, Await(typeof(ValueTask<>)));
+            il.Emit(OpCodes.Ldloc, saved);
+            il.Emit(OpCodes.Ldc_I4, i == 0 ? 100 : i == 1 ? 10 : 3);
+            il.Emit(OpCodes.Mul);
+            il.Emit(OpCodes.Add);
+            il.Emit(OpCodes.Stloc, saved);
+        }
+        il.Emit(OpCodes.Ldloc, saved);
+        il.Emit(OpCodes.Ldloc, unchanged); il.Emit(OpCodes.Add);
+        il.Emit(OpCodes.Ldarg_2);
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(ReadLabel))!);
+        il.Emit(OpCodes.Add); il.Emit(OpCodes.Ret);
+        // The decoy has only state 0; probing it with state 1 must not throw.
+        return new[] { CreateProgram()[0], method };
+    }
+
+    private static Task<int> RestoreFrames(object[][] records, DynamicMethod[] methods, int result, Action<object>? observer = null) =>
+        (Task<int>)Restore.Invoke(null, new object?[] { records, methods, result, observer })!;
+
+    private static void ProduceReuse(string path)
+    {
+        var methods = CreateReuseProgram();
+        s_nextWait = new PendingSource();
+        Task<int> pending = Start(methods, s_nextWait, "hello");
+        var first = (object[][])Capture.Invoke(null, new object[] { pending, methods })!;
+        using var registered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var next = new PendingSource();
+        int registrationTimedOut = 0;
+        next.Registered = () =>
+        {
+            registered.Set();
+            if (!release.Wait(TimeSpan.FromSeconds(20))) Interlocked.Exchange(ref registrationTimedOut, 1);
+        };
+        s_nextWait = next;
+        var resuming = Task.Factory.StartNew(() => RestoreFrames(first, methods, 1),
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        object[][] records;
+        try
+        {
+            Require(registered.Wait(TimeSpan.FromSeconds(20)), "Second park was never registered.");
+            var parked = (Task<int>)next.CallbackState!;
+            Require(!parked.IsCompleted, "Expected a quiescent second suspension.");
+            records = (object[][])Capture.Invoke(null, new object[] { parked, methods })!;
+        }
+        finally { release.Set(); }
+        Require(ReferenceEquals(resuming.GetAwaiter().GetResult(), next.CallbackState) && registrationTimedOut == 0,
+            "The handoff did not capture the registered task while the notifier was held.");
+        Require((int)records[0][1] > 0, "Reuse fixture must checkpoint a nonzero state.");
+        Require(((object?[])records[0][3]).Any(value => value is int number && number == 17), "Unchanged local was not saved.");
+        Write(path, records);
+    }
+
+    private static void ResumeReuse(string path)
+    {
+        object[][] records = Read(path, out int producer);
+        Require(producer != Environment.ProcessId, "Reuse restore must be in a fresh process.");
+        var methods = CreateReuseProgram();
+        var changed = records.Select(r => (object[])r.Clone()).ToArray();
+        changed[0][1] = 0;
+        ExpectNotSupported(() => RestoreFrames(changed, methods, 2), "swapped await state");
+        s_nextWait = new PendingSource();
+        object? restoredFrame = null;
+        Task<int> third = RestoreFrames(records, methods, 2, frame => restoredFrame = frame);
+        Require(!third.IsCompleted, "Nonzero restore must suspend again.");
+        object? cursor = typeof(Task).GetField("m_stateObject", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(third);
+        bool reused = false;
+        while (cursor != null)
+        {
+            if (ReferenceEquals(cursor, restoredFrame)) { reused = true; break; }
+            FieldInfo? next = null;
+            for (Type? type = cursor.GetType(); type != null && next == null; type = type.BaseType)
+                next = type.GetField("Next", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+            cursor = next?.GetValue(cursor);
+        }
+        Require(reused, "The restored continuation object was not reused.");
+        var final = (object[][])Capture.Invoke(null, new object[] { third, methods })!;
+        Require((int)final[0][1] > (int)records[0][1], "Third await did not advance state.");
+        int result = RestoreFrames(final, methods, 3).GetAwaiter().GetResult();
+        Require(result == 30061, "Reuse lost changed or unchanged locals: " + result);
+        Console.WriteLine("PASS nonzero-state restore/resuspend reuse=true result=" + result);
+    }
+
+
+    public static void AssertDefaultScheduler()
+    {
+        Require(TaskScheduler.Current == TaskScheduler.Default, "Restore ignored ContinueOnThreadPool.");
+    }
+
+    private static DynamicMethod[] CreateSchedulingProgram()
+    {
+        DynamicMethod inner = CreateMethod("CheckpointThreadPoolInner");
+        var body = inner.GetILGenerator();
+        body.Emit(OpCodes.Ldarg_0);
+        body.Emit(OpCodes.Call, Await(typeof(ValueTask<>)));
+        body.Emit(OpCodes.Ldc_I4_1); body.Emit(OpCodes.Add); body.Emit(OpCodes.Ret);
+
+        DynamicMethod method = CreateMethod("CheckpointThreadPool");
+        var il = method.GetILGenerator();
+        il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldarg_1); il.Emit(OpCodes.Ldarg_2);
+        // Only a runtime-async call followed by configured Task await gets the
+        // compile-time ContinueOnThreadPool flag; an ordinary task wait does not.
+        il.Emit(OpCodes.Call, inner);
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Call, typeof(Task<int>).GetMethod("ConfigureAwait", new[] { typeof(bool) })!);
+        il.Emit(OpCodes.Call, Await(typeof(ConfiguredTaskAwaitable<>)));
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(AssertDefaultScheduler))!);
+        il.Emit(OpCodes.Ret);
+        return new[] { inner, method };
+    }
+
+    private static void ProduceScheduling(string path)
+    {
+        var methods = CreateSchedulingProgram();
+        var source = new PendingSource();
+        Task<int> pending = Start(methods, source, "unused");
+        var records = (object[][])Capture.Invoke(null, new object[] { pending, methods })!;
+        Require(records.Any(record => (((int[])record[2])[2] & 1) != 0), "Fixture did not set ContinueOnThreadPool.");
+        Write(path, records);
+    }
+
+    private static void ResumeScheduling(string path)
+    {
+        var records = Read(path, out _);
+        var methods = CreateSchedulingProgram();
+        var schedulers = new ConcurrentExclusiveSchedulerPair(TaskScheduler.Default, maxConcurrencyLevel: 1);
+        try
+        {
+            int result = Task.Factory.StartNew(() =>
+            {
+                Require(TaskScheduler.Current != TaskScheduler.Default, "Scheduling fixture did not enter a custom scheduler.");
+                return RestoreFrames(records, methods, 41);
+            }, CancellationToken.None, TaskCreationOptions.None, schedulers.ExclusiveScheduler).Unwrap().GetAwaiter().GetResult();
+            Require(result == 42, "Scheduled restore changed the result.");
+            Console.WriteLine("PASS ContinueOnThreadPool under custom scheduler");
+        }
+        finally { schedulers.Complete(); }
+    }
+
+
+    private static int s_classInitializations;
+    public static class CheckpointStatics
+    {
+        public static readonly int A;
+        public static readonly int B;
+        public static readonly object Label;
+        static CheckpointStatics()
+        {
+            A = 17; B = 31; Label = new string("statics".ToCharArray());
+            Interlocked.Increment(ref s_classInitializations);
+        }
+    }
+
+    private static int s_metadataInitializations;
+    private static class MetadataInitializer
+    {
+        internal static readonly int Value;
+        static MetadataInitializer()
+        {
+            Value = 17;
+            Interlocked.Increment(ref s_metadataInitializations);
+        }
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public static async Task<int> Run(ValueTask<int> gate)
+        {
+            Prefix("metadata-initializer");
+            return await gate + Value;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static async Task<int> HoldWeak(object value, ValueTask<int> gate)
+    {
+        int result = await gate;
+        GC.KeepAlive(value);
+        return result;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static async Task<int> HoldNullable((string Text, int Count)? value, ValueTask<int> gate)
+    {
+        int result = await gate;
+        return result + (value is { } item ? item.Text.Length + item.Count : 0);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static async Task HoldVoidTask(ValueTask<int> gate) { _ = await gate; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static async ValueTask HoldVoidValueTask(ValueTask<int> gate) { _ = await gate; }
+
+    private static void CheckVoidRoots()
+    {
+        var capture = Helpers.GetMethod("CaptureVoidMethodCheckpointForTesting", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var restore = Helpers.GetMethod("RestoreVoidMethodCheckpointForTesting", BindingFlags.Static | BindingFlags.NonPublic)!;
+        Func<object, object> codec = v => v;
+        foreach (string name in new[] { nameof(HoldVoidTask), nameof(HoldVoidValueTask) })
+        {
+            MethodInfo[] methods = { typeof(CheckpointProof).GetMethod(name)! };
+            var gate = new ValueTask<int>(new PendingSource(), 0);
+            Task pending = name == nameof(HoldVoidTask) ? HoldVoidTask(gate) : HoldVoidValueTask(gate).AsTask();
+            var records = (object[][])capture.Invoke(null, new object?[] { pending, methods, codec, null })!;
+            var timeout = new TimeoutException();
+            foreach (Task<int> outcome in new[] { Task.FromResult(1), Task.FromException<int>(timeout),
+                Task.FromCanceled<int>(new CancellationToken(true)) })
+            {
+                var result = (Task)restore.Invoke(null, new object?[] { records, methods, outcome, codec, null })!;
+                try { result.GetAwaiter().GetResult(); }
+                catch (OperationCanceledException) when (outcome.IsCanceled) { }
+                catch (TimeoutException error) when (ReferenceEquals(error, timeout)) { }
+                Require(outcome.Status == result.Status, "Void root changed a committed outcome.");
+            }
+        }
+        Console.WriteLine("PASS Task and ValueTask roots preserve success, timeout and cancellation");
+    }
+
+    private static void CheckWeakAndNullableBindings()
+    {
+        var capture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.Static | BindingFlags.NonPublic)!.MakeGenericMethod(typeof(int));
+        var restore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.Static | BindingFlags.NonPublic)!.MakeGenericMethod(typeof(int));
+        var a = new AssemblyLoadContext("checkpoint-a", true);
+        var b = new AssemblyLoadContext("checkpoint-b", true);
+        try
+        {
+            Type Payload(AssemblyLoadContext alc) => alc.LoadFromAssemblyPath(typeof(CheckpointProof).Assembly.Location)
+                .GetType(typeof(PendingSource).FullName!, true)!;
+            Type left = Payload(a), right = Payload(b);
+            object saved = RuntimeHelpers.GetUninitializedObject(left);
+            object wrong = RuntimeHelpers.GetUninitializedObject(right);
+            MethodInfo[] methods = { typeof(CheckpointProof).GetMethod(nameof(HoldWeak))!,
+                left.GetMethod(nameof(PendingSource.GetStatus))!, right.GetMethod(nameof(PendingSource.GetStatus))! };
+            var pending = HoldWeak(saved, new ValueTask<int>(new PendingSource(), 0));
+            int encodes = 0;
+            Func<object, object> encode = v => ReferenceEquals(v, saved) ? ++encodes : throw new InvalidOperationException("Unexpected weak-slot binding.");
+            var frames = (object[][])capture.Invoke(null, new object?[] { pending, methods, encode, null })!;
+            Require(encodes == 1, "Weak slot must be present in the checkpoint.");
+            Func<object, object> decode = _ => wrong;
+            ExpectNotSupported(() => restore.Invoke(null, new object?[] { frames, methods, Task.FromResult(7), decode, null }),
+                "identical weak type from another load", "Checkpoint reference type differs from capture.");
+            decode = _ => saved;
+            Require(((Task<int>)restore.Invoke(null, new object?[] { frames, methods, Task.FromResult(7), decode, null })!).Result == 7,
+                "The registered load failed to restore.");
+        }
+        finally { a.Unload(); b.Unload(); }
+
+        foreach (var value in new (string Text, int Count)?[] { null, ("abcd", 3) })
+        {
+            MethodInfo[] methods = { typeof(CheckpointProof).GetMethod(nameof(HoldNullable))! };
+            var pending = HoldNullable(value, new ValueTask<int>(new PendingSource(), 0));
+            Func<object, object> codec = v => v;
+            var records = (object[][])capture.Invoke(null, new object?[] { pending, methods, codec, null })!;
+            var result = (Task<int>)restore.Invoke(null, new object?[] { records, methods, Task.FromResult(10), codec, null })!;
+            Require(result.GetAwaiter().GetResult() == (value.HasValue ? 17 : 10), "Nullable with references changed across restore.");
+        }
+        Console.WriteLine("PASS weak load-context identity and nullable values with references");
+    }
+
+    private static MethodInfo MetadataInitializerMethod() => typeof(MetadataInitializer).GetMethod(nameof(MetadataInitializer.Run))!;
+
+    private static void ProduceMetadataInitializer(string path)
+    {
+        MethodInfo[] methods = { MetadataInitializerMethod() };
+        var task = MetadataInitializer.Run(new ValueTask<int>(new PendingSource(), 0));
+        var capture = Helpers.GetMethod("CaptureMethodCheckpointForTesting", BindingFlags.Static | BindingFlags.NonPublic)!.MakeGenericMethod(typeof(int));
+        Func<object, object> unexpected = value => throw new InvalidOperationException("Unexpected metadata initializer binding: " + value.GetType());
+        var frames = (object[][])capture.Invoke(null, new object?[] { task, methods, unexpected, null })!;
+        object[] f = frames.Single();
+        Require(f[4] == null && s_metadataInitializations == 1, "Initializer capture must have no context binding.");
+        Write(path, new[] { new[] { f[0], f[1], f[2], f[3], f[5], f[6] } });
+        CheckWeakAndNullableBindings();
+        CheckVoidRoots();
+    }
+
+    private static void RestoreMetadataInitializer(string path)
+    {
+        object[] f = Read(path, out int producer).Single();
+        MethodInfo[] methods = { MetadataInitializerMethod() };
+        Require(producer != Environment.ProcessId && s_metadataInitializations == 0, "Metadata restore must start cold.");
+        var frames = new[] { new object[] { f[0], f[1], f[2], f[3], null!, f[4], f[5] } };
+        var restore = Helpers.GetMethod("RestoreMethodCheckpointWithOutcomeForTesting", BindingFlags.Static | BindingFlags.NonPublic)!.MakeGenericMethod(typeof(int));
+        Func<object, object> unexpected = value => throw new InvalidOperationException("Unexpected metadata initializer payload: " + value);
+        s_restoring = true;
+        var task = (Task<int>)restore.Invoke(null, new object?[] { frames, methods, Task.FromResult(41), unexpected, null })!;
+        Require(task.GetAwaiter().GetResult() == 58 && s_metadataInitializations == 1, "Metadata restore skipped its declaring type initializer.");
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int InlineStaticRead() => CheckpointStatics.A * 100 + CheckpointStatics.B;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int CombineStaticTemps(int a, int b, int c, object label, int result) =>
+        a - b * (c - result) + ((string)label).Length * 7;
+
+    private static DynamicMethod CreateStaticProgram()
+    {
+        var method = CreateMethod("CheckpointClassInitialization");
+        var il = method.GetILGenerator();
+        // Deliberately leave distinct values on the IL evaluation stack over the await.
+        // These become JIT temporaries, not named IL locals.
+        il.Emit(OpCodes.Ldsfld, typeof(CheckpointStatics).GetField(nameof(CheckpointStatics.A))!);
+        il.Emit(OpCodes.Ldc_I4, 1000); il.Emit(OpCodes.Mul);
+        il.Emit(OpCodes.Ldsfld, typeof(CheckpointStatics).GetField(nameof(CheckpointStatics.B))!);
+        il.Emit(OpCodes.Ldc_I4, 10); il.Emit(OpCodes.Mul);
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(InlineStaticRead))!);
+        il.Emit(OpCodes.Ldsfld, typeof(CheckpointStatics).GetField(nameof(CheckpointStatics.Label))!);
+        il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Call, Await(typeof(ValueTask<>)));
+        il.Emit(OpCodes.Call, typeof(CheckpointProof).GetMethod(nameof(CombineStaticTemps))!);
+        il.Emit(OpCodes.Ret);
+        return method;
+    }
+
+    private static void ClassInitializationProof(string path, bool produce, bool hot)
+    {
+        Require(s_classInitializations == 0, "Class-state fixture must start in a fresh process.");
+        if (hot) RuntimeHelpers.RunClassConstructor(typeof(CheckpointStatics).TypeHandle);
+        var method = CreateStaticProgram();
+        var methods = new[] { method };
+        if (produce)
+        {
+            var invoke = method.CreateDelegate<Func<ValueTask<int>, int, object, Task<int>>>();
+            Require(s_classInitializations == (hot ? 1 : 0), "Compilation executed the static constructor.");
+            var source = new PendingSource();
+            Task<int> pending = invoke(new ValueTask<int>(source, 0), 0, "unused");
+            Require(!pending.IsCompleted && s_classInitializations == 1, "Static fixture did not suspend.");
+            var records = (object[][])Capture.Invoke(null, new object[] { pending, methods })!;
+            var values = (object?[])records.Single()[3];
+            Require(new[] { 17000, 310, 1731 }.All(expected => values.Contains(expected)),
+                "Distinct evaluation-stack temporaries were not captured.");
+            Write(path, records);
+        }
+        else
+        {
+            var records = Read(path, out int producer);
+            Require(producer != Environment.ProcessId, "Static fixture must restore in a fresh process.");
+            int actual = RestoreFrames(records, methods, 41).GetAwaiter().GetResult();
+            Require(actual == -506851, "Static temporary meanings changed: " + actual);
+            Require(s_classInitializations == (hot ? 1 : 0), "Restore replayed static initialization.");
+        }
+        Console.WriteLine($"PASS class initialization {(produce ? "capture" : "restore")} {(hot ? "hot" : "cold")}");
+    }
+
+    private static DynamicMethod[] WithNonTaskDecoys(DynamicMethod owner)
+    {
+        var integer = new DynamicMethod("CheckpointIntDecoy", typeof(int), Type.EmptyTypes);
+        var il = integer.GetILGenerator(); il.Emit(OpCodes.Ldc_I4, 123); il.Emit(OpCodes.Ret);
+        var empty = new DynamicMethod("CheckpointVoidDecoy", typeof(void), Type.EmptyTypes);
+        empty.GetILGenerator().Emit(OpCodes.Ret);
+        Require(integer.CreateDelegate<Func<int>>()() == 123, "Invalid integer decoy.");
+        empty.CreateDelegate<Action>()();
+        var noAwait = CreateMethod("CheckpointNoSuspensionDecoy");
+        var noAwaitIl = noAwait.GetILGenerator(); noAwaitIl.Emit(OpCodes.Ldc_I4_0); noAwaitIl.Emit(OpCodes.Ret);
+        Require(noAwait.CreateDelegate<Func<ValueTask<int>, int, object, Task<int>>>()(
+            default, 0, "unused").GetAwaiter().GetResult() == 0, "Invalid no-suspension decoy.");
+        return new[] { integer, empty, noAwait, owner };
+    }
+
+    private static void PublicationProof(bool disabled)
+    {
+        var method = CreateMethod("CheckpointPublicationGap");
+        var il = method.GetILGenerator();
+        il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Call, Await(typeof(ValueTask<>)));
+        il.Emit(OpCodes.Ldarg_1); il.Emit(OpCodes.Add); il.Emit(OpCodes.Ret);
+        var methods = WithNonTaskDecoys(method);
+        Task<int> StartOne() => method.CreateDelegate<Func<ValueTask<int>, int, object, Task<int>>>()(
+            new ValueTask<int>(new PendingSource(), 0), 10, "unused");
+        if (disabled)
+        {
+            var pending = StartOne();
+            ExpectNotSupported(() => Capture.Invoke(null, new object[] { pending, methods }), "metadata disabled without publication wait");
+            return;
+        }
+        var query = Helpers.GetMethod("CheckpointPublicationStateForTesting", BindingFlags.Static | BindingFlags.NonPublic)!;
+        Require(query != null, "CoreLib publication test hook is missing (check ILLink roots).");
+        int State() => (int)query!.Invoke(null, new object[] { method })!;
+        var publisher = Task.Factory.StartNew(StartOne, CancellationToken.None,
+            TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        Require(SpinWait.SpinUntil(() => State() != 0, TimeSpan.FromSeconds(8)),
+            "Publisher never reached the forced gap.");
+        Require(State() == 1, "Publisher did not wait for a checkpoint reader.");
+        // The second invocation sees installed native code while the winner is paused.
+        var waiting = StartOne();
+        var captured = (object[][])Capture.Invoke(null, new object[] { waiting, methods })!;
+        Require(State() == 2, "Capture did not enter the metadata publication gap.");
+        Require(publisher.Wait(TimeSpan.FromSeconds(5)), "Publisher failed to complete.");
+        Require(!publisher.Result.IsCompleted && (int)captured.Single()[0] == 3,
+            "Capture did not skip non-Task/no-schema decoys and select the owner.");
+        Require(RestoreFrames(captured, methods, 41).GetAwaiter().GetResult() == 51,
+            "Published checkpoint failed to resume.");
+        Console.WriteLine("PASS forced publication gap: reader waited; int/void/no-schema decoys skipped");
+    }
+
+    private static void ExpectNotSupported(Action action, string name, string? expectedMessage = null)
+    {
+        try { action(); }
+        catch (TargetInvocationException ex) when (ex.InnerException is NotSupportedException)
+        {
+            if (expectedMessage != null) Require(ex.InnerException.Message == expectedMessage, "Unexpected rejection: " + ex.InnerException.Message);
+            Console.WriteLine("Rejected " + name);
+            return;
+        }
+        throw new Exception("Expected rejection: " + name);
+    }
+
+    private static string Fingerprint() =>
+        Environment.GetEnvironmentVariable("CHECKPOINT_PROOF_RUNTIME_SHA256")
+            ?? throw new Exception("Runner must supply the exact runtime fingerprint.");
+
+    // Exercise the standalone file codec independently of native restore. These
+    // synthetic envelopes test serialized counts, not native schema semantics.
+    private static void FormatLimitsProof(string path)
+    {
+        const int fileBytes = 1024 * 1024;
+        const string invalidLength = "Invalid snapshot length.";
+        const string oversized = "Snapshot exceeds proof limit.";
+        int rejected = 0;
+        object[] Frame(int schemaCount = 11, int referenceCount = 0, int valueCount = 0) =>
+            new object[] { 0, 0, new int[schemaCount],
+                Enumerable.Range(0, valueCount).Select(i => (object)i).ToArray(),
+                string.Empty, new string?[referenceCount] };
+        void Reject(Action action, string message)
+        {
+            try { action(); }
+            catch (InvalidOperationException ex) when (ex.Message == message)
+            {
+                rejected++;
+                return;
+            }
+            throw new Exception("Expected proof format rejection: " + message);
+        }
+        void RejectWrite(object[][] frames, string message)
+        {
+            byte[] published = File.ReadAllBytes(path);
+            Reject(() => Write(path, frames), message);
+            Require(File.ReadAllBytes(path).SequenceEqual(published),
+                "Rejected write changed the published checkpoint.");
+        }
+
+        Write(path, new[] { Frame() });
+        var minimal = Read(path, out int producer);
+        Require(producer == Environment.ProcessId && minimal.Length == 1 &&
+            ((int[])minimal[0][2]).Length == 11 && ((object[])minimal[0][3]).Length == 0 &&
+            ((string?[])minimal[0][5]).Length == 0, "Minimum proof counts did not round-trip.");
+        byte[] seed = File.ReadAllBytes(path);
+        long frameOffset, schemaOffset, referenceOffset, valueOffset;
+        using (var reader = new BinaryReader(new MemoryStream(seed)))
+        {
+            for (int i = 0; i < 4; i++) reader.ReadString();
+            reader.ReadInt32(); // producer
+            frameOffset = reader.BaseStream.Position;
+            reader.ReadInt32(); // frames
+            reader.ReadInt32(); // method
+            reader.ReadInt32(); // state
+            schemaOffset = reader.BaseStream.Position;
+            int schemaCount = reader.ReadInt32();
+            reader.BaseStream.Position += sizeof(int) * schemaCount;
+            reader.ReadString(); // method identity
+            referenceOffset = reader.BaseStream.Position;
+            Require(reader.ReadInt32() == 0, "Expected empty seed reference types.");
+            valueOffset = reader.BaseStream.Position;
+            Require(reader.ReadInt32() == 0, "Expected empty seed values.");
+        }
+        void RejectReadCount(long offset, int count)
+        {
+            byte[] bytes = (byte[])seed.Clone();
+            using (var writer = new BinaryWriter(new MemoryStream(bytes)))
+            {
+                writer.BaseStream.Position = offset;
+                writer.Write(count);
+            }
+            File.WriteAllBytes(path, bytes);
+            Reject(() => Read(path, out _), invalidLength);
+        }
+        foreach (int count in new[] { -1, 0, 17 }) RejectReadCount(frameOffset, count);
+        foreach (int count in new[] { -1, 10, 7180 }) RejectReadCount(schemaOffset, count);
+        foreach (int count in new[] { -1, 1025 }) RejectReadCount(referenceOffset, count);
+        foreach (int count in new[] { -1, 1025 }) RejectReadCount(valueOffset, count);
+        File.WriteAllBytes(path, seed);
+
+        RejectWrite(Array.Empty<object[]>(), invalidLength);
+        RejectWrite(Enumerable.Range(0, 17).Select(_ => Frame()).ToArray(), invalidLength);
+        RejectWrite(new[] { Frame(schemaCount: 10) }, invalidLength);
+        RejectWrite(new[] { Frame(schemaCount: 7180) }, invalidLength);
+        RejectWrite(new[] { Frame(referenceCount: 1025) }, invalidLength);
+        RejectWrite(new[] { Frame(valueCount: 1025) }, invalidLength);
+
+        Write(path, Enumerable.Range(0, 16).Select(_ => Frame(7179, 1024, 1024)).ToArray());
+        var maximum = Read(path, out _);
+        Require(maximum.Length == 16 && maximum.All(frame =>
+            ((int[])frame[2]).Length == 7179 && ((string?[])frame[5]).Length == 1024 &&
+            ((object[])frame[3]).Length == 1024 && (int)((object[])frame[3])[1023] == 1023),
+            "Maximum proof counts did not round-trip.");
+
+        object[] sized = Frame(valueCount: 1);
+        ((object[])sized[3])[0] = string.Empty;
+        Write(path, new[] { sized });
+        // This ASCII payload uses a three-byte 7-bit length prefix, two more
+        // bytes than the empty string. Verify the resulting file size exactly.
+        string payload = new string('x', fileBytes - checked((int)new FileInfo(path).Length) - 2);
+        ((object[])sized[3])[0] = payload;
+        Write(path, new[] { sized });
+        Require(new FileInfo(path).Length == fileBytes, "Exact-limit file size was not exercised.");
+        Require((string)((object[])Read(path, out _)[0][3])[0] == payload,
+            "Exact-limit payload did not round-trip.");
+        ((object[])sized[3])[0] = payload + "x";
+        RejectWrite(new[] { sized }, oversized);
+        using (var stream = new FileStream(path, FileMode.Append)) stream.WriteByte(0);
+        Require(new FileInfo(path).Length == fileBytes + 1, "One-over file size was not exercised.");
+        Reject(() => Read(path, out _), oversized);
+        Require(rejected == 18, "Proof format rejection coverage changed.");
+        File.Delete(path);
+        File.Delete(path + ".tmp");
+        Console.WriteLine("PASS proof format limits: frames=16 schemaIntegers=7179 referenceTypes=1024 values=1024 bytes=1048576 rejectionCases=18");
+    }
+
+    private static void Write(string path, object[][] records)
+    {
+        // Reject unreadable counts before opening the staging file. Otherwise a
+        // successful publication could replace a readable checkpoint with one
+        // that our reader always rejects.
+        Bounded(records.Length, 1, MaxProofFrames);
+        foreach (object[] record in records)
+        {
+            Bounded(((int[])record[2]).Length, 11, MaxProofSchemaIntegers);
+            Bounded(((string?[])record[5]).Length, 0, MaxProofSlots);
+            Bounded(((object?[])record[3]).Length, 0, MaxProofSlots);
+        }
+        using (var stream = new FileStream(path + ".tmp", FileMode.Create, FileAccess.Write,
+                   FileShare.None, 4096, FileOptions.WriteThrough))
+        using (var writer = new BinaryWriter(stream))
+        {
+            writer.Write("RuntimeAsyncCheckpointProof-v3");
+            var strings = new Dictionary<string, int>(ReferenceEqualityComparer.Instance);
+            writer.Write(typeof(CheckpointProof).Module.ModuleVersionId.ToString());
+            writer.Write(typeof(object).Module.ModuleVersionId.ToString());
+            writer.Write(Fingerprint());
+            writer.Write(Environment.ProcessId);
+            writer.Write(records.Length);
+            foreach (object[] record in records)
+            {
+                writer.Write((int)record[0]);
+                writer.Write((int)record[1]);
+                int[] schema = (int[])record[2];
+                writer.Write(schema.Length);
+                foreach (int field in schema) writer.Write(field);
+                writer.Write((string)record[4]);
+                var referenceTypes = (string?[])record[5];
+                writer.Write(referenceTypes.Length);
+                foreach (string? type in referenceTypes) writer.Write(type ?? string.Empty);
+                object?[] values = (object?[])record[3];
+                writer.Write(values.Length);
+                foreach (object? value in values)
+                {
+                    switch (value)
+                    {
+                        case null: writer.Write((byte)0); break;
+                        case int number: writer.Write((byte)1); writer.Write(number); break;
+                        case string text:
+                            if (strings.TryGetValue(text, out int previous))
+                            {
+                                writer.Write((byte)3);
+                                writer.Write(previous);
+                            }
+                            else
+                            {
+                                strings.Add(text, strings.Count);
+                                writer.Write((byte)2);
+                                writer.Write(text);
+                            }
+                            break;
+                        default: throw new NotSupportedException();
+                    }
+                }
+            }
+            writer.Flush();
+            Require(stream.Length <= MaxProofFileBytes, "Snapshot exceeds proof limit.");
+            stream.Flush(flushToDisk: true);
+        }
+        File.Move(path + ".tmp", path, overwrite: true);
+    }
+
+    private static object[][] Read(string path, out int producer)
+    {
+        using var reader = new BinaryReader(File.OpenRead(path));
+        Require(reader.BaseStream.Length <= MaxProofFileBytes, "Snapshot exceeds proof limit.");
+        Require(reader.ReadString() == "RuntimeAsyncCheckpointProof-v3", "Unsupported proof file format; recapture with this build.");
+        var strings = new List<string>();
+        string ReadNewString()
+        {
+            string text = reader.ReadString();
+            strings.Add(text);
+            return text;
+        }
+        Require(reader.ReadString() == typeof(CheckpointProof).Module.ModuleVersionId.ToString(), "Program version mismatch.");
+        Require(reader.ReadString() == typeof(object).Module.ModuleVersionId.ToString(), "CoreLib version mismatch.");
+        Require(reader.ReadString() == Fingerprint(), "Runtime binary fingerprint mismatch.");
+        producer = reader.ReadInt32();
+        int count = Bounded(reader.ReadInt32(), 1, MaxProofFrames);
+        var records = new object[count][];
+        for (int f = 0; f < count; f++)
+        {
+            int method = reader.ReadInt32(), state = reader.ReadInt32();
+            var schema = new int[Bounded(reader.ReadInt32(), 11, MaxProofSchemaIntegers)];
+            for (int i = 0; i < schema.Length; i++) schema[i] = reader.ReadInt32();
+            string identity = reader.ReadString();
+            var referenceTypes = new string?[Bounded(reader.ReadInt32(), 0, MaxProofSlots)];
+            for (int i = 0; i < referenceTypes.Length; i++) { string type = reader.ReadString(); referenceTypes[i] = type.Length == 0 ? null : type; }
+            var values = new object?[Bounded(reader.ReadInt32(), 0, MaxProofSlots)];
+            for (int i = 0; i < values.Length; i++)
+                values[i] = reader.ReadByte() switch
+                {
+                    0 => null,
+                    1 => reader.ReadInt32(),
+                    2 => ReadNewString(),
+                    3 => strings[Bounded(reader.ReadInt32(), 0, strings.Count - 1)],
+                    _ => throw new InvalidDataException("Unknown value kind.")
+                };
+            records[f] = new object[] { method, state, schema, values, identity, referenceTypes };
+        }
+        Require(reader.BaseStream.Position == reader.BaseStream.Length, "Trailing snapshot bytes.");
+        return records;
+    }
+
+    private static int Bounded(int value, int min, int max)
+    {
+        Require(value >= min && value <= max, "Invalid snapshot length.");
+        return value;
+    }
+
+    private static void Require(bool condition, string message)
+    {
+        if (!condition) throw new InvalidOperationException(message);
+    }
+}

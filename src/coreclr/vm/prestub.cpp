@@ -47,6 +47,8 @@
 
 #ifndef DACCESS_COMPILE
 
+#include "asynccontinuations.h"
+
 EXTERN_C void STDCALL ThePreStubPatch();
 
 #ifndef FEATURE_PORTABLE_ENTRYPOINTS
@@ -1208,8 +1210,25 @@ BOOL PrepareCodeConfig::SetNativeCode(PCODE pCode, PCODE * ppAlternateCodeToUse)
 {
     LIMITED_METHOD_CONTRACT;
 
+    if (m_asyncCheckpointInfo != nullptr && !m_pMethodDesc->IsLCGMethod())
+    {
+        AsyncContinuationsManager* manager =
+            m_pMethodDesc->GetLoaderAllocator()->GetAsyncContinuationsManagerIfExists();
+        if (manager != nullptr)
+            manager->RecordCheckpointInfoForTesting(m_pMethodDesc, pCode, m_asyncCheckpointInfo);
+    }
+
     if (m_nativeCodeVersion.SetNativeCodeInterlocked(pCode, (PCODE)NULL))
     {
+        // Only the installed winner may publish checkpoint metadata. Failed/retried
+        // attempts and competing losers retain no metadata in the resolver.
+        if (m_pMethodDesc->IsLCGMethod())
+        {
+            // Complete publication even when the switch is off or no schema was emitted.
+            m_pMethodDesc->AsDynamicMethodDesc()->GetLCGMethodResolver()->SetAsyncCheckpointInfo(
+                m_asyncCheckpointInfo, m_checkpointPausePublication);
+            m_asyncCheckpointInfo = nullptr;
+        }
         return TRUE;
     }
 

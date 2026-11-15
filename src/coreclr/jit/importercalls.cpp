@@ -631,7 +631,7 @@ var_types Compiler::impImportCall(OPCODE                  opcode,
 
                 if (sig->isAsyncCall())
                 {
-                    impSetupAsyncCall(call->AsCall(), methHnd, opcode, prefixFlags, ni, di, &asyncCallUsesOwnContexts);
+                    impSetupAsyncCall(call->AsCall(), methHnd, sig, opcode, prefixFlags, ni, di, &asyncCallUsesOwnContexts);
 
                     if (compDonotInline())
                     {
@@ -953,7 +953,7 @@ var_types Compiler::impImportCall(OPCODE                  opcode,
 
     if (sig->isAsyncCall())
     {
-        impSetupAsyncCall(call->AsCall(), methHnd, opcode, prefixFlags, ni, di, &asyncCallUsesOwnContexts);
+        impSetupAsyncCall(call->AsCall(), methHnd, sig, opcode, prefixFlags, ni, di, &asyncCallUsesOwnContexts);
 
         if (compDonotInline())
         {
@@ -7762,6 +7762,7 @@ void Compiler::impCheckForPInvokeCall(
 // Arguments:
 //    call            - The call
 //    methHnd         - Method handle being called
+//    sig             - Signature of the async call. Its return type is the awaited result.
 //    opcode          - The IL opcode for the call
 //    prefixFlags     - Flags containing context handling information from IL
 //    ni              - Named intrinsic recognized for the callee (or NI_Illegal)
@@ -7772,15 +7773,18 @@ void Compiler::impCheckForPInvokeCall(
 //                      call's contexts, which the caller does via
 //                      impInheritAsyncContextsFromInliner.
 //
-void Compiler::impSetupAsyncCall(GenTreeCall*          call,
-                                 CORINFO_METHOD_HANDLE methHnd,
-                                 OPCODE                opcode,
-                                 unsigned              prefixFlags,
-                                 NamedIntrinsic        ni,
-                                 const DebugInfo&      callDI,
-                                 bool*                 usesOwnContexts)
+void Compiler::impSetupAsyncCall(GenTreeCall*            call,
+                                 CORINFO_METHOD_HANDLE   methHnd,
+                                 const CORINFO_SIG_INFO* sig,
+                                 OPCODE                  opcode,
+                                 unsigned                prefixFlags,
+                                 NamedIntrinsic          ni,
+                                 const DebugInfo&        callDI,
+                                 bool*                   usesOwnContexts)
 {
     AsyncCallInfo asyncInfo;
+    asyncInfo.ResultType  = sig->retType;
+    asyncInfo.ResultClass = sig->retTypeSigClass;
     *usesOwnContexts = false;
 
     // Some async helpers always suspend when called. For these we can skip the
@@ -7913,6 +7917,14 @@ void Compiler::impSetupAsyncCall(GenTreeCall*          call,
     newSourceTypes |= (unsigned)callDI.GetLocation().GetSourceTypes() & ~ICorDebugInfo::CALL_INSTRUCTION;
     ILLocation newILLocation(callDI.GetLocation().GetOffset(), (ICorDebugInfo::SourceTypes)newSourceTypes);
     asyncInfo.CallAsyncDebugInfo = DebugInfo(callDI.GetInlineContext(), newILLocation);
+
+    if (compIsForInlining() && impInlineRoot()->compIsAsyncCheckpointProof())
+    {
+        // In the root method, an await inside an inlined async callee is the inlined call's await.
+        // Checkpoint metadata identifies it by that call's IL position, which does not depend on the
+        // statement locations of the inline contexts in between; several such awaits are ambiguous.
+        asyncInfo.CallAsyncDebugInfo = impInlineInfo->iciCall->GetAsyncInfo().CallAsyncDebugInfo;
+    }
 
     if ((prefixFlags & PREFIX_IS_TASK_AWAIT) != 0)
     {

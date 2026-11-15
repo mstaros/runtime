@@ -11,8 +11,231 @@
 
 #include "common.h"
 #include "asynccontinuations.h"
+#include "dynamicmethod.h"
 
 #ifndef DACCESS_COMPILE
+
+extern "C" INT32 QCALLTYPE AsyncHelpers_GetCheckpointPublicationStateForTesting(MethodDesc* method)
+{
+    QCALL_CONTRACT;
+    INT32 result = 0;
+    BEGIN_QCALL;
+    if (method == nullptr || !method->IsLCGMethod())
+        COMPlusThrow(kNotSupportedException);
+    // Ordinary LCG methods have no async pair; variant lookup requires an async thunk.
+    MethodDesc* body = method->IsAsyncMethod() ? method :
+        method->IsAsyncThunkMethod() ? method->GetAsyncVariantNoCreate() : nullptr;
+    // Observe without preparing code: the test must enter during the publication gap.
+    if (body != nullptr && body->IsLCGMethod())
+        result = body->AsDynamicMethodDesc()->GetLCGMethodResolver()->GetCheckpointPublicationStateForTesting();
+    END_QCALL;
+    return result;
+}
+
+#ifdef TARGET_AMD64
+// The primitive type a signature's CorInfoType names; null for any other type.
+static TypeHandle CheckpointPrimitiveType(CorInfoType type)
+{
+    CorElementType element;
+    switch (type)
+    {
+        case CORINFO_TYPE_BOOL:       element = ELEMENT_TYPE_BOOLEAN; break;
+        case CORINFO_TYPE_CHAR:       element = ELEMENT_TYPE_CHAR; break;
+        case CORINFO_TYPE_BYTE:       element = ELEMENT_TYPE_I1; break;
+        case CORINFO_TYPE_UBYTE:      element = ELEMENT_TYPE_U1; break;
+        case CORINFO_TYPE_SHORT:      element = ELEMENT_TYPE_I2; break;
+        case CORINFO_TYPE_USHORT:     element = ELEMENT_TYPE_U2; break;
+        case CORINFO_TYPE_INT:        element = ELEMENT_TYPE_I4; break;
+        case CORINFO_TYPE_UINT:       element = ELEMENT_TYPE_U4; break;
+        case CORINFO_TYPE_LONG:       element = ELEMENT_TYPE_I8; break;
+        case CORINFO_TYPE_ULONG:      element = ELEMENT_TYPE_U8; break;
+        case CORINFO_TYPE_NATIVEINT:  element = ELEMENT_TYPE_I; break;
+        case CORINFO_TYPE_NATIVEUINT: element = ELEMENT_TYPE_U; break;
+        case CORINFO_TYPE_FLOAT:      element = ELEMENT_TYPE_R4; break;
+        case CORINFO_TYPE_DOUBLE:     element = ELEMENT_TYPE_R8; break;
+        default:                      return TypeHandle();
+    }
+    return TypeHandle(CoreLibBinder::GetElementType(element));
+}
+#endif
+
+extern "C" void QCALLTYPE AsyncHelpers_GetCheckpointInfoForTesting(
+    MethodDesc* method, INT32 state, intptr_t expectedResume, QCall::ObjectHandleOnStack schema,
+    QCall::ObjectHandleOnStack keepAlive, QCall::ObjectHandleOnStack slotTypes, QCall::ObjectHandleOnStack awaitedType,
+    intptr_t* continuationType, intptr_t* resumeInfo, intptr_t* methodContext, intptr_t* classContext, INT32* sharedCode)
+{
+    QCALL_CONTRACT;
+    BEGIN_QCALL;
+#ifndef TARGET_AMD64
+    COMPlusThrow(kPlatformNotSupportedException);
+#else
+    // The lambda permits a non-owner probe to return without bypassing END_QCALL.
+    [&]() {
+        *continuationType = 0;
+        *resumeInfo = 0;
+        *methodContext = 0;
+        *classContext = 0;
+        *sharedCode = 0;
+        if (method == nullptr)
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint lookup has no method."));
+        // A metadata method's async body may not exist in a fresh process.
+        // Creating and preparing it must not invoke its pre-await instructions.
+        MethodDesc* body = method->IsAsyncMethod() ? method :
+            method->IsAsyncThunkMethod()
+                ? (method->IsLCGMethod() ? method->GetAsyncVariantNoCreate() : method->GetAsyncVariant())
+                : nullptr;
+        if (body == nullptr)
+        {
+            if (expectedResume != 0) return;
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint method has no async body."));
+        }
+
+        // Shared generic code is compiled once for its canonical form, and its checkpoint metadata
+        // belongs to that body. The hidden generic context a caller passes names the exact
+        // instantiation of the async variant, which the lookup without an instantiation argument returns.
+        MethodDesc* exact = (method->IsAsyncThunkMethod() && !method->IsLCGMethod())
+            ? method->GetAsyncVariant(/*allowInstParam*/ FALSE) : body;
+        if (body->IsInstantiatingStub())
+            body = body->GetWrappedMethodDesc();
+        body->PrepareInitialCode();
+        LCGMethodResolver* resolver = body->IsLCGMethod()
+            ? body->AsDynamicMethodDesc()->GetLCGMethodResolver() : nullptr;
+        AsyncContinuationsManager* manager = body->GetLoaderAllocator()->GetAsyncContinuationsManagerIfExists();
+        const BYTE* bytes = resolver != nullptr ? resolver->GetAsyncCheckpointInfo()
+            : manager != nullptr ? manager->LookupCheckpointInfoForTesting(body, body->GetNativeCode()) : nullptr;
+        if (bytes == nullptr)
+        {
+            if (expectedResume != 0) return;
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint method has no checkpoint metadata."));
+        }
+        const auto* info = reinterpret_cast<const CORINFO_AsyncCheckpointInfo*>(bytes);
+        if (info->Version != 6 || info->CodeAddress != reinterpret_cast<void*>(body->GetNativeCode()) ||
+            info->LayoutBytes > 1024 * 1024 || info->NumStates > 65536)
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint metadata has another version, code address or size."));
+
+        // Establish ownership before interpreting the caller's state number.
+        if (expectedResume != 0)
+        {
+            uintptr_t begin = reinterpret_cast<uintptr_t>(info->ResumeInfos);
+            uintptr_t address = static_cast<uintptr_t>(expectedResume);
+            if (address < begin || (address - begin) / sizeof(CORINFO_AsyncResumeInfo) >= info->NumStates ||
+                (address - begin) % sizeof(CORINFO_AsyncResumeInfo) != 0)
+                return;
+        }
+        if (state < 0 || static_cast<uint32_t>(state) >= info->NumStates)
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint state is outside the method's states."));
+
+        const BYTE* cursor = bytes + sizeof(*info);
+        const BYTE* end = cursor + info->LayoutBytes;
+        const CORINFO_AsyncCheckpointFrame* frame = nullptr;
+        while (static_cast<size_t>(end - cursor) >= sizeof(CORINFO_AsyncCheckpointFrame))
+        {
+            const auto* candidate = reinterpret_cast<const CORINFO_AsyncCheckpointFrame*>(cursor);
+            cursor += sizeof(*candidate);
+            if (candidate->NumSlots > static_cast<size_t>(end - cursor) / sizeof(CORINFO_AsyncCheckpointSlot))
+                COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint metadata is truncated."));
+            if (candidate->State == static_cast<uint32_t>(state))
+            {
+                if (frame != nullptr)
+                    COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint metadata records a state twice."));
+                frame = candidate;
+            }
+            cursor += candidate->NumSlots * sizeof(CORINFO_AsyncCheckpointSlot);
+        }
+        if (cursor != end)
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint metadata is truncated."));
+        if (frame == nullptr)
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint state has no frame record."));
+        if (frame->AwaitILOffset == UINT32_MAX)
+        {
+            SString message(SString::Literal, W("Checkpoint frame has no await IL offset: "));
+            message.AppendUTF8(body->GetName());
+            message.AppendPrintf(" state %d of %u, result kind %u, result type %u.",
+                state, info->NumStates, frame->ResultKind, frame->ResultType);
+            COMPlusThrowNonLocalized(kNotSupportedException, message.GetUnicode());
+        }
+        if (info->ResumeInfos[state].Resume == 0 || info->ResumeInfos[state].DiagnosticIP == 0)
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint state has no resume or diagnostic address."));
+
+        // A root IL offset shared by several inlined awaits is ambiguous in this proof.
+        for (cursor = bytes + sizeof(*info); cursor < end;)
+        {
+            const auto* candidate = reinterpret_cast<const CORINFO_AsyncCheckpointFrame*>(cursor);
+            if (candidate != frame && candidate->AwaitILOffset == frame->AwaitILOffset)
+                COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint frame shares its await IL offset with another suspension."));
+            cursor += sizeof(*candidate) + candidate->NumSlots * sizeof(CORINFO_AsyncCheckpointSlot);
+        }
+
+        {
+            GCX_COOP();
+            OBJECTREF resolverObject = resolver != nullptr
+                ? resolver->GetManagedResolver() : body->GetMethodTable()->GetManagedClassObject();
+            if (resolverObject == NULL)
+                COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint method has no managed owner."));
+            keepAlive.Set(resolverObject);
+
+            I4ARRAYREF array = (I4ARRAYREF)AllocatePrimitiveArray(ELEMENT_TYPE_I4, 11 + frame->NumSlots * 7);
+            INT32* values = array->GetDirectPointerToNonObjectElements();
+            values[0] = 6;
+            values[1] = frame->State;
+            values[2] = frame->Flags;
+            values[3] = frame->DataSize;
+            values[4] = frame->KeepAliveOffset;
+            values[5] = frame->ResultKind;
+            values[6] = frame->NumSlots;
+            values[7] = frame->AwaitILOffset;
+            values[8] = static_cast<INT32>(info->ConfigHash);
+            values[9] = static_cast<INT32>(info->ConfigHash >> 32);
+            values[10] = info->Reserved == 2 ? 1 : 0;
+            const auto* slots = reinterpret_cast<const CORINFO_AsyncCheckpointSlot*>(frame + 1);
+            for (uint32_t i = 0; i < frame->NumSlots; i++)
+            {
+                values[11 + i * 7] = slots[i].Offset;
+                values[12 + i * 7] = slots[i].Kind;
+                values[13 + i * 7] = slots[i].ILNumber;
+                values[14 + i * 7] = slots[i].IsExact;
+                values[15 + i * 7] = slots[i].Origin;
+                values[16 + i * 7] = slots[i].FieldOffset;
+                values[17 + i * 7] = slots[i].Size;
+            }
+            schema.Set(array);
+
+            PTRARRAYREF types = (PTRARRAYREF)AllocateObjectArray(frame->NumSlots, CoreLibBinder::GetClass(CLASS__TYPE));
+            GCPROTECT_BEGIN(types);
+            for (uint32_t i = 0; i < frame->NumSlots; i++)
+            {
+                // A reference slot's class, or a struct slot's type; a primitive value has none.
+                if (slots[i].Kind == 2 || ((slots[i].Kind == 4 || slots[i].Kind == 5) && slots[i].ClassHandle != nullptr))
+                {
+                    TypeHandle handle = slots[i].ClassHandle == nullptr ? TypeHandle(g_pObjectClass)
+                        : TypeHandle::FromPtr(slots[i].ClassHandle);
+                    OBJECTREF type = handle.GetManagedClassObject();
+                    types->SetAt(i, type);
+                }
+            }
+            slotTypes.Set(types);
+            GCPROTECT_END();
+
+            // The exact type a kind-2 await produces, as the JIT read it from the call's signature.
+            // Shared generic code may report __Canon; managed restore decides where that is acceptable.
+            if (frame->ResultKind == 2)
+            {
+                TypeHandle result = frame->ResultClass != nullptr ? TypeHandle::FromPtr(frame->ResultClass)
+                    : CheckpointPrimitiveType(static_cast<CorInfoType>(frame->ResultType));
+                if (result.IsNull())
+                    COMPlusThrowNonLocalized(kNotSupportedException, W("Checkpoint frame's awaited result type is unknown."));
+                awaitedType.Set(result.GetManagedClassObject());
+            }
+        }
+        *continuationType = reinterpret_cast<intptr_t>(frame->ContinuationClass);
+        *resumeInfo = reinterpret_cast<intptr_t>(&info->ResumeInfos[state]);
+        *methodContext = reinterpret_cast<intptr_t>(exact);
+        *classContext = reinterpret_cast<intptr_t>(exact->GetMethodTable());
+        *sharedCode = body->IsSharedByGenericInstantiations() ? 1 : 0;
+    }();
+#endif
+    END_QCALL;
+}
 
 AsyncContinuationsManager::AsyncContinuationsManager(LoaderAllocator* allocator)
     : m_allocator(allocator)
@@ -22,6 +245,42 @@ AsyncContinuationsManager::AsyncContinuationsManager(LoaderAllocator* allocator)
     m_layoutsLock.Init(CrstAsyncContinuations);
     LockOwner lock = {&m_layoutsLock, IsOwnerOfCrst};
     m_layouts.Init(16, &lock, m_allocator->GetLowFrequencyHeap());
+}
+
+// Publish immutable metadata before installing native code. Readers select only the
+// entry whose code address is installed on this MethodDesc, so a losing compilation
+// cannot supply another compilation's frame layout. Entries live with the allocator.
+void AsyncContinuationsManager::RecordCheckpointInfoForTesting(MethodDesc* method, PCODE code, const BYTE* bytes)
+{
+    LIMITED_METHOD_CONTRACT;
+    const auto* info = reinterpret_cast<const CORINFO_AsyncCheckpointInfo*>(bytes);
+    if (info->Version != 6 || info->LayoutBytes > 1024 * 1024 ||
+        info->CodeAddress != reinterpret_cast<void*>(code))
+        return;
+
+    size_t size = sizeof(*info) + info->LayoutBytes;
+    CheckpointInfoEntry* entry = m_allocator->GetLowFrequencyHeap()->AllocMem_NoThrow(
+        S_SIZE_T(sizeof(CheckpointInfoEntry)) + S_SIZE_T(size)).cast<CheckpointInfoEntry*>();
+    if (entry == nullptr)
+        return; // An unavailable proof schema is rejected; normal execution still works.
+    entry->Method = method;
+    entry->CodeAddress = code;
+    memcpy(entry + 1, bytes, size);
+    CrstHolder lock(&m_layoutsLock);
+    entry->Next = m_checkpointInfos;
+    m_checkpointInfos = entry;
+}
+
+const BYTE* AsyncContinuationsManager::LookupCheckpointInfoForTesting(MethodDesc* method, PCODE code)
+{
+    LIMITED_METHOD_CONTRACT;
+    CrstHolder lock(&m_layoutsLock);
+    for (CheckpointInfoEntry* entry = m_checkpointInfos; entry != nullptr; entry = entry->Next)
+    {
+        if (entry->Method == method && entry->CodeAddress == code)
+            return reinterpret_cast<const BYTE*>(entry + 1);
+    }
+    return nullptr;
 }
 
 void AsyncContinuationsManager::NotifyUnloadingClasses()

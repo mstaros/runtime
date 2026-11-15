@@ -769,7 +769,7 @@ namespace System.Runtime.CompilerServices
 
         // Represents execution of a chain of suspended and resuming runtime
         // async functions.
-        private sealed class RuntimeAsyncTask<T> : Task<T>
+        private sealed partial class RuntimeAsyncTask<T> : Task<T>
         {
             public RuntimeAsyncTask()
             {
@@ -899,6 +899,7 @@ namespace System.Runtime.CompilerServices
                             configFlags = ValueTaskSourceOnCompletedFlags.UseSchedulingContext;
                         }
 
+                        valueTaskSourceCont.CheckpointSchedulingFlags = continuationFlags & ContinuationFlags.AllContinuationFlags;
                         // Clear continuation flags, so that continuation runs transparently
                         contWithContinueFlags.Flags &= ~ContinuationFlags.AllContinuationFlags;
 

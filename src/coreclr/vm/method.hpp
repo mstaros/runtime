@@ -2420,6 +2420,21 @@ class PrepareCodeConfig
 {
 public:
     PrepareCodeConfig();
+    ~PrepareCodeConfig() { delete[] m_asyncCheckpointInfo; }
+    bool MarkCheckpointRetryForTesting()
+    {
+        LIMITED_METHOD_CONTRACT;
+        bool previous = m_checkpointRetried;
+        m_checkpointRetried = true;
+        return previous;
+    }
+    void SetAsyncCheckpointInfo(BYTE* info, bool pausePublicationForTesting)
+    {
+        LIMITED_METHOD_CONTRACT;
+        delete[] m_asyncCheckpointInfo;
+        m_asyncCheckpointInfo = info;
+        m_checkpointPausePublication = pausePublicationForTesting && info != nullptr;
+    }
     PrepareCodeConfig(NativeCodeVersion nativeCodeVersion, BOOL needsMulticoreJitNotification, BOOL mayUsePrecompiledCode);
 
     MethodDesc* GetMethodDesc() const
@@ -2589,6 +2604,9 @@ public:
     }
 
 protected:
+    bool m_checkpointRetried = false;
+    bool m_checkpointPausePublication = false;
+    BYTE* m_asyncCheckpointInfo = nullptr;
     MethodDesc* m_pMethodDesc;
     NativeCodeVersion m_nativeCodeVersion;
     BOOL m_needsMulticoreJitNotification;
@@ -2642,6 +2660,7 @@ private:
 
 public:
     PrepareCodeConfigBuffer(NativeCodeVersion codeVersion);
+    ~PrepareCodeConfigBuffer() { GetConfig()->~PrepareCodeConfig(); }
 
 public:
     PrepareCodeConfig *GetConfig() const

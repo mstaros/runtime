@@ -10,6 +10,27 @@
 
 JitConfigValues JitConfig;
 
+// Hash the effective, cached JIT configuration, including registry/host settings.
+// This is a compatibility discriminator for a trusted exact-build fixture.
+uint64_t JitConfigValues::CheckpointConfigHash() const
+{
+    uint64_t hash = 14695981039346656037ULL;
+    auto bytes = [&](const void* data, size_t size) {
+        const uint8_t* p = static_cast<const uint8_t*>(data);
+        for (size_t i = 0; i < size; i++)
+            hash = (hash ^ p[i]) * 1099511628211ULL;
+    };
+    auto text = [&](const char* value) {
+        const char* s = value == nullptr ? "<unset>" : value;
+        bytes(s, strlen(s) + 1);
+    };
+#define RELEASE_CONFIG_INTEGER(name, key, defaultValue) text(key); bytes(&m_##name, sizeof(m_##name));
+#define RELEASE_CONFIG_STRING(name, key) text(key); text(m_##name);
+#define RELEASE_CONFIG_METHODSET(name, key) text(key); text(m_##name.list());
+#include "jitconfigvalues.h"
+    return hash;
+}
+
 //----------------------------------------------------------------------
 // initialize: Initialize the method set by parsing the string
 //

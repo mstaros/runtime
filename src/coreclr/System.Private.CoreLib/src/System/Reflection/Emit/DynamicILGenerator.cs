@@ -857,6 +857,242 @@ namespace System.Reflection.Emit
             return m_scope.ResolveSignature(token, fromMethod);
         }
 
+
+        internal static string CheckpointTypeIdentity(Type type)
+        {
+            var text = new System.Text.StringBuilder();
+            void Part(string value) => text.Append(value.Length).Append(':').Append(value);
+            void Add(Type value)
+            {
+                if (value.IsGenericParameter)
+                {
+                    Part(value.DeclaringMethod == null ? "type-parameter" : "method-parameter");
+                    Part(value.GenericParameterPosition.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    // The owner by name: its module and its token are other ones in another build.
+                    Part(value.DeclaringMethod?.Name ?? value.DeclaringType!.FullName ?? value.DeclaringType!.Name);
+                    return;
+                }
+                if (value.HasElementType)
+                {
+                    Part(value.IsArray ? (value.IsSZArray ? "vector" : "array-" + value.GetArrayRank()) :
+                        value.IsByRef ? "byref" : "pointer");
+                    Add(value.GetElementType()!);
+                    return;
+                }
+                if (value.IsFunctionPointer)
+                {
+                    Part("function-pointer");
+                    foreach (Type convention in value.GetFunctionPointerCallingConventions()) Add(convention);
+                    Add(value.GetFunctionPointerReturnType());
+                    foreach (Type parameter in value.GetFunctionPointerParameterTypes()) Add(parameter);
+                    return;
+                }
+                Type definition = value.IsGenericType ? value.GetGenericTypeDefinition() : value;
+                // By full name and the simple name of the assembly. A version, a key token or a module version ID
+                // would tie the text to one build of that assembly.
+                Part(definition.FullName ?? throw new NotSupportedException("Unnamed checkpoint type."));
+                Part(definition.Assembly.GetName().Name ?? string.Empty);
+                if (value.IsGenericType)
+                    foreach (Type argument in value.GetGenericArguments()) Add(argument);
+            }
+            Add(type);
+            return text.ToString();
+        }
+
+        // The identity is the hash of a canonical manifest, and the manifest itself is not kept. The hash is over
+        // the manifest's UTF-16 code units: a string literal of the method can hold half of a surrogate pair, which
+        // UTF-8 has no form for.
+        internal string GetCheckpointIdentity()
+        {
+            Span<byte> hash = stackalloc byte[20];
+            Sha1ForNonSecretPurposes.HashData(MemoryMarshal.AsBytes(GetCheckpointIdentityText().AsSpan()), hash);
+            return Convert.ToHexString(hash);
+        }
+
+        // Compare a canonical manifest rather than a collision-prone short method name.
+        // Dynamic local signatures can contain process-local type handles: normalize them.
+        // Types and members are told by name, so the manifest is the same against another build of an assembly that
+        // still has them. The scope has an entry for every place the code names one, so each is described once, with
+        // a number, and every later use gives the number. The IL is written as its hash.
+        internal unsafe string GetCheckpointIdentityText()
+        {
+            var text = new System.Text.StringBuilder();
+            var methods = new Dictionary<DynamicMethod, int>();
+            var entries = new Dictionary<string, int>();
+            void Add(string value) => text.Append(value.Length).Append(':').Append(value);
+            void Number(int value) => Add(value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            // SHA-1 gives the same value in every process, which a string's own hash code does not.
+            static string Hash(ReadOnlySpan<byte> bytes)
+            {
+                Span<byte> hash = stackalloc byte[20];
+                Sha1ForNonSecretPurposes.HashData(bytes, hash);
+                return Convert.ToHexString(hash);
+            }
+            void Entry(string description)
+            {
+                if (entries.TryGetValue(description, out int known)) { Number(known); return; }
+                Number(entries.Count); entries.Add(description, entries.Count);
+                Add(description);
+            }
+            void TypeName(Type type) => Entry(CheckpointTypeIdentity(type));
+            void Member(MemberInfo member)
+            {
+                if (member is DynamicMethod dynamicMethod)
+                {
+                    dynamicMethod.GetMethodDescriptor();
+                    Method(dynamicMethod._resolver!);
+                    return;
+                }
+                // What the member is called and what its signature is, in place of its module and token. Static or
+                // instance is part of it: the code that uses the member is valid for one of them only.
+                // The signature is the definition's, written with the type's and the method's own parameters: with
+                // the arguments put in, two overloads can read the same. The arguments follow as parts of their own.
+                MemberInfo definition = member;
+                if (member is MethodInfo constructed && constructed.IsGenericMethod && !constructed.IsGenericMethodDefinition)
+                    definition = constructed.GetGenericMethodDefinition();
+                if (definition.DeclaringType is { IsConstructedGenericType: true } closed)
+                    definition = closed.GetGenericTypeDefinition().GetMemberWithSameMetadataDefinitionAs(definition);
+                var described = new System.Text.StringBuilder();
+                void Part(string value) => described.Append(value.Length).Append(':').Append(value);
+                Part(definition.Name);
+                if (definition is FieldInfo fieldInfo)
+                {
+                    Part(fieldInfo.IsStatic ? "static-field" : "field");
+                    Part(CheckpointTypeIdentity(fieldInfo.FieldType));
+                }
+                else
+                {
+                    var methodBase = (MethodBase)definition;
+                    Part(methodBase.IsStatic ? "static-method" : "method");
+                    Part(CheckpointTypeIdentity(methodBase is MethodInfo returning ? returning.ReturnType : typeof(void)));
+                    ParameterInfo[] parameters = methodBase.GetParameters();
+                    Part(parameters.Length.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    foreach (ParameterInfo parameter in parameters) Part(CheckpointTypeIdentity(parameter.ParameterType));
+                }
+                if (member.DeclaringType != null) Part(CheckpointTypeIdentity(member.DeclaringType));
+                else
+                {
+                    // A member of a module has no type to tell its assembly.
+                    Part("module");
+                    Part(member.Module.Assembly.GetName().Name ?? string.Empty);
+                }
+                if (member is MethodInfo mi && mi.IsGenericMethod)
+                    foreach (Type argument in mi.GetGenericArguments()) Part(CheckpointTypeIdentity(argument));
+                Entry(described.ToString());
+            }
+            void Signature(byte[] bytes)
+            {
+                int position = 0;
+                byte Byte()
+                {
+                    if ((uint)position >= (uint)bytes.Length) throw new NotSupportedException("Invalid checkpoint signature.");
+                    return bytes[position++];
+                }
+                int Compressed()
+                {
+                    int first = Byte();
+                    if ((first & 0x80) == 0) return first;
+                    if ((first & 0xC0) == 0x80) return ((first & 0x3F) << 8) | Byte();
+                    if ((first & 0xE0) == 0xC0) return ((first & 0x1F) << 24) | (Byte() << 16) | (Byte() << 8) | Byte();
+                    throw new NotSupportedException("Invalid checkpoint signature integer.");
+                }
+                void TypeSignature()
+                {
+                    byte kind = Byte();
+                    Number(kind);
+                    switch (kind)
+                    {
+                        case >= 1 and <= 14: case 0x16: case 0x18: case 0x19: case 0x1C:
+                            return;
+                        case 0x0F: case 0x10: case 0x1D: case 0x45: case 0x41:
+                            TypeSignature(); return;
+                        case 0x11: case 0x12: case 0x13: case 0x1E:
+                            Number(Compressed()); return;
+                        case 0x1F: case 0x20:
+                            Number(Compressed()); TypeSignature(); return;
+                        case 0x14:
+                            TypeSignature(); Number(Compressed());
+                            int sizes = Compressed(); Number(sizes);
+                            for (int i = 0; i < sizes; i++) Number(Compressed());
+                            int bounds = Compressed(); Number(bounds);
+                            for (int i = 0; i < bounds; i++) Number(Compressed());
+                            return;
+                        case 0x15:
+                            TypeSignature();
+                            int arguments = Compressed(); Number(arguments);
+                            for (int i = 0; i < arguments; i++) TypeSignature();
+                            return;
+                        case 0x1B:
+                            MethodSignature(); return;
+                        case 0x21:
+                            if (bytes.Length - position < IntPtr.Size) throw new NotSupportedException("Truncated checkpoint type handle.");
+                            nint handle = System.Runtime.CompilerServices.Unsafe.ReadUnaligned<nint>(ref bytes[position]);
+                            position += IntPtr.Size;
+                            TypeName(Type.GetTypeFromHandle(RuntimeTypeHandle.FromIntPtr(handle))!);
+                            return;
+                        default: throw new NotSupportedException("Unsupported checkpoint signature element.");
+                    }
+                }
+                void MethodSignature()
+                {
+                    int convention = Byte(); Number(convention);
+                    if ((convention & 0x10) != 0) Number(Compressed());
+                    if ((convention & 15) == 6) { TypeSignature(); return; }
+                    int count = Compressed(); Number(count);
+                    if ((convention & 15) != 7) TypeSignature();
+                    for (int i = 0; i < count; i++) TypeSignature();
+                }
+                MethodSignature();
+                // SignatureHelper may retain a final end marker.
+                if (position + 1 == bytes.Length && bytes[position] == 0) position++;
+                if (position != bytes.Length) throw new NotSupportedException("Trailing checkpoint signature data.");
+            }
+            void Method(DynamicResolver resolver)
+            {
+                if (methods.TryGetValue(resolver.m_method, out int existing)) { Add("reference"); Number(existing); return; }
+                if (methods.Count == 64) throw new NotSupportedException("Checkpoint method graph is too large.");
+                Number(methods.Count); methods.Add(resolver.m_method, methods.Count);
+                DynamicMethod method = resolver.m_method;
+                Add(method.Name);
+                if (!method.Module.Assembly.IsDynamic) Add(method.Module.Assembly.GetName().Name ?? string.Empty);
+                TypeName(method.ReturnType);
+                foreach (ParameterInfo parameter in method.GetParameters()) TypeName(parameter.ParameterType);
+                Number((int)method.GetMethodImplementationFlags());
+                Add(Hash(resolver.GetCodeInfo(out int stack, out int init, out int clauses)));
+                Number(stack); Number(init); Number(clauses);
+                Signature(resolver.m_localSignature);
+                if (resolver.m_exceptionHeader != null) Add(Convert.ToHexString(resolver.m_exceptionHeader));
+                else
+                    for (int i = 0; i < clauses; i++)
+                    {
+                        CORINFO_EH_CLAUSE clause = default;
+                        resolver.GetEHInfo(i, &clause);
+                        Add(Convert.ToHexString(new ReadOnlySpan<byte>(&clause, sizeof(CORINFO_EH_CLAUSE))));
+                    }
+                Number(resolver.m_scope.m_tokens.Count);
+                foreach (object? token in resolver.m_scope.m_tokens)
+                {
+                    switch (token)
+                    {
+                        case null: Add("null"); break;
+                        case string literal: Add("string"); Add(literal); break;
+                        case RuntimeTypeHandle type: Add("type"); TypeName(Type.GetTypeFromHandle(type)!); break;
+                        case RuntimeMethodHandle methodHandle: Add("method"); Member(MethodBase.GetMethodFromHandle(methodHandle)!); break;
+                        case RuntimeFieldHandle fieldHandle: Add("field"); Member(FieldInfo.GetFieldFromHandle(fieldHandle)); break;
+                        case GenericMethodInfo generic: Add("generic-method"); Member(MethodBase.GetMethodFromHandle(generic.m_methodHandle, generic.m_context)!); break;
+                        case GenericFieldInfo generic: Add("generic-field"); Member(FieldInfo.GetFieldFromHandle(generic.m_fieldHandle, generic.m_context)); break;
+                        case DynamicMethod dynamicMethod: Add("dynamic"); Member(dynamicMethod); break;
+                        case byte[] signature: Add("signature"); Signature(signature); break;
+                        default: throw new NotSupportedException("Unsupported checkpoint token.");
+                    }
+                }
+            }
+            Add(typeof(object).Module.ModuleVersionId.ToString());
+            Method(this);
+            if (text.Length > 1024 * 1024) throw new NotSupportedException("Checkpoint method identity is too large.");
+            return text.ToString();
+        }
+
         internal override MethodInfo GetDynamicMethod() => m_method;
         #endregion
     }

@@ -1106,12 +1106,48 @@ bool DynamicMethodDesc::TryDestroy()
     return true;
 }
 
-//
-// The resolver object is reused when the method is destroyed,
-// this will reset its state for the next use.
-//
+const BYTE* LCGMethodResolver::GetAsyncCheckpointInfo()
+{
+    CONTRACTL { NOTHROW; GC_NOTRIGGER; MODE_PREEMPTIVE; } CONTRACTL_END;
+    // Native code may become visible before the winning thread publishes metadata.
+    // Only wait after native-code preparation; a failed compilation never reaches here.
+    _ASSERTE(m_pDynamicMethod->GetNativeCode() != (PCODE)NULL);
+    DWORD switches = 0;
+    while (!VolatileLoad(&m_asyncCheckpointInfoPublished))
+    {
+        InterlockedCompareExchange(&m_checkpointPublicationTestState, 2, 1);
+        __SwitchToThread(0, switches++);
+    }
+    return VolatileLoad(&m_asyncCheckpointInfo);
+}
+
+// Retain opt-in proof metadata independently of the JIT temporary allocator.
+void LCGMethodResolver::SetAsyncCheckpointInfo(BYTE* data, bool pausePublicationForTesting)
+{
+    CONTRACTL { NOTHROW; GC_NOTRIGGER; MODE_PREEMPTIVE; } CONTRACTL_END;
+    // Only the native-code CAS winner calls this, including the no-metadata case.
+    _ASSERTE(!m_asyncCheckpointInfoPublished && m_asyncCheckpointInfo == nullptr);
+    if (pausePublicationForTesting)
+    {
+        VolatileStore(&m_checkpointPublicationTestState, 1L);
+        ULONGLONG deadline = GetTickCount64() + 10000;
+        DWORD switches = 0;
+        while (VolatileLoad(&m_checkpointPublicationTestState) == 1 && GetTickCount64() < deadline)
+            __SwitchToThread(0, switches++);
+        // A broken test times out without leaving an installed method unpublished.
+        InterlockedCompareExchange(&m_checkpointPublicationTestState, 3, 1);
+    }
+    VolatileStore(&m_asyncCheckpointInfo, data);
+    VolatileStore(&m_asyncCheckpointInfoPublished, true);
+}
+
+// The resolver is reused after method destruction; reset its state for the next use.
 void LCGMethodResolver::Reset()
 {
+    delete[] m_asyncCheckpointInfo;
+    m_asyncCheckpointInfo = nullptr;
+    m_asyncCheckpointInfoPublished = false;
+    m_checkpointPublicationTestState = 0;
     m_DynamicStringLiterals = NULL;
     m_initialCodePointer    = {};
     m_DynamicCodePointers   = &m_initialCodePointer;
@@ -1289,6 +1325,8 @@ void LCGMethodResolver::DestroyResolver()
     // Note that we need to do this before m_jitTempData is deleted
     RecycleIndCells();
 
+    delete[] m_asyncCheckpointInfo;
+    m_asyncCheckpointInfo = nullptr;
     m_jitMetaHeap.Delete();
     m_jitTempData.Delete();
 

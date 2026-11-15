@@ -312,7 +312,7 @@ public:
     // Returns that compilation flags that are shared between JIT and NGen
     static CORJIT_FLAGS GetBaseCompileFlags(MethodDesc * ftn);
 
-    static CorInfoHelpFunc getSharedStaticsHelper(FieldDesc * pField, MethodTable * pFieldMT);
+    static CorInfoHelpFunc getSharedStaticsHelper(FieldDesc * pField, MethodTable * pFieldMT, bool checkpointCompilation = false);
 
     static size_t findNameOfToken (Module* module, mdToken metaTOK,
                             _Out_writes_ (FQNameCapacity) char * szFQName, size_t FQNameCapacity);
@@ -436,6 +436,7 @@ protected:
     SArray<TransientMethodDetails, FALSE>* m_transientDetails;   // Transient details for dynamic codegen scenarios.
     Thread *                m_pThread;              // Cached current thread for faster JIT-EE transitions
     CORJIT_FLAGS            m_jitFlags;
+    uint32_t               m_checkpointCompilationMode = 0; // Root policy also applies to inlinees.
 
     CORINFO_METHOD_HANDLE getMethodBeingCompiled()
     {
@@ -472,6 +473,9 @@ public:
     // ICorJitInfo stuff
     CEECodeGenInfo(PrepareCodeConfig* config, MethodDesc* fd, COR_ILMETHOD_DECODER* header, EECodeGenManager* jm);
 
+    void CompleteAsyncCheckpointInfo();
+    bool MarkCheckpointRetryForTesting();
+
     ~CEECodeGenInfo()
     {
         CONTRACTL
@@ -480,6 +484,8 @@ public:
             GC_NOTRIGGER;
             MODE_ANY;
         } CONTRACTL_END;
+
+        delete[] m_asyncCheckpointInfo;
 
         if (m_CodeHeaderRW != m_CodeHeader)
             freeArrayInternal(m_CodeHeaderRW);
@@ -500,6 +506,10 @@ public:
 
         if (m_CodeHeaderRW != m_CodeHeader)
             freeArrayInternal(m_CodeHeaderRW);
+
+        delete[] m_asyncCheckpointInfo;
+        m_asyncCheckpointInfo = nullptr;
+        m_asyncCheckpointInfoSize = 0;
 
         m_CodeHeader = NULL;
         m_CodeHeaderRW = NULL;
@@ -608,6 +618,9 @@ protected:
                           const CORINFO_EH_CLAUSE* clause
                         );
 
+    PrepareCodeConfig*     m_prepareCodeConfig;
+    BYTE*                  m_asyncCheckpointInfo = nullptr;
+    size_t                 m_asyncCheckpointInfoSize = 0;
     EECodeGenManager*       m_jitManager;   // responsible for allocating memory
     void*                   m_CodeHeader;   // descriptor for JITTED code - read/execute address
     void*                   m_CodeHeaderRW; // descriptor for JITTED code - code write scratch buffer address
@@ -768,6 +781,19 @@ public:
     BOOL JitAgain() override
     {
         LIMITED_METHOD_CONTRACT;
+        if (m_asyncCheckpointInfo != nullptr)
+        {
+            auto* info = reinterpret_cast<CORINFO_AsyncCheckpointInfo*>(m_asyncCheckpointInfo);
+            if (info->Reserved == 1)
+            {
+                if (!MarkCheckpointRetryForTesting())
+                {
+                    m_fJumpStubOverflow = TRUE;
+                }
+                else
+                    info->Reserved = 2; // The runner verifies that the real retry path ran.
+            }
+        }
         return m_fJumpStubOverflow;
     }
 

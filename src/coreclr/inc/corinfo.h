@@ -1998,6 +1998,48 @@ struct CORINFO_AsyncResumeInfo
     TARGET_SIZE_T DiagnosticIP;
 };
 
+// Internal, opt-in checkpoint proof metadata. Not a persisted format or a public ABI.
+// Runtime-async DynamicMethods and mode-4 metadata methods on a pinned runtime use this metadata.
+struct CORINFO_AsyncCheckpointSlot
+{
+    uint32_t Offset;      // Byte offset from managed GetRawData, excluding the method table.
+    uint32_t Kind;        // 1: Int32, 2: managed reference, 3: generic context handle, 4: value without GC references,
+                          // 5: struct with GC references; 100 + JIT type: unsupported.
+    uint32_t ILNumber;    // Diagnostic identity; includes unknown/compiler-generated locals.
+    uint32_t IsExact;
+    uint32_t Origin;      // 0: unknown, 1: IL variable, 2: promoted IL field, 3/4: saved execution/sync context,
+                          // 5/6: hidden generic context from the instantiated method/class.
+    uint32_t FieldOffset; // Byte offset within the parent IL variable for origin 2; otherwise zero.
+    uint32_t Size;        // Bytes the slot occupies in the continuation.
+    CORINFO_CLASS_HANDLE ClassHandle; // Fresh-process type of a reference or struct slot; never persisted.
+};
+
+struct CORINFO_AsyncCheckpointFrame
+{
+    CORINFO_CLASS_HANDLE ContinuationClass;
+    uint32_t State;
+    uint32_t Flags;
+    uint32_t DataSize;
+    uint32_t KeepAliveOffset;
+    uint32_t ResultKind;  // 0: unsupported, 1: Int32, 2: described by ResultType and ResultClass, 3: void.
+    uint32_t NumSlots;
+    uint32_t AwaitILOffset;
+    uint32_t ResultType;  // CorInfoType of the awaited call's result, as its signature states it.
+    CORINFO_CLASS_HANDLE ResultClass; // The result's class or value type, enums unnormalized; null for primitives.
+};
+
+struct CORINFO_AsyncCheckpointInfo
+{
+    const void* CodeAddress;
+    const CORINFO_AsyncResumeInfo* ResumeInfos;
+    uint32_t Version;
+    uint32_t NumStates;
+    uint32_t LayoutBytes;
+    uint32_t Reserved;
+    uint64_t ConfigHash;
+    // Followed by NumStates frame records, each followed by its slot records.
+};
+
 struct CORINFO_TYPE_LAYOUT_NODE
 {
     // Type handle if this is a SIMD type, i.e. for intrinsic types in

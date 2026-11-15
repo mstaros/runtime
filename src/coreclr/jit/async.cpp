@@ -580,7 +580,13 @@ PhaseStatus Compiler::SaveAsyncContexts()
         CORINFO_CALL_INFO callInfo = {};
         callInfo.hMethod           = captureCall->gtCallMethHnd;
         callInfo.methodFlags       = info.compCompHnd->getMethodAttribs(callInfo.hMethod);
-        impMarkInlineCandidate(captureCall, MAKE_METHODCONTEXT(callInfo.hMethod), &callInfo, compInlineContext);
+        // Keep the context-capture boundary explicit for the bounded checkpoint proof.
+        // Inlining can copy its synchronous-only Thread local into an unclassified
+        // temporary that the continuation liveness analysis then retains.
+        if (!compIsAsyncCheckpointProof())
+        {
+            impMarkInlineCandidate(captureCall, MAKE_METHODCONTEXT(callInfo.hMethod), &callInfo, compInlineContext);
+        }
 
         Statement* captureStmt = fgNewStmtFromTree(captureCall);
         fgInsertStmtAtBeg(fgFirstBB, captureStmt);
@@ -2363,7 +2369,7 @@ const AsyncState* AsyncTransformation::FindReusableSuspension(BasicBlock*       
                                                               bool                       resumeReachable,
                                                               VARSET_VALARG_TP           mutatedSinceResumption)
 {
-    if (m_compiler->opts.OptimizationDisabled())
+    if (m_compiler->opts.OptimizationDisabled() || m_compiler->compIsAsyncCheckpointProof())
     {
         // Tail merging breaks debugging.
         return nullptr;
@@ -2844,6 +2850,112 @@ void AsyncTransformation::CreateSuspension(BasicBlock*                      call
     GenTree* flagsNode   = m_compiler->gtNewIconNode((ssize_t)continuationFlags, TYP_INT);
     GenTree* storeFlags  = StoreAtOffset(newContinuation, flagsOffset, flagsNode, TYP_INT);
     LIR::AsRange(suspendBB).InsertAtEnd(LIR::SeqTree(m_compiler, storeFlags));
+
+
+    if (m_compiler->compIsAsyncCheckpointProof())
+    {
+        // Retain every live slot, including JIT temporaries omitted by debug information.
+        // The proof rejects unsupported kinds instead of silently dropping their state.
+        if (m_compiler->compAsyncCheckpointLayout == nullptr)
+        {
+            m_compiler->compAsyncCheckpointLayout =
+                new (m_compiler, CMK_Async) jitstd::vector<uint8_t>(m_compiler->getAllocator(CMK_Async));
+        }
+
+        constexpr unsigned rawDataOffset = OFFSETOF__CORINFO_Continuation__data - TARGET_POINTER_SIZE;
+        CORINFO_AsyncCheckpointFrame frame = {};
+        frame.ContinuationClass = layout.ClassHnd;
+        frame.State = stateNum;
+        frame.AwaitILOffset = call->GetAsyncInfo().CallAsyncDebugInfo.GetRoot().GetLocation().GetOffset();
+        frame.Flags = continuationFlags;
+        frame.DataSize = rawDataOffset + layout.Size;
+        frame.KeepAliveOffset =
+            layout.KeepAliveOffset == UINT_MAX ? UINT_MAX : rawDataOffset + layout.KeepAliveOffset;
+        // Int32 keeps its own kind; any other awaited result is described by its signature type.
+        bool plainInt     = (call->gtReturnType == TYP_INT) &&
+                            ((callInfo.ResultType == CORINFO_TYPE_UNDEF) ||
+                             ((callInfo.ResultType == CORINFO_TYPE_INT) && (callInfo.ResultClass == NO_CLASS_HANDLE)));
+        frame.ResultKind  = (call->gtReturnType == TYP_VOID)              ? 3
+                            : plainInt                                    ? 1
+                            : (callInfo.ResultType != CORINFO_TYPE_UNDEF) ? 2
+                                                                          : 0;
+        frame.ResultType  = static_cast<uint32_t>(callInfo.ResultType);
+        frame.ResultClass = callInfo.ResultClass;
+        if (layout.OSRAddressOffset != UINT_MAX)
+        {
+            frame.ResultKind = 0; // OSR is outside this proof; managed capture rejects non-null exception state.
+        }
+
+        for (const LiveLocalInfo& inf : layout.Locals)
+        {
+            if (subLayout.ContainsLocal(inf.LclNum))
+                frame.NumSlots++;
+        }
+
+        auto append = [&](const void* value, size_t size) {
+            const uint8_t* bytes = static_cast<const uint8_t*>(value);
+            m_compiler->compAsyncCheckpointLayout->insert(
+                m_compiler->compAsyncCheckpointLayout->end(), bytes, bytes + size);
+        };
+        append(&frame, sizeof(frame));
+
+        for (const LiveLocalInfo& inf : layout.Locals)
+        {
+            if (!subLayout.ContainsLocal(inf.LclNum))
+                continue;
+
+            LclVarDsc* dsc = m_compiler->lvaGetDesc(inf.LclNum);
+            CORINFO_AsyncCheckpointSlot slot = {};
+            slot.Offset = rawDataOffset + inf.Offset;
+            slot.Size   = inf.Size;
+            // A struct, or a struct parameter passed by implicit reference, is saved whole. A value without GC
+            // references can be restored from its bytes; a struct with GC references is left to managed admission.
+            const bool         isStruct   = dsc->TypeIs(TYP_STRUCT) || dsc->IsImplicitByRef();
+            ClassLayout* const slotLayout = isStruct ? dsc->GetLayout() : nullptr;
+            slot.Kind = dsc->TypeIs(TYP_INT)                       ? 1
+                        : dsc->TypeIs(TYP_REF)                     ? 2
+                        : isStruct && slotLayout->HasGCPtr()       ? 5
+                        : isStruct || !varTypeIsGC(dsc->TypeGet()) ? 4
+                                                                   : 100 + static_cast<unsigned>(dsc->TypeGet());
+            slot.ILNumber = m_compiler->compMap2ILvarNum(inf.LclNum);
+            slot.Origin = static_cast<int32_t>(slot.ILNumber) >= 0 ? 1 : 0;
+            if (dsc->lvIsStructField)
+            {
+                unsigned parent = m_compiler->compMap2ILvarNum(dsc->lvParentLcl);
+                if (static_cast<int32_t>(parent) >= 0)
+                {
+                    slot.ILNumber = parent;
+                    slot.Origin = 2;
+                    slot.FieldOffset = dsc->lvFldOffset;
+                }
+            }
+            // These roles come from the await's context operands, never from a
+            // value's type, nullness, or its position in the continuation.
+            auto isContextLocal = [&](WellKnownArg kind) {
+                CallArg* arg = call->gtArgs.FindWellKnownArg(kind);
+                return (arg != nullptr) && arg->GetNode()->OperIs(GT_LCL_VAR) &&
+                       (arg->GetNode()->AsLclVar()->GetLclNum() == inf.LclNum);
+            };
+            if (isContextLocal(WellKnownArg::AsyncExecutionContext))
+                slot.Origin = 3;
+            else if (isContextLocal(WellKnownArg::AsyncSynchronizationContext))
+                slot.Origin = 4;
+            // The hidden generic context identifies the instantiation that shared code runs for:
+            // origin 5 when it is the instantiated method, 6 when it is the instantiated class.
+            if ((m_compiler->info.compTypeCtxtArg != BAD_VAR_NUM) && (inf.LclNum == m_compiler->info.compTypeCtxtArg))
+            {
+                slot.Kind   = 3;
+                slot.Origin = ((m_compiler->info.compMethodInfo->options & CORINFO_GENERICS_CTXT_FROM_METHODTABLE) != 0)
+                                  ? 6
+                                  : 5;
+            }
+            slot.ClassHandle = dsc->TypeIs(TYP_REF)                        ? dsc->lvClassHnd
+                               : isStruct && !slotLayout->IsCustomLayout() ? slotLayout->GetClassHandle()
+                                                                           : NO_CLASS_HANDLE;
+            slot.IsExact = dsc->TypeIs(TYP_REF) && dsc->lvClassIsExact;
+            append(&slot, sizeof(slot));
+        }
+    }
 
     FillInDataOnSuspension(layout, subLayout, suspendBB, mutatedSinceResumption, tailSaveSet);
     StoreAsyncAwaiter(callBlock, call, suspendBB, layout);

@@ -12015,6 +12015,8 @@ bool Compiler::impWrapTopOfStackInAwait()
     }
 
     AsyncCallInfo* asyncInfo = new (this, CMK_Async) AsyncCallInfo;
+    asyncInfo->ResultType    = awaitSig.retType;
+    asyncInfo->ResultClass   = awaitSig.retTypeSigClass;
 
     bool const hasContextHandling =
         compIsForInlining() &&
@@ -12047,6 +12049,15 @@ bool Compiler::impWrapTopOfStackInAwait()
         JITDUMP("Inheriting continuation handling %d from caller [%06u]\n",
                 (unsigned)inlCall->GetAsyncInfo().ContinuationContextHandling, dspTreeID(inlCall));
         asyncInfo->ContinuationContextHandling = inlCall->GetAsyncInfo().ContinuationContextHandling;
+
+        // The wrapper's await is the inlined call's own await and produces that call's result.
+        asyncInfo->ResultType  = inlCall->GetAsyncInfo().ResultType;
+        asyncInfo->ResultClass = inlCall->GetAsyncInfo().ResultClass;
+        if (impInlineRoot()->compIsAsyncCheckpointProof())
+        {
+            // Checkpoint metadata identifies the suspension by the inlined call's IL position.
+            asyncInfo->CallAsyncDebugInfo = inlCall->GetAsyncInfo().CallAsyncDebugInfo;
+        }
 
         // Mark the call async first: inheriting the contexts also inherits the inlined
         // frame depth, which lives in the async call info.

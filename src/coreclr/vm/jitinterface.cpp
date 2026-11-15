@@ -1200,13 +1200,13 @@ void* CEEInfo::getClassStaticDynamicInfo(CORINFO_CLASS_HANDLE cls)
     return result;
 }
 
-CorInfoHelpFunc CEEInfo::getSharedStaticsHelper(FieldDesc * pField, MethodTable * pFieldMT)
+CorInfoHelpFunc CEEInfo::getSharedStaticsHelper(FieldDesc * pField, MethodTable * pFieldMT, bool checkpointCompilation)
 {
     STANDARD_VM_CONTRACT;
 
     bool GCStatic = (pField->GetFieldType() == ELEMENT_TYPE_CLASS ||
                   pField->GetFieldType() == ELEMENT_TYPE_VALUETYPE);
-    bool noCtor = pFieldMT->IsClassInitedOrPreinited();
+    bool noCtor = !checkpointCompilation && pFieldMT->IsClassInitedOrPreinited();
     bool threadStatic = pField->IsThreadStatic();
     bool isInexactMT = pFieldMT->IsSharedByGenericInstantiations();
     bool isCollectible = pFieldMT->Collectible();
@@ -1386,7 +1386,7 @@ void CEEInfo::getFieldInfo (CORINFO_RESOLVED_TOKEN * pResolvedToken,
             }
 
             // We are not going through a helper. The constructor has to be triggered explicitly.
-            if (!pFieldMT->IsClassInitedOrPreinited())
+            if (m_checkpointCompilationMode != 0 || !pFieldMT->IsClassInitedOrPreinited())
                 fieldFlags |= CORINFO_FLG_FIELD_INITCLASS;
         }
         else
@@ -1426,14 +1426,14 @@ void CEEInfo::getFieldInfo (CORINFO_RESOLVED_TOKEN * pResolvedToken,
                 // them using a helper since the address cannot be embedded into the code.
                 fieldAccessor = CORINFO_FIELD_STATIC_SHARED_STATIC_HELPER;
 
-                pResult->helper = getSharedStaticsHelper(pField, pFieldMT);
+                pResult->helper = getSharedStaticsHelper(pField, pFieldMT, m_checkpointCompilationMode != 0);
             }
             else if (pField->IsThreadStatic())
             {
                  // We always treat accessing thread statics as if we are in domain neutral code.
                 fieldAccessor = CORINFO_FIELD_STATIC_SHARED_STATIC_HELPER;
 
-                pResult->helper = getSharedStaticsHelper(pField, pFieldMT);
+                pResult->helper = getSharedStaticsHelper(pField, pFieldMT, m_checkpointCompilationMode != 0);
                 if (pFieldMT == CoreLibBinder::GetExistingClass(CLASS__DIRECTONTHREADLOCALDATA))
                 {
                     fieldAccessor = CORINFO_FIELD_STATIC_TLS_MANAGED;
@@ -1484,7 +1484,7 @@ void CEEInfo::getFieldInfo (CORINFO_RESOLVED_TOKEN * pResolvedToken,
                 pFieldMT->EnsureStaticDataAllocated();
 
                 // We are not going through a helper. The constructor has to be triggered explicitly.
-                if (!pFieldMT->IsClassInitedOrPreinited())
+                if (m_checkpointCompilationMode != 0 || !pFieldMT->IsClassInitedOrPreinited())
                     fieldFlags |= CORINFO_FLG_FIELD_INITCLASS;
 
                 GCX_COOP();
@@ -3890,7 +3890,7 @@ CorInfoInitClassResult CEEInfo::initClass(
 
     MethodTable *pTypeToInitMT = typeToInitTH.AsMethodTable();
 
-    if (pTypeToInitMT->IsClassInitedOrPreinited())
+    if (m_checkpointCompilationMode == 0 && pTypeToInitMT->IsClassInitedOrPreinited())
     {
         // If the type is initialized there really is nothing to do.
         result = CORINFO_INITCLASS_INITIALIZED;
@@ -4005,7 +4005,7 @@ CorInfoInitClassResult CEEInfo::initClass(
     // class construction.
     pTypeToInitMT->EnsureStaticDataAllocated();
 
-    if (pTypeToInitMT->IsClassInited())
+    if (m_checkpointCompilationMode == 0 && pTypeToInitMT->IsClassInited())
     {
         result = CORINFO_INITCLASS_INITIALIZED;
         goto exit;
@@ -11168,6 +11168,7 @@ static CORJIT_FLAGS GetCompileFlags(PrepareCodeConfig* prepareConfig, MethodDesc
 
 CEECodeGenInfo::CEECodeGenInfo(PrepareCodeConfig* config, MethodDesc* fd, COR_ILMETHOD_DECODER* header, EECodeGenManager* jm)
     : CEEInfo(fd)
+    , m_prepareCodeConfig(config)
     , m_jitManager(jm)
     , m_CodeHeader(NULL)
     , m_CodeHeaderRW(NULL)
@@ -11680,6 +11681,44 @@ void CEECodeGenInfo::reportMetadata(
     } CONTRACTL_END;
 
     JIT_TO_EE_TRANSITION_LEAF();
+    if ((strcmp(key, "RuntimeAsyncCheckpointCompilationV1") == 0) &&
+        length == sizeof(uint32_t) &&
+        (m_pMethodBeingCompiled->IsLCGMethod() || *static_cast<const uint32_t*>(value) == 4))
+    {
+        m_checkpointCompilationMode = *static_cast<const uint32_t*>(value);
+    }
+    if ((strcmp(key, "RuntimeAsyncCheckpointProofV1") == 0) &&
+        (m_pMethodBeingCompiled->IsLCGMethod() || m_checkpointCompilationMode == 4) &&
+        m_pMethodBeingCompiled->IsAsyncMethod() &&
+        (length >= sizeof(CORINFO_AsyncCheckpointInfo)))
+    {
+        const auto* info = static_cast<const CORINFO_AsyncCheckpointInfo*>(value);
+        if (info->Version == 6 && info->LayoutBytes == length - sizeof(*info) && info->LayoutBytes <= 1024 * 1024)
+        {
+            BYTE* copy = new (nothrow) BYTE[length];
+            if (copy != nullptr)
+            {
+                memcpy(copy, value, length);
+                // Include VM-supplied compilation and instruction-set flags.
+                uint64_t hash = info->ConfigHash;
+                auto mix = [&](uint64_t flags) {
+                    for (unsigned i = 0; i < sizeof(flags); i++)
+                    {
+                        hash = (hash ^ static_cast<uint8_t>(flags)) * 1099511628211ULL;
+                        flags >>= 8;
+                    }
+                };
+                mix(m_jitFlags.GetFlagsRaw());
+                for (int i = 0; i < m_jitFlags.GetInstructionFlagsFieldCount(); i++)
+                    mix(m_jitFlags.GetInstructionSetFlagsRaw()[i]);
+                reinterpret_cast<CORINFO_AsyncCheckpointInfo*>(copy)->ConfigHash = hash;
+                delete[] m_asyncCheckpointInfo;
+                m_asyncCheckpointInfo = copy;
+                m_asyncCheckpointInfoSize = length;
+            }
+        }
+    }
+
 
     EE_TO_JIT_TRANSITION_LEAF();
 }
@@ -11962,6 +12001,20 @@ void CInterpreterJitInfo::SetDebugInfo(PTR_BYTE pDebugInfo)
     ((InterpreterCodeHeader*)m_CodeHeaderRW)->SetDebugInfo(pDebugInfo);
 }
 #endif // FEATURE_INTERPRETER
+
+bool CEECodeGenInfo::MarkCheckpointRetryForTesting()
+{
+    LIMITED_METHOD_CONTRACT;
+    return m_prepareCodeConfig->MarkCheckpointRetryForTesting();
+}
+
+void CEECodeGenInfo::CompleteAsyncCheckpointInfo()
+{
+    LIMITED_METHOD_CONTRACT;
+    m_prepareCodeConfig->SetAsyncCheckpointInfo(m_asyncCheckpointInfo, m_checkpointCompilationMode == 3);
+    m_asyncCheckpointInfo = nullptr;
+    m_asyncCheckpointInfoSize = 0;
+}
 
 void CEECodeGenInfo::CompressDebugInfo(PCODE nativeEntry, NativeCodeVersion nativeCodeVersion)
 {
@@ -12774,7 +12827,9 @@ bool CEEInfo::getStaticFieldContent(CORINFO_FIELD_HANDLE fieldHnd, uint8_t* buff
     // class construction.
     pEnclosingMT->EnsureStaticDataAllocated();
 
-    if (!field->IsThreadStatic() && pEnclosingMT->IsClassInitedOrPreinited() && IsFdInitOnly(field->GetAttributes()))
+    // Current static values must not change checkpoint temporary meanings across processes.
+    if (m_checkpointCompilationMode == 0 &&
+        !field->IsThreadStatic() && pEnclosingMT->IsClassInitedOrPreinited() && IsFdInitOnly(field->GetAttributes()))
     {
         if (field->IsObjRef())
         {
@@ -12946,7 +13001,7 @@ CORINFO_CLASS_HANDLE CEECodeGenInfo::getStaticFieldCurrentClass(CORINFO_FIELD_HA
 
     // We're only interested in ref class typed static fields
     // where the field handle specifies a unique location.
-    if (field->IsStatic() && field->IsObjRef() && !field->IsThreadStatic())
+    if (m_checkpointCompilationMode == 0 && field->IsStatic() && field->IsObjRef() && !field->IsThreadStatic())
     {
         MethodTable* pEnclosingMT = field->GetEnclosingMethodTable();
 
@@ -13477,6 +13532,7 @@ static CorJitResult invokeCompileMethod(EECodeGenManager *jitMgr,
     if (SUCCEEDED(ret) && !comp->JitAgain())
     {
         comp->CompressDebugInfo((PCODE)*nativeEntry, nativeCodeVersion);
+        comp->CompleteAsyncCheckpointInfo();
         comp->MethodCompileComplete(methodInfo->ftn);
     }
 

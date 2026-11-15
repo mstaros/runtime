@@ -11,6 +11,8 @@ typedef struct CORINFO_CLASS_STRUCT_*  CORINFO_CLASS_HANDLE;
 typedef struct CORINFO_METHOD_STRUCT_* CORINFO_METHOD_HANDLE;
 class ICorJitHost;
 
+#include <stdint.h>
+
 class JitConfigValues
 {
 public:
@@ -97,6 +99,7 @@ public:
     {
         return m_isInitialized != 0;
     }
+    uint64_t CheckpointConfigHash() const;
     void initialize(ICorJitHost* host);
     void destroy(ICorJitHost* host);
 };

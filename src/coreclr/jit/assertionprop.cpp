@@ -3730,6 +3730,15 @@ GenTree* Compiler::optCopyAssertionProp(const AssertionDsc&  curAssertion,
     LclVarDsc* const copyVarDsc = lvaGetDesc(copyLclNum);
     LclVarDsc* const lclVarDsc  = lvaGetDesc(lclNum);
 
+    // Local assertion propagation also substitutes storage identities, before
+    // SSA copy propagation. Preserve checkpoint IL locals and promoted fields.
+    unsigned checkpointLocal = lclVarDsc->lvIsStructField ? lclVarDsc->lvParentLcl : lclNum;
+    if (compIsAsyncCheckpointProof() && compIsAsync() &&
+        (static_cast<int32_t>(compMap2ILvarNum(checkpointLocal)) >= 0))
+    {
+        return nullptr;
+    }
+
     // Make sure the types are compatible.
     if (!optAssertionProp_LclVarTypeCheck(tree, lclVarDsc, copyVarDsc))
     {

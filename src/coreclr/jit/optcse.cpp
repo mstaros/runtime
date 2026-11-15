@@ -1115,10 +1115,14 @@ void Compiler::optValnumCSE_SetUpAsyncByrefKills()
             isByRef             = layout->HasGCByRef();
         }
 
-        if (isByRef)
+        // CSE temporaries have no stable IL storage identity. In checkpoint
+        // proof mode, rematerialize them after awaits; CSE within each segment
+        // remains enabled, as does inlining.
+        bool isCheckpointTemporary = compIsAsyncCheckpointProof() && compIsAsync();
+        if (isByRef || isCheckpointTemporary)
         {
             // We generate a bit pattern like: 1111111100111100 where there
-            // are 0s only for the byref CSEs.
+            // are 0s for byrefs and opt-in checkpoint CSEs.
             BitVecOps::RemoveElemD(cseLivenessTraits, cseAsyncKillsMask, getCSEAvailBit(inx));
             BitVecOps::RemoveElemD(cseLivenessTraits, cseAsyncKillsMask, getCSEAvailCrossCallBit(inx));
             anyAsyncKills = true;
@@ -1167,7 +1171,15 @@ void Compiler::optValnumCSE_SetUpAsyncByrefKills()
             continue;
         }
 
-        // This block has a suspension point. Make all BYREF CSEs unavailable.
+        if (compIsAsyncCheckpointProof())
+        {
+            // EndMerge normally propagates incoming values through calls. A checkpoint must
+            // rematerialize even constant type handles in successors of this suspension.
+            // bbCseGen below still describes definitions after the final async call.
+            block->SetFlags(BBF_NO_CSE_IN);
+        }
+
+        // This block has a suspension point. Kill the affected local definitions.
         BitVecOps::IntersectionD(cseLivenessTraits, block->bbCseGen, cseAsyncKillsMask);
         BitVecOps::IntersectionD(cseLivenessTraits, block->bbCseOut, cseAsyncKillsMask);
 

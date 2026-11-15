@@ -170,6 +170,17 @@ bool Compiler::optCopyProp(
 
     bool                madeChanges = false;
     LclVarDsc* const    varDsc      = lvaGetDesc(lclNum);
+
+    // A checkpoint identifies an IL variable (or its promoted field), not the
+    // optimizer temporary that happens to have an equivalent value in this JIT.
+    // Keep these uses attached to their original storage identity in proof mode.
+    unsigned checkpointLocal = varDsc->lvIsStructField ? varDsc->lvParentLcl : lclNum;
+    if (compIsAsyncCheckpointProof() && compIsAsync() &&
+        (static_cast<int32_t>(compMap2ILvarNum(checkpointLocal)) >= 0))
+    {
+        return false;
+    }
+
     LclSsaVarDsc* const varSsaDsc   = varDsc->GetPerSsaData(tree->GetSsaNum());
     ValueNum const      lclDefVN    = varSsaDsc->m_vnPair.GetConservative();
     assert(lclDefVN != ValueNumStore::NoVN);
