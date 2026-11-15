@@ -9,6 +9,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Loader;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using static System.Runtime.CompilerServices.RuntimeHelpers;
 
 namespace System.Reflection.Emit
@@ -17,6 +18,45 @@ namespace System.Reflection.Emit
     {
         private RuntimeType[] _parameterTypes;
         internal IRuntimeMethodInfo? _methodHandle;
+        private bool IsBaked => _methodHandle != null;
+        private MethodImplAttributes _methodImplFlags = DefaultMethodImplAttributes;
+
+        private void SetImplementationFlagsCore(MethodImplAttributes attributes) =>
+            _methodImplFlags = DefaultMethodImplAttributes | (attributes & MethodImplAttributes.Async);
+
+        private MethodImplAttributes GetMethodImplementationFlagsCore() => _methodImplFlags;
+
+        internal bool IsRuntimeAsync => (_methodImplFlags & MethodImplAttributes.Async) != 0;
+
+        internal byte[] GetRuntimeAsyncMethodSignature(out bool isValueTask)
+        {
+            isValueTask = false;
+            if (!IsRuntimeAsync)
+                return Array.Empty<byte>();
+
+            Type bodyReturnType = GetRuntimeAsyncBodyReturnType(_returnType, out isValueTask);
+            return SignatureHelper.GetMethodSigHelper(
+                null, CallingConvention, bodyReturnType, null, null, _parameterTypes, null, null).GetSignature(true);
+        }
+
+        private static Type GetRuntimeAsyncBodyReturnType(Type returnType, out bool isValueTask)
+        {
+            isValueTask = returnType == typeof(ValueTask);
+            if (returnType == typeof(Task) || isValueTask)
+                return typeof(void);
+
+            if (returnType.IsGenericType)
+            {
+                Type genericDefinition = returnType.GetGenericTypeDefinition();
+                if (genericDefinition == typeof(Task<>) || genericDefinition == typeof(ValueTask<>))
+                {
+                    isValueTask = genericDefinition == typeof(ValueTask<>);
+                    return returnType.GetGenericArguments()[0];
+                }
+            }
+
+            throw new NotSupportedException(SR.NotSupported_DynamicMethodAsyncReturnType);
+        }
         private RuntimeType _returnType;
         private DynamicILGenerator? _ilGenerator;
         private DynamicILInfo? _dynamicILInfo;

@@ -20,6 +20,21 @@ namespace Internal.IL
             ThisPtr = 1 << 3,
         }
         private StackValueFlags Flags;
+        private int _spanLocalIndexPlusOne;
+
+        // Only direct addresses of tracked span locals carry this origin. Unknown uses
+        // invalidate the local's method-wide return-safety invariant.
+        public int SpanLocalIndex => _spanLocalIndexPlusOne - 1;
+
+        public void SetSpanLocalIndex(int index)
+        {
+            Debug.Assert(Kind == StackValueKind.ByRef && Type.IsByRefLike);
+            _spanLocalIndexPlusOne = index + 1;
+        }
+
+        public void ClearSpanLocalIndex() => _spanLocalIndexPlusOne = 0;
+
+        public void ClearIsPermanentHome() => Flags &= ~StackValueFlags.PermanentHome;
 
         public readonly StackValueKind Kind;
         public readonly TypeDesc Type;
@@ -31,6 +46,7 @@ namespace Internal.IL
             this.Type = type;
             this.Method = method;
             this.Flags = flags;
+            _spanLocalIndexPlusOne = 0;
         }
 
         public void SetIsReadOnly()
@@ -41,7 +57,7 @@ namespace Internal.IL
 
         public void SetIsPermanentHome()
         {
-            Debug.Assert(Kind == StackValueKind.ByRef);
+            Debug.Assert(Kind == StackValueKind.ByRef || (Kind == StackValueKind.ValueType && Type.IsByRefLike));
             Flags |= StackValueFlags.PermanentHome;
         }
 
@@ -165,7 +181,8 @@ namespace Internal.IL
                 return false;
 
             var value = (StackValue)obj;
-            return this.Kind == value.Kind && this.Flags == value.Flags && this.Type == value.Type;
+            return this.Kind == value.Kind && this.Flags == value.Flags && this.Type == value.Type
+                && _spanLocalIndexPlusOne == value._spanLocalIndexPlusOne;
         }
 
         public static bool operator ==(StackValue left, StackValue right)
@@ -698,3 +715,4 @@ namespace Internal.IL
         }
     }
 }
+

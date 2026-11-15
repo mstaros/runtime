@@ -55,6 +55,14 @@ namespace Internal.IL
         readonly byte[] _ilBytes;
         readonly LocalVariableDefinition[] _locals;
 
+        // Return-safe locals contain heap/default storage; byref arguments start in caller-owned storage.
+        // Every reachable write must preserve that lifetime, including writes in handlers.
+        // Facts only change from safe to unknown; affected blocks are then reimported.
+        readonly bool _trackReturnLifetime;
+        bool[] _safeReturnLocals;
+        bool[] _safeReturnArguments;
+        bool _returnLifetimeChanged;
+
         readonly bool _initLocals;
         readonly int _maxStack;
 
@@ -128,9 +136,15 @@ namespace Internal.IL
                 get;
                 private set;
             }
-            public void IncrementErrorCount()
+            public int NonBlockingErrorCount { get; private set; }
+
+            public void IncrementErrorCount(VerifierError error)
             {
                 ErrorCount++;
+                if (error == VerifierError.TypeAccess || error == VerifierError.MethodAccess
+                    || error == VerifierError.FieldAccess || error == VerifierError.Unverifiable
+                    || error == VerifierError.UnmanagedPointer)
+                    NonBlockingErrorCount++;
             }
         };
 
@@ -145,11 +159,14 @@ namespace Internal.IL
             _stack[_stackTop++] = value;
         }
 
-        StackValue Pop(bool allowUninitThis = false)
+        StackValue Pop(bool allowUninitThis = false, bool allowSpanLocalAddress = false)
         {
             FatalCheck(_stackTop > 0, VerifierError.StackUnderflow);
 
             var stackValue = _stack[--_stackTop];
+
+            if (!allowSpanLocalAddress)
+                InvalidateReturnLocal(stackValue);
 
             if (!allowUninitThis)
                 Check(!_trackObjCtorState || !stackValue.IsThisPtr || _isThisInitialized, VerifierError.UninitStack, stackValue);
@@ -203,6 +220,31 @@ namespace Internal.IL
 
             _ilBytes = _methodIL.GetILBytes();
             _locals = _methodIL.GetLocals();
+            _trackReturnLifetime = _methodSignature.ReturnType.IsByRef || IsSupportedSpan(_methodSignature.ReturnType);
+            if (_trackReturnLifetime)
+            {
+                for (int i = 0; i < _locals.Length; i++)
+                {
+                    if (_locals[i].Type.IsByRef || IsSupportedSpan(_locals[i].Type))
+                    {
+                        _safeReturnLocals ??= new bool[_locals.Length];
+                        _safeReturnLocals[i] = _initLocals;
+                    }
+                }
+            }
+
+            if (_methodSignature.ReturnType.IsByRef)
+            {
+                int argumentCount = _methodSignature.Length + (_thisType == null ? 0 : 1);
+                for (int i = 0; i < argumentCount; i++)
+                {
+                    if (GetVarType(i, argument: true).IsByRef)
+                    {
+                        _safeReturnArguments ??= new bool[argumentCount];
+                        _safeReturnArguments[i] = true;
+                    }
+                }
+            }
 
             var ilExceptionRegions = _methodIL.GetExceptionRegions();
             _exceptionRegions = new ExceptionRegion[ilExceptionRegions.Length];
@@ -517,7 +559,7 @@ namespace Internal.IL
         void VerificationError(VerifierError error)
         {
             if (_currentBasicBlock != null)
-                _currentBasicBlock.IncrementErrorCount();
+                _currentBasicBlock.IncrementErrorCount(error);
 
             var args = new ErrorArgument[]
             {
@@ -529,7 +571,7 @@ namespace Internal.IL
         void VerificationError(VerifierError error, object found)
         {
             if (_currentBasicBlock != null)
-                _currentBasicBlock.IncrementErrorCount();
+                _currentBasicBlock.IncrementErrorCount(error);
 
             var args = new ErrorArgument[]
             {
@@ -542,7 +584,7 @@ namespace Internal.IL
         void VerificationError(VerifierError error, object found, object expected)
         {
             if (_currentBasicBlock != null)
-                _currentBasicBlock.IncrementErrorCount();
+                _currentBasicBlock.IncrementErrorCount(error);
 
             var args = new ErrorArgument[]
             {
@@ -1426,6 +1468,66 @@ namespace Internal.IL
         void EndImportingBasicBlock(BasicBlock basicBlock)
         {
             basicBlock.State = BasicBlock.ImportState.WasVerified;
+            if (_returnLifetimeChanged)
+            {
+                _returnLifetimeChanged = false;
+                foreach (BasicBlock visited in _basicBlocks)
+                {
+                    if (visited != null && visited.State == BasicBlock.ImportState.WasVerified && CanContinueVerification(visited))
+                    {
+                        visited.State = BasicBlock.ImportState.Unmarked;
+                        MarkBasicBlock(visited);
+                    }
+                }
+            }
+        }
+
+        // Access and pointer findings remain visible while lifetime dataflow continues for
+        // span and byref returns. Other errors retain the existing stop-on-error behavior.
+        bool CanContinueVerification(BasicBlock block)
+            => block.ErrorCount == 0
+                || (_trackReturnLifetime && block.ErrorCount == block.NonBlockingErrorCount);
+
+        bool IsSupportedSpan(TypeDesc type)
+        {
+            if (!type.IsByRefLike || !type.HasInstantiation || type.Instantiation.Length != 1)
+                return false;
+
+            TypeDesc definition = type.GetTypeDefinition();
+            return definition == _typeSystemContext.SystemModule.GetType("System"u8, "Span`1"u8, false)
+                || definition == _typeSystemContext.SystemModule.GetType("System"u8, "ReadOnlySpan`1"u8, false);
+        }
+
+        void InvalidateReturnLocal(StackValue address)
+        {
+            if (address.SpanLocalIndex >= 0)
+                InvalidateReturnLocal(address.SpanLocalIndex);
+        }
+
+        void InvalidateReturnLocal(int index)
+        {
+            if (_safeReturnLocals != null && _safeReturnLocals[index])
+            {
+                _safeReturnLocals[index] = false;
+                _returnLifetimeChanged = true;
+            }
+        }
+
+        bool IsArrayBackedSpanCreation(MethodDesc method)
+        {
+            MethodSignature signature = method.Signature;
+            TypeDesc span = method.IsConstructor ? method.OwningType : signature.ReturnType;
+            if (!IsSupportedSpan(span) || method.OwningType != span || signature.Length == 0)
+                return false;
+            if (signature[0] is not ArrayType array || !array.IsSzArray || array.ElementType != span.Instantiation[0])
+                return false;
+
+            if (!method.IsConstructor)
+                return signature.IsStatic && method.Name == "op_Implicit"u8 && signature.Length == 1;
+
+            return !signature.IsStatic && (signature.Length == 1
+                || (signature.Length == 3 && signature[1].IsWellKnownType(WellKnownType.Int32)
+                    && signature[2].IsWellKnownType(WellKnownType.Int32)));
         }
 
         void ImportNop()
@@ -1468,6 +1570,8 @@ namespace Internal.IL
             CheckIsNotPointer(varType);
 
             var stackValue = StackValue.CreateFromType(varType);
+            if (argument ? _safeReturnArguments != null && _safeReturnArguments[index] : _safeReturnLocals != null && _safeReturnLocals[index])
+                stackValue.SetIsPermanentHome();
             if (index == 0 && argument && _thisType != null)
             {
                 Debug.Assert(varType == _thisType);
@@ -1487,6 +1591,18 @@ namespace Internal.IL
                 Check(index != 0 || !argument, VerifierError.ThisUninitStore);
 
             CheckIsAssignable(value, StackValue.CreateFromType(varType));
+            if (!value.IsPermanentHome)
+            {
+                if (!argument)
+                {
+                    InvalidateReturnLocal(index);
+                }
+                else if (_safeReturnArguments != null && _safeReturnArguments[index])
+                {
+                    _safeReturnArguments[index] = false;
+                    _returnLifetimeChanged = true;
+                }
+            }
         }
 
         void ImportAddressOfVar(int index, bool argument)
@@ -1499,6 +1615,8 @@ namespace Internal.IL
             Check(!varType.IsByRef, VerifierError.ByrefOfByref);
 
             var stackValue = StackValue.CreateByRef(varType);
+            if (!argument && _safeReturnLocals != null && IsSupportedSpan(varType))
+                stackValue.SetSpanLocalIndex(index);
             if (index == 0 && argument && _thisType != null)
             {
                 Debug.Assert(varType == _thisType);
@@ -1512,7 +1630,7 @@ namespace Internal.IL
 
         void ImportDup()
         {
-            var value = Pop(allowUninitThis: true);
+            var value = Pop(allowUninitThis: true, allowSpanLocalAddress: true);
 
             // this could be the beginning of a delegate create
             _delegateCreateStart = _currentInstructionOffset;
@@ -1575,6 +1693,7 @@ namespace Internal.IL
             MethodDesc method = ResolveMethodToken(token);
 
             MethodSignature sig = method.Signature;
+            bool safeSpanResult = IsArrayBackedSpanCreation(method);
 
             TypeDesc methodType = sig.IsStatic ? null : method.OwningType;
 
@@ -1652,7 +1771,9 @@ namespace Internal.IL
             else
             if (methodType != null)
             {
-                var actualThis = Pop(allowUninitThis: true);
+                var actualThis = Pop(allowUninitThis: true, allowSpanLocalAddress: true);
+                if (!safeSpanResult)
+                    InvalidateReturnLocal(actualThis);
                 instance = actualThis.Type;
                 var declaredThis = methodType.IsValueType ?
                     StackValue.CreateByRef(methodType) : StackValue.CreateObjRef(methodType);
@@ -1771,7 +1892,10 @@ namespace Internal.IL
             // now push on the result
             if (opcode == ILOpcode.newobj)
             {
-                Push(StackValue.CreateFromType(methodType));
+                var returnValue = StackValue.CreateFromType(methodType);
+                if (safeSpanResult)
+                    returnValue.SetIsPermanentHome();
+                Push(returnValue);
             }
             else
             if (!returnType.IsVoid)
@@ -1791,7 +1915,7 @@ namespace Internal.IL
                     ClearPendingPrefix(Prefix.ReadOnly);
                 }
 
-                if (returnValue.Kind == StackValueKind.ByRef)
+                if (returnValue.Kind == StackValueKind.ByRef || safeSpanResult)
                     returnValue.SetIsPermanentHome();
 
                 Push(returnValue);
@@ -1976,7 +2100,7 @@ namespace Internal.IL
                 {
                     // Next block has 'this' initialized, but current state has not
                     // therefore next block must be reverified with 'this' uninitialized
-                    if (next.State == BasicBlock.ImportState.WasVerified && next.ErrorCount == 0)
+                    if (next.State == BasicBlock.ImportState.WasVerified && CanContinueVerification(next))
                         next.State = BasicBlock.ImportState.Unmarked;
                 }
 
@@ -2042,10 +2166,18 @@ namespace Internal.IL
 
         void PropagateControlFlow(BasicBlock next, bool isFallthrough)
         {
-            if (!IsValidBranchTarget(_currentBasicBlock, next, isFallthrough) || _currentBasicBlock.ErrorCount > 0)
+            if (!IsValidBranchTarget(_currentBasicBlock, next, isFallthrough) || !CanContinueVerification(_currentBasicBlock))
                 return;
 
             PropagateThisState(_currentBasicBlock, next);
+
+            // An address crossing a branch requires alias analysis outside this
+            // bounded span-return proof. Keep the corresponding local unknown.
+            for (int i = 0; i < _stackTop; i++)
+            {
+                InvalidateReturnLocal(_stack[i]);
+                _stack[i].ClearSpanLocalIndex();
+            }
 
             // Propagate stack across block bounds
             StackValue[] entryStack = next.EntryStack;
@@ -2058,6 +2190,14 @@ namespace Internal.IL
                 {
                     // TODO: Do we need to allow conversions?
                     FatalCheck(entryStack[i].Kind == _stack[i].Kind, VerifierError.PathStackUnexpected, entryStack[i], _stack[i]);
+
+                    if (entryStack[i].Type != null && (entryStack[i].Kind == StackValueKind.ByRef || entryStack[i].Type.IsByRefLike)
+                        && entryStack[i].IsPermanentHome && !_stack[i].IsPermanentHome)
+                    {
+                        entryStack[i].ClearIsPermanentHome();
+                        if (CanContinueVerification(next) && next.State != BasicBlock.ImportState.IsPending)
+                            next.State = BasicBlock.ImportState.Unmarked;
+                    }
 
                     if (entryStack[i].Type != _stack[i].Type)
                     {
@@ -2072,7 +2212,7 @@ namespace Internal.IL
                             {
                                 entryStack[i] = mergedValue;
 
-                                if (next.ErrorCount == 0 && next.State != BasicBlock.ImportState.IsPending)
+                                if (CanContinueVerification(next) && next.State != BasicBlock.ImportState.IsPending)
                                     next.State = BasicBlock.ImportState.Unmarked; // Make sure block is reverified
                             }
                         }
@@ -2313,7 +2453,7 @@ namespace Internal.IL
             ClearPendingPrefix(Prefix.Unaligned);
             ClearPendingPrefix(Prefix.Volatile);
 
-            var address = Pop();
+            var address = Pop(allowSpanLocalAddress: true);
             CheckIsByRef(address);
 
             if (type == null)
@@ -2325,7 +2465,10 @@ namespace Internal.IL
             {
                 CheckIsAssignable(address.Type.GetVerificationType(), type.GetVerificationType());
             }
-            Push(StackValue.CreateFromType(type));
+            var value = StackValue.CreateFromType(type);
+            if (IsSupportedSpan(type) && address.SpanLocalIndex >= 0 && _safeReturnLocals[address.SpanLocalIndex])
+                value.SetIsPermanentHome();
+            Push(value);
         }
 
         void ImportStoreIndirect(int token)
@@ -2339,7 +2482,9 @@ namespace Internal.IL
             ClearPendingPrefix(Prefix.Volatile);
 
             var value = Pop();
-            var address = Pop();
+            var address = Pop(allowSpanLocalAddress: true);
+            if (!value.IsPermanentHome)
+                InvalidateReturnLocal(address);
 
             Check(!address.IsReadOnly, VerifierError.ReadOnlyIllegalWrite);
 
@@ -2382,7 +2527,7 @@ namespace Internal.IL
         {
             var type = ResolveTypeToken(token);
 
-            var value = Pop();
+            var value = Pop(allowSpanLocalAddress: true);
 
             Check(value.Kind == StackValueKind.ByRef, VerifierError.StackByRef, value);
 
@@ -2864,3 +3009,4 @@ namespace Internal.IL
         }
     }
 }
+

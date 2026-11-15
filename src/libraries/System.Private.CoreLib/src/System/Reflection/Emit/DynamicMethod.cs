@@ -20,6 +20,9 @@ namespace System.Reflection.Emit
         // it is ready for use since there is not API which indictates that IL generation has completed.
         private static Module? s_anonymouslyHostedDynamicMethodsModule;
         private static readonly object s_anonymouslyHostedDynamicMethodsModuleLock = new object();
+        private const MethodImplAttributes DefaultMethodImplAttributes = MethodImplAttributes.IL | MethodImplAttributes.NoInlining;
+        private const MethodImplAttributes SupportedMethodImplAttributes = MethodImplAttributes.NoInlining | MethodImplAttributes.Async;
+
 
         //
         // class initialization (ctor and init)
@@ -287,7 +290,6 @@ namespace System.Reflection.Emit
             // initialize remaining fields
             _ilGenerator = null;
             _initLocals = true;
-            _methodHandle = null;
             _name = name;
             _attributes = attributes;
             _callingConvention = callingConvention;
@@ -334,8 +336,19 @@ namespace System.Reflection.Emit
 
         internal override ReadOnlySpan<ParameterInfo> GetParametersAsSpan() => LoadParameters();
 
-        public override MethodImplAttributes GetMethodImplementationFlags() =>
-            MethodImplAttributes.IL | MethodImplAttributes.NoInlining;
+        public void SetImplementationFlags(MethodImplAttributes attributes)
+        {
+            if (IsBaked)
+                throw new InvalidOperationException(SR.InvalidOperation_MethodBaked);
+
+            if ((attributes & ~SupportedMethodImplAttributes) != 0)
+                throw new ArgumentOutOfRangeException(nameof(attributes));
+
+            SetImplementationFlagsCore(attributes);
+        }
+
+        public override MethodImplAttributes GetMethodImplementationFlags() => GetMethodImplementationFlagsCore();
+
 
         public override bool IsSecurityCritical => true;
 

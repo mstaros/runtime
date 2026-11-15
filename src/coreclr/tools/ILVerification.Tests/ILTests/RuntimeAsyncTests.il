@@ -87,6 +87,32 @@
         ret
     }
 
+    // Invalid: without async, Task follows the ordinary non-void return rule
+    .method public hidebysig instance class [System.Runtime]System.Threading.Tasks.Task TaskWithoutAsyncEmptyStack_Invalid_ReturnMissing() cil managed
+    {
+        ret
+    }
+
+    // Invalid: without async, Task<int> cannot return the unwrapped int value
+    .method public hidebysig instance class [System.Runtime]System.Threading.Tasks.Task`1<int32> TaskIntWithoutAsyncInnerValue_Invalid_StackUnexpected() cil managed
+    {
+        ldc.i4.0
+        ret
+    }
+
+    // Invalid: without async, ValueTask follows the ordinary non-void return rule
+    .method public hidebysig instance valuetype [System.Runtime]System.Threading.Tasks.ValueTask ValueTaskWithoutAsyncEmptyStack_Invalid_ReturnMissing() cil managed
+    {
+        ret
+    }
+
+    // Invalid: without async, ValueTask<int> cannot return the unwrapped int value
+    .method public hidebysig instance valuetype [System.Runtime]System.Threading.Tasks.ValueTask`1<int32> ValueTaskIntWithoutAsyncInnerValue_Invalid_StackUnexpected() cil managed
+    {
+        ldc.i4.0
+        ret
+    }
+
     // Invalid: async method returning from try block (not allowed)
     .method public hidebysig instance valuetype [System.Runtime]System.Threading.Tasks.ValueTask`1<int32> AsyncReturnFromTry_Invalid_ReturnFromTry() cil managed async
     {
